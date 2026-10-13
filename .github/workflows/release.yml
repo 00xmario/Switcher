@@ -66,10 +66,27 @@ jobs:
           cp build/macos/logos/*.svg build/macos/MenubarTemplate*.png "$APP/Contents/Resources/"
           cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/ThirdPartyNotices.md"
           sed "s/VERSION_TOKEN/${VERSION}/g" build/macos/Info.plist > "$APP/Contents/Info.plist"
-          GOOS=darwin GOARCH=arm64 \
-            go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X switcher/internal/remote.addonSHA256=${ADDON_SHA256_arm64}" \
-            -o "$APP/Contents/MacOS/SwitcherServer" .
-          swiftc -parse-as-library -O -o "$APP/Contents/MacOS/Switcher" build/macos/menubar.swift
+          # One app for every Mac: Apple silicon and Intel slices, back to
+          # macOS 13. Without an explicit target swiftc would require the
+          # runner's own macOS version.
+          SLICES="build/slices"
+          rm -rf "$SLICES"
+          mkdir -p "$SLICES"
+          for arch in arm64 amd64; do
+            eval "addon=\${ADDON_SHA256_${arch}}"
+            GOOS=darwin GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X switcher/internal/remote.addonSHA256=${addon}" \
+              -o "$SLICES/SwitcherServer-$arch" .
+          done
+          lipo -create -output "$APP/Contents/MacOS/SwitcherServer" "$SLICES/SwitcherServer-arm64" "$SLICES/SwitcherServer-amd64"
+          for target in arm64-apple-macos13.0 x86_64-apple-macos13.0; do
+            swiftc -parse-as-library -O -target "$target" -o "$SLICES/Switcher-$target" build/macos/menubar.swift
+          done
+          lipo -create -output "$APP/Contents/MacOS/Switcher" "$SLICES"/Switcher-*-apple-macos13.0
+          for binary in Switcher SwitcherServer; do
+            archs=$(lipo -archs "$APP/Contents/MacOS/$binary")
+            case "$archs" in *arm64*x86_64*|*x86_64*arm64*) ;; *) echo "$binary is not universal: $archs" >&2; exit 1 ;; esac
+          done
           # Ad-hoc signing: without it Apple Silicon reports quarantined
           # builds as "damaged".
           codesign --force --deep -s - "$APP"

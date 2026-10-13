@@ -1,12 +1,19 @@
 // Package update implements Switcher's self-update flow: check the newest
-// published version, and on demand download the release binary, swap it in
-// place, and exec back into the new build.
+// published version, and on demand download the release, swap it in place
+// and restart into the new build. Everything goes over plain HTTPS to the
+// public GitHub releases, so no GitHub CLI or account is needed: apps started
+// at login do not see the shell's PATH, and most Macs have no gh at all.
+//
+// A server inside Switcher.app replaces the whole app (see app.go), so the
+// menu bar app and the server always come from the same release. A plain
+// binary, such as the Linux server, replaces only itself.
 package update
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,8 +61,8 @@ type metadataCall struct {
 	err   error
 }
 
-// validTag accepts only release tags of the form vX.Y.Z so a hostile
-// release tag can never be interpreted by gh as a flag.
+// validTag accepts only release tags of the form vX.Y.Z, so a hostile
+// release tag never reaches a download URL or a file name.
 var validTag = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
 
 // New creates a checker for the running version.
@@ -191,15 +198,71 @@ func normalizeReleaseTag(raw string) (string, error) {
 	return "v" + strings.TrimPrefix(tag, "v"), nil
 }
 
+// releaseHost serves the release pages and assets; apiHost answers the
+// release API. Tests point both at fixtures.
+var (
+	releaseHost = "https://github.com"
+	apiHost     = "https://api.github.com"
+)
+
 func fetchMetadata(ctx context.Context) (string, error) {
-	readTag := func(ctx context.Context) ([]byte, error) {
-		ghCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ghCtx, "gh", "api", "repos/"+Repo+"/releases/latest", "--jq", ".tag_name")
-		cmd.WaitDelay = time.Second
-		return cmd.Output()
+	client := &http.Client{Timeout: 10 * time.Second}
+	return fetchReleaseMetadata(ctx, func(ctx context.Context) ([]byte, error) {
+		return latestReleaseTag(ctx, client)
+	}, client)
+}
+
+// latestReleaseTag asks the release API for the newest release. The API
+// allows 60 anonymous requests an hour per address, so when it refuses, the
+// tag is read from the redirect of the public releases/latest page instead.
+func latestReleaseTag(ctx context.Context, client *http.Client) ([]byte, error) {
+	tag, apiErr := func() ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiHost+"/repos/"+Repo+"/releases/latest", nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", userAgent)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("release API: HTTP %d", resp.StatusCode)
+		}
+		var release struct {
+			Tag string `json:"tag_name"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&release); err != nil {
+			return nil, fmt.Errorf("release API: %w", err)
+		}
+		return []byte(release.Tag), nil
+	}()
+	if apiErr == nil {
+		return tag, nil
 	}
-	return fetchReleaseMetadata(ctx, readTag, &http.Client{Timeout: 10 * time.Second})
+	if ctx.Err() != nil {
+		return nil, apiErr
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, releaseHost+"/"+Repo+"/releases/latest", nil)
+	if err != nil {
+		return nil, errors.Join(apiErr, err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return nil, errors.Join(apiErr, fmt.Errorf("releases page: %w", err))
+	}
+	resp.Body.Close()
+	location := resp.Header.Get("Location")
+	_, tagPart, ok := strings.Cut(location, "/releases/tag/")
+	if resp.StatusCode/100 != 3 || !ok {
+		return nil, errors.Join(apiErr, fmt.Errorf("releases page: HTTP %d without a release tag", resp.StatusCode))
+	}
+	return []byte(tagPart), nil
 }
 
 // fetchReleaseMetadata exposes only the metadata I/O boundary to fixtures.
@@ -281,24 +344,33 @@ func part(parts []string, i int) int {
 	return n
 }
 
-// InstallAndRestart downloads the latest release for this platform,
-// smoke-tests it, swaps the running binary, and exec-restarts the server.
-// The process image is replaced, so this call never returns.
+// InstallAndRestart installs the latest release and restarts into it.
+//
+// Inside Switcher.app the whole app is replaced (installApp). A plain binary
+// downloads its own release asset, is smoke-tested, swapped in place and
+// exec-restarted; the process image is replaced, so that call never returns
+// on success. The app path returns nil once the new app is in place and its
+// restart is under way.
 func (c *Checker) InstallAndRestart() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve running binary: %w", err)
+	}
+	if exe, err = filepath.EvalSymlinks(exe); err != nil {
+		return fmt.Errorf("resolve running binary: %w", err)
+	}
+	if bundle, ok := appBundle(exe); ok && runtime.GOOS == "darwin" {
+		return c.installApp(bundle, exe, systemAppOps())
+	}
 	return c.installAndRestart(installOps{
 		tempDir: os.MkdirTemp,
 		download: func(ctx context.Context, tag, asset, dir string) error {
-			if out, err := exec.CommandContext(ctx, "gh", "release", "download", tag,
-				"--repo", Repo, "--pattern", asset, "--pattern", asset+".sha256",
-				"--dir", dir).CombinedOutput(); err != nil {
-				return fmt.Errorf("download release: %s (%w)", strings.TrimSpace(string(out)), err)
-			}
-			return nil
+			return downloadRelease(ctx, tag, asset, dir, 200<<20)
 		},
 		smoke: func(ctx context.Context, path string) ([]byte, error) {
 			return exec.CommandContext(ctx, path, "version").CombinedOutput()
 		},
-		executable: os.Executable,
+		executable: func() (string, error) { return exe, nil },
 		rename:     os.Rename,
 		chmod:      os.Chmod,
 		syncDir:    syncDirectory,
@@ -307,6 +379,56 @@ func (c *Checker) InstallAndRestart() error {
 			return syscall.Exec(path, os.Args, os.Environ())
 		},
 	})
+}
+
+const userAgent = "Switcher-updater"
+
+// downloadRelease fetches a release asset and its .sha256 into dir. Files
+// are created fresh, so a partial download can never pass for a whole one.
+func downloadRelease(ctx context.Context, tag, asset, dir string, limit int64) error {
+	if !validTag.MatchString(tag) {
+		return fmt.Errorf("refusing to download malformed release tag %q", tag)
+	}
+	client := &http.Client{}
+	for _, name := range []string{asset + ".sha256", asset} {
+		url := releaseHost + "/" + Repo + "/releases/download/" + tag + "/" + name
+		if err := downloadFile(ctx, client, url, filepath.Join(dir, name), limit); err != nil {
+			return fmt.Errorf("download release: %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func downloadFile(ctx context.Context, client *http.Client, url, dest string, limit int64) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	n, err := io.Copy(f, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return err
+	}
+	if n > limit {
+		return fmt.Errorf("larger than %d bytes", limit)
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // installOps keeps download, process execution, and filesystem fault injection

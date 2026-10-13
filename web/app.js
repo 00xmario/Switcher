@@ -1480,13 +1480,13 @@ async function runUpdateFlow(button) {
     // is definitive and must interrupt both the delay and state polling.
     let installError, fail;
     const failure = new Promise(resolve => { fail = resolve; });
-    api('/api/update', { method: 'POST', timeoutMs: 330000 }).catch(error => {
+    api('/api/update', { method: 'POST', timeoutMs: 660000 }).catch(error => {
       if (error.status || error.name === 'TimeoutError' || authState.locked) {
         installError = error;
         fail();
       }
     });
-    const deadline = Date.now() + 360000;
+    const deadline = Date.now() + 690000;
     while (Date.now() < deadline) {
       await Promise.race([failure, new Promise(resolve => setTimeout(resolve, 1500))]);
       if (installError) throw installError;

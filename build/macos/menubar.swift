@@ -75,6 +75,20 @@ struct UpdateInfo: Codable, Equatable {
     let update_available: Bool?
 }
 
+// AwakeState mirrors the server's keep-awake state (internal/awake).
+struct AwakeState: Codable, Equatable {
+    let supported: Bool
+    let active: Bool
+    var until: Double? = nil
+    var lid_active: Bool? = nil
+    var lid_ready: Bool? = nil
+    var allow_display_sleep: Bool? = nil
+    var lid_closed: Bool? = nil
+    var battery_floor: Int? = nil
+    var ended: String? = nil
+    var error: String? = nil
+}
+
 struct AppState: Codable, Equatable {
     let accounts: [Account]
     let order: [String]?
@@ -83,11 +97,64 @@ struct AppState: Codable, Equatable {
     let update: UpdateInfo?
     let menu_usage_bars: Bool?
     let reset_notifications: Bool?
+    var awake: AwakeState? = nil
 
     func withUpdate(_ info: UpdateInfo) -> AppState {
         AppState(accounts: accounts, order: order, hidden: hidden, version: version,
-            update: info, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications)
+            update: info, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications, awake: awake)
     }
+
+    func withAwake(_ state: AwakeState) -> AppState {
+        AppState(accounts: accounts, order: order, hidden: hidden, version: version,
+            update: update, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications, awake: state)
+    }
+}
+
+// Keep-awake chips: label and minutes, 0 meaning until turned off.
+let awakePresets: [(label: String, minutes: Int)] = [
+    ("15m", 15), ("30m", 30), ("1h", 60), ("2h", 120), ("4h", 240), ("8h", 480), ("∞", 0),
+]
+
+private let awakeTimeFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .none
+    formatter.timeStyle = .short
+    return formatter
+}()
+
+func awakeClock(_ date: Date) -> String { awakeTimeFormatter.string(from: date) }
+
+func awakeStatusText(_ state: AwakeState) -> String {
+    guard state.active else { return "Keep the Mac awake" }
+    guard let until = state.until else { return "Active until you turn it off" }
+    let left = resetRemaining(until) ?? "under a minute"
+    return "Until \(awakeClock(Date(timeIntervalSince1970: until))) · \(left) left"
+}
+
+func awakeLidSubtitle(_ state: AwakeState) -> String {
+    if state.lid_active == true { return "Sleep fully disabled. Mind the power" }
+    if state.lid_closed == true {
+        if !state.active { return "Starts with keep awake" }
+        return (state.error ?? "").isEmpty ? "Sleep is already off, set by another app" : "The closed lid did not apply"
+    }
+    return state.lid_ready == true ? "Closing the lid sleeps the Mac" : "Asks for your password once"
+}
+
+func awakeNotice(_ state: AwakeState) -> String? {
+    if let error = state.error, !error.isEmpty { return error }
+    guard !state.active else { return nil }
+    switch state.ended {
+    case "time": return "Time is up. The Mac sleeps normally again."
+    case "battery": return "Stopped at low battery. The Mac sleeps normally again."
+    default: return nil
+    }
+}
+
+// The next whole hours, for "Until…".
+func awakeUntilChoices(now: Date = Date(), count: Int = 7) -> [Date] {
+    let calendar = Calendar.current
+    guard let hour = calendar.dateInterval(of: .hour, for: now)?.start else { return [] }
+    return (1...count).compactMap { calendar.date(byAdding: .hour, value: $0, to: hour) }
 }
 
 private let resetPrefix = "sh.switcher.reset."
@@ -722,6 +789,46 @@ final class ToggleSwitch: NSView {
     }
 }
 
+// ChipButton is one keep-awake choice: a pill that fills with the accent
+// while it is the running choice.
+final class ChipButton: NSView {
+    var onClicked: (() -> Void)?
+    let title: String
+    let selected: Bool
+
+    init(title: String, selected: Bool, frame: NSRect) {
+        self.title = title
+        self.selected = selected
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = frame.height / 2
+        layer?.backgroundColor = (selected ? accentColor
+            : (palette.dark ? NSColor.white.withAlphaComponent(0.08) : NSColor.black.withAlphaComponent(0.06))).cgColor
+        let text = label(title, font: NSFont.systemFont(ofSize: 12, weight: .medium), color: selected ? .white : inkColor)
+        text.alignment = .center
+        let height = ceil(text.intrinsicContentSize.height)
+        text.frame = NSRect(x: 2, y: (frame.height - height) / 2, width: frame.width - 4, height: height)
+        addSubview(text)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+
+    override func mouseDown(with event: NSEvent) { onClicked?() }
+}
+
+// TapArea turns a group of labels into one clickable control.
+final class TapArea: NSView {
+    var onClicked: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+
+    override func mouseDown(with event: NSEvent) { onClicked?() }
+}
+
 // SpinnerButton shows an SF Symbol in a plain CALayer (so AppKit never
 // resets its anchor point) and spins it around its center while an action
 // runs.
@@ -866,6 +973,36 @@ struct MenuRuntime {
         NSApp.terminate(nil)
         #endif
     }
+    // The version this app was launched as, and the version of the app now
+    // on disk. They differ once an update replaced Switcher.app.
+    var launchedAppVersion: () -> String? = {
+        #if SWITCHER_LAYOUT_TEST
+        return nil
+        #else
+        guard Bundle.main.bundlePath.hasSuffix(".app") else { return nil }
+        return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        #endif
+    }
+    var diskAppVersion: () -> String? = {
+        #if SWITCHER_LAYOUT_TEST
+        return nil
+        #else
+        let url = URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/Info.plist")
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        return plist["CFBundleShortVersionString"] as? String
+        #endif
+    }
+    // relaunchApp opens the app again once this process has exited.
+    var relaunchApp: () -> Void = {
+        #if !SWITCHER_LAYOUT_TEST
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$0\"",
+            Bundle.main.bundlePath, String(ProcessInfo.processInfo.processIdentifier)]
+        try? process.run()
+        #endif
+    }
 }
 
 func menuHTTPResult(_ data: Data?, response: URLResponse?, error: Error?) -> Result<Data, Error> {
@@ -933,6 +1070,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var updateActionRunning = false
     private var updateGeneration = 0
     private var menuActionMessage = ""
+    private var awakeBusy = false
+    private var awakeChoice: String?        // the chip that started the running session
+    private var awakeShowingTimes = false   // "Until…" shows clock times instead of durations
+    private var awakeOptionsOpen = false
+    private var awakeStatusLabel: NSTextField?
+    private var relaunching = false
+    private var terminationSignal: DispatchSourceSignal?
 
     init(runtime: MenuRuntime = MenuRuntime()) {
         self.runtime = runtime
@@ -977,6 +1121,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if !SWITCHER_LAYOUT_TEST
         UNUserNotificationCenter.current().delegate = self
+        // The updater stops the app with SIGTERM before opening the new one.
+        // Quit properly, so the owned server stops and restores sleep.
+        signal(SIGTERM, SIG_IGN)
+        let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        termination.setEventHandler { [weak self] in self?.quit() }
+        termination.resume()
+        terminationSignal = termination
         ensureServerRunning()
         do {
             restoreResetLedger(try runtime.loadLedger())
@@ -1037,6 +1188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             label.stringValue = text
             label.toolTip = exactResetTime(reset)
         }
+        refreshAwakeStatus()
     }
 
     // Compare only the data the menu actually decodes. Health timestamps and
@@ -1053,6 +1205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
               previous.version == state.version, previous.update == state.update,
               previous.menu_usage_bars == state.menu_usage_bars,
               previous.reset_notifications == state.reset_notifications,
+              previous.awake == state.awake,
               palette.dark == Palette.current().dark else { rebuildMenu(); return }
         let oldProviders = Set(previous.accounts.map(\.provider))
         let newProviders = Set(state.accounts.map(\.provider))
@@ -1092,11 +1245,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         hoverTimer?.invalidate()
         hoverTimer = nil
         hoverCards.forEach { $0.clearHover() }
+        // The menu opens on durations again, not on a half-made time choice.
+        if awakeShowingTimes {
+            awakeShowingTimes = false
+            rebuildMenu()
+        }
     }
 
     func pollHover() {
         let point = NSEvent.mouseLocation
         hoverCards.forEach { $0.updateHover(screenPoint: point) }
+        refreshAwakeStatus()
+    }
+
+    // The keep-awake countdown changes without new server data.
+    private func refreshAwakeStatus() {
+        guard let label = awakeStatusLabel, let awake = cachedState?.awake else { return }
+        let text = awakeStatusText(awake)
+        if label.stringValue != text { label.stringValue = text }
     }
 
     // fetchStateAsync refreshes the cache off the main thread. The menu is
@@ -1128,10 +1294,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
-    private func makeRequest(path: String, method: String = "GET", timeout: TimeInterval = 5) -> URLRequest {
+    private func makeRequest(path: String, method: String = "GET", body: [String: Any]? = nil,
+                             timeout: TimeInterval = 5) -> URLRequest {
         var request = URLRequest(url: hubURL.appendingPathComponent(path))
         request.httpMethod = method
         request.timeoutInterval = timeout
+        if let body = body, let data = try? JSONSerialization.data(withJSONObject: body) {
+            request.httpBody = data
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         if let token = runtime.deviceToken() { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         return request
     }
@@ -1157,6 +1328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             guard self.acceptStateResponse(decoded, serial: serial) else { return }
             if self.menuOpen { self.prepareMenuForOpening() }
             self.updateResetAlerts()
+            self.relaunchIfReplaced()
         }
     }
 
@@ -1315,9 +1487,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
-    func post(path: String, timeout: TimeInterval = 90, completion: @escaping (Result<Data, Error>) -> Void) {
+    func post(path: String, method: String = "POST", body: [String: Any]? = nil, timeout: TimeInterval = 90,
+              completion: @escaping (Result<Data, Error>) -> Void) {
         func attempt(retry: Bool) {
-            let request = makeRequest(path: path, method: "POST", timeout: timeout)
+            let request = makeRequest(path: path, method: method, body: body, timeout: timeout)
             performRequest(request) { [weak self] data, response, error in
                 guard let self = self, !self.quitting else { return }
                 if retry, (response as? HTTPURLResponse)?.statusCode == 401,
@@ -1423,6 +1596,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 providerHovers[providerID] = card as? HoverCard
                 menu.addItem(item)
             }
+        }
+
+        awakeStatusLabel = nil
+        if let awake = state?.awake, awake.supported {
+            menu.addItem(menuItemWithView(spacerView(height: 12)))
+            menu.addItem(menuItemWithView(awakeHead(contentWidth: contentWidth)))
+            menu.addItem(menuItemWithView(centered(awakeCard(awake, contentWidth: contentWidth))))
         }
 
         menu.addItem(.separator())
@@ -1643,6 +1823,247 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         return rowTopPad + titleHeight + selectionBlock + usageBlock + rowBottomPad
     }
 
+    // MARK: keep awake
+
+    func awakeHead(contentWidth: CGFloat) -> NSView {
+        let head = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 32))
+        let icon = NSImageView(frame: NSRect(x: edgeInset, y: 5, width: 22, height: 22))
+        icon.image = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+        icon.contentTintColor = inkColor
+        head.addSubview(icon)
+        let name = label("Keep awake", font: NSFont.systemFont(ofSize: 13, weight: .semibold), color: inkColor)
+        name.frame = NSRect(x: edgeInset + 22 + 10, y: 8, width: contentWidth - 32, height: 16)
+        head.addSubview(name)
+        return head
+    }
+
+    // The chip that matches the running session, if any.
+    func selectedAwakeChip(_ state: AwakeState) -> String? {
+        guard state.active else { return nil }
+        if state.until == nil { return "∞" }
+        return awakeChoice == "∞" ? nil : awakeChoice
+    }
+
+    func awakeCard(_ state: AwakeState, contentWidth: CGFloat) -> NSView {
+        let inner = contentWidth - 2 * cardInset
+        let chipGap: CGFloat = 8, chipHeight: CGFloat = 26
+        let chipWidth = floor((inner - 3 * chipGap) / 4)
+        let notice = awakeNotice(state)
+        // Heights, top to bottom.
+        let top: CGFloat = 12, status: CGFloat = 24, chips = 2 * chipHeight + chipGap, hint: CGFloat = 14,
+            options: CGFloat = 22, option: CGFloat = 30, lid: CGFloat = 34, bottom: CGFloat = 12
+        var height = top + status + 12 + chips + 8 + hint + 8 + options
+        if awakeOptionsOpen { height += 2 * option }
+        height += 10 + 1 + 10 + lid
+        if notice != nil { height += 6 + 28 }
+        height += bottom
+        let card = cardView(width: contentWidth, height: height)
+        var y = height - top
+
+        // Status line and the main switch: on means until turned off.
+        y -= status
+        let statusField = label(awakeStatusText(state), font: NSFont.systemFont(ofSize: 13), color: inkColor)
+        statusField.frame = NSRect(x: cardInset, y: y + 4, width: inner - 48, height: 17)
+        card.addSubview(statusField)
+        awakeStatusLabel = statusField
+        let main = ToggleSwitch(isOn: state.active)
+        main.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: y)
+        main.onChanged = { [weak self] on in
+            if on { self?.startAwake(minutes: 0, choice: "∞") } else { self?.stopAwake() }
+        }
+        card.addSubview(main)
+        y -= 12
+
+        // Two rows of four chips: durations, or clock times for "Until…".
+        let selected = selectedAwakeChip(state)
+        var chipSpecs: [(String, Bool, () -> Void)] = []
+        if awakeShowingTimes {
+            for date in awakeUntilChoices() {
+                let title = awakeClock(date)
+                chipSpecs.append((title, false, { [weak self] in
+                    self?.awakeShowingTimes = false
+                    self?.startAwake(until: date)
+                }))
+            }
+            chipSpecs.append(("Back", false, { [weak self] in
+                self?.awakeShowingTimes = false
+                self?.rebuildMenu()
+            }))
+        } else {
+            for preset in awakePresets {
+                let isOn = selected == preset.label
+                chipSpecs.append((preset.label, isOn, { [weak self] in
+                    if isOn { self?.stopAwake() } else { self?.startAwake(minutes: preset.minutes, choice: preset.label) }
+                }))
+            }
+            let untilOn = selected == "until"
+            chipSpecs.append(("Until…", untilOn, { [weak self] in
+                if untilOn { self?.stopAwake(); return }
+                self?.awakeShowingTimes = true
+                self?.rebuildMenu()
+            }))
+        }
+        for (index, spec) in chipSpecs.enumerated() {
+            let row = CGFloat(index / 4), column = CGFloat(index % 4)
+            let frame = NSRect(x: cardInset + column * (chipWidth + chipGap),
+                               y: y - chipHeight - row * (chipHeight + chipGap), width: chipWidth, height: chipHeight)
+            let chip = ChipButton(title: spec.0, selected: spec.1, frame: frame)
+            chip.onClicked = spec.2
+            card.addSubview(chip)
+        }
+        y -= chips + 8
+
+        y -= hint
+        let hintField = label(awakeShowingTimes ? "Keep the Mac awake until this time" : "Click a chip to start. Click it again to stop",
+            font: NSFont.systemFont(ofSize: 11), color: dimColor)
+        hintField.frame = NSRect(x: cardInset, y: y, width: inner, height: hint)
+        card.addSubview(hintField)
+        y -= 8
+
+        // Options disclosure.
+        y -= options
+        let disclosure = TapArea(frame: NSRect(x: cardInset - 4, y: y, width: inner + 8, height: options))
+        let chevron = NSImageView(frame: NSRect(x: 4, y: 5, width: 12, height: 12))
+        chevron.image = NSImage(systemSymbolName: awakeOptionsOpen ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        chevron.contentTintColor = dimColor
+        disclosure.addSubview(chevron)
+        let optionsField = label("Options", font: NSFont.systemFont(ofSize: 12.5, weight: .medium), color: dimColor)
+        optionsField.frame = NSRect(x: 22, y: 3, width: 120, height: 16)
+        disclosure.addSubview(optionsField)
+        disclosure.onClicked = { [weak self] in
+            guard let self = self else { return }
+            self.awakeOptionsOpen.toggle()
+            self.rebuildMenu()
+        }
+        card.addSubview(disclosure)
+        if awakeOptionsOpen {
+            let floor = state.battery_floor ?? 10
+            let rows: [(String, Bool, (Bool) -> Void)] = [
+                ("Allow the display to sleep", state.allow_display_sleep == true,
+                 { [weak self] on in self?.patchAwake(["allow_display_sleep": on]) }),
+                ("Stop below \(floor > 0 ? floor : 10)% battery", floor > 0,
+                 { [weak self] on in self?.patchAwake(["battery_floor": on ? 10 : 0]) }),
+            ]
+            for row in rows {
+                y -= option
+                let field = label(row.0, font: NSFont.systemFont(ofSize: 12.5), color: inkColor)
+                field.frame = NSRect(x: cardInset, y: y + 7, width: inner - 50, height: 16)
+                card.addSubview(field)
+                let toggle = ToggleSwitch(isOn: row.1)
+                toggle.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: y + 3)
+                toggle.onChanged = row.2
+                card.addSubview(toggle)
+            }
+        }
+
+        y -= 10 + 1
+        let divider = NSView(frame: NSRect(x: cardInset, y: y, width: inner, height: 1))
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = cardBorderColor.cgColor
+        card.addSubview(divider)
+        y -= 10
+
+        // Keep going with the lid closed.
+        y -= lid
+        let lidTitle = label("Keep going with the lid closed", font: NSFont.systemFont(ofSize: 13), color: inkColor)
+        lidTitle.frame = NSRect(x: cardInset, y: y + 17, width: inner - 48, height: 17)
+        card.addSubview(lidTitle)
+        let lidSub = label(awakeLidSubtitle(state), font: NSFont.systemFont(ofSize: 11), color: dimColor)
+        lidSub.frame = NSRect(x: cardInset, y: y + 1, width: inner - 48, height: 14)
+        lidSub.toolTip = lidSub.stringValue
+        card.addSubview(lidSub)
+        let lidToggle = ToggleSwitch(isOn: state.lid_closed == true)
+        lidToggle.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: y + 5)
+        lidToggle.onChanged = { [weak self] on in self?.setLidClosed(on, ready: state.lid_ready == true) }
+        card.addSubview(lidToggle)
+
+        if let notice = notice {
+            y -= 6 + 28
+            let field = label(notice, font: NSFont.systemFont(ofSize: 11), color: warnColor)
+            field.maximumNumberOfLines = 2
+            field.lineBreakMode = .byWordWrapping
+            field.toolTip = notice
+            field.frame = NSRect(x: cardInset, y: y, width: inner, height: 28)
+            card.addSubview(field)
+        }
+        return card
+    }
+
+    func startAwake(minutes: Int, choice: String) {
+        sendAwake(["on": true, "minutes": minutes], choice: choice)
+    }
+
+    func startAwake(until: Date) {
+        sendAwake(["on": true, "until": Int(until.timeIntervalSince1970)], choice: "until")
+    }
+
+    func stopAwake() {
+        sendAwake(["on": false], choice: nil)
+    }
+
+    private func sendAwake(_ body: [String: Any], choice: String?) {
+        guard !quitting, !awakeBusy else { return }
+        awakeBusy = true
+        post(path: "api/awake", body: body, timeout: 20) { [weak self] result in
+            guard let self = self else { return }
+            self.awakeBusy = false
+            if case .success = result { self.awakeChoice = choice }
+            self.applyAwakeResult(result, title: "Could not change keep awake")
+        }
+    }
+
+    func patchAwake(_ body: [String: Any]) {
+        guard !quitting, !awakeBusy else { return }
+        awakeBusy = true
+        post(path: "api/awake", method: "PATCH", body: body, timeout: 20) { [weak self] result in
+            guard let self = self else { return }
+            self.awakeBusy = false
+            self.applyAwakeResult(result, title: "Could not change keep awake")
+        }
+    }
+
+    // The first closed-lid use shows macOS's administrator prompt. The menu
+    // closes so the prompt has focus.
+    func setLidClosed(_ on: Bool, ready: Bool) {
+        guard !quitting, !awakeBusy else { return }
+        awakeBusy = true
+        let prompts = on && !ready
+        if prompts {
+            menu.cancelTracking()
+            menuActionMessage = "Waiting for the administrator password…"
+            rebuildMenu()
+        }
+        post(path: "api/awake", method: "PATCH", body: ["lid_closed": on], timeout: prompts ? 330 : 20) { [weak self] result in
+            guard let self = self else { return }
+            self.awakeBusy = false
+            if prompts { self.menuActionMessage = "" }
+            if case .failure(let error) = result, error.localizedDescription.contains("not entered") {
+                self.menuActionMessage = "The closed lid needs the administrator password once"
+                self.fetchStateAsync()
+                return
+            }
+            self.applyAwakeResult(result, title: "Could not set up the closed lid")
+        }
+    }
+
+    private func applyAwakeResult(_ result: Result<Data, Error>, title: String) {
+        switch result {
+        case .success(let data):
+            if let awake = try? JSONDecoder().decode(AwakeState.self, from: data), let state = cachedState {
+                if !awake.active { awakeChoice = nil }
+                cachedState = state.withAwake(awake)
+            }
+            rebuildMenu()
+            fetchStateAsync()
+        case .failure(let error):
+            runtime.showError(title, error.localizedDescription)
+            rebuildMenu()
+            fetchStateAsync()
+        }
+    }
+
     // MARK: actions
 
     func activateAccount(_ account: Account) {
@@ -1751,9 +2172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         updateGeneration += 1
         let generation = updateGeneration
         let oldVersion = cachedState?.version
-        menuActionMessage = install ? "Installing update…" : "Checking for updates…"
+        menuActionMessage = install ? "Installing update… Switcher restarts by itself" : "Checking for updates…"
         rebuildMenu()
-        post(path: install ? "api/update" : "api/update/check", timeout: install ? 330 : 30) { [weak self] result in
+        post(path: install ? "api/update" : "api/update/check", timeout: install ? 660 : 30) { [weak self] result in
             guard let self = self else { return }
             if install {
                 if case .failure(let error) = result, (error as NSError).domain == "SwitcherHTTP" {
@@ -1808,7 +2229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                    let state = try? JSONDecoder().decode(AppState.self, from: data),
                    let version = state.version, version != oldVersion {
                     self.updateActionRunning = false
-                    self.menuActionMessage = "Updated server to \(version)"
+                    self.menuActionMessage = "Updated to \(version)"
                     _ = self.acceptStateResponse(state, serial: serial)
                     self.rebuildMenu()
                 } else {
@@ -1862,6 +2283,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc func quit() {
         stopOwnedServerForQuit()
         runtime.terminateApplication()
+    }
+
+    // An update replaced Switcher.app while this process kept running the
+    // old code. Reopen from disk, which also restarts an owned server.
+    func relaunchIfReplaced() {
+        guard !quitting, !relaunching, let launched = runtime.launchedAppVersion(),
+              let disk = runtime.diskAppVersion(), disk != launched else { return }
+        relaunching = true
+        NSLog("Switcher %@ was replaced by %@ on disk; relaunching", launched, disk)
+        runtime.relaunchApp()
+        quit()
     }
 
     func startAtLoginEnabled() -> Bool {

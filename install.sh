@@ -36,7 +36,6 @@ stop_switcher() {
 
 main() {
 	[ "$(uname -s)" = Darwin ] || fail "The Switcher app is for macOS. On Linux, download switcher-server from https://github.com/$repo/releases"
-	[ "$(uname -m)" = arm64 ] || fail "The Switcher app needs a Mac with Apple silicon."
 
 	tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
 	[ -n "$tag" ] || fail "Could not find the latest Switcher release."
@@ -61,6 +60,11 @@ main() {
 	fi
 	hdiutil attach -quiet -nobrowse -readonly -mountpoint "$tmp/mnt" "$tmp/$dmg"
 	[ -d "$tmp/mnt/Switcher.app" ] || fail "The download contains no Switcher.app; nothing was installed."
+	# Older releases were built for Apple silicon only.
+	arch=$(uname -m)
+	# file, not lipo: lipo needs the developer tools, which most Macs lack.
+	/usr/bin/file -b "$tmp/mnt/Switcher.app/Contents/MacOS/Switcher" | grep -qw "$arch" ||
+		fail "Switcher $version does not run on this Mac ($arch); nothing was installed."
 	if [ -d "$apps/Switcher.app" ]; then
 		stop_switcher "$apps/Switcher.app"
 		rm -rf "$apps/Switcher.app"

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"switcher/internal/awake"
 	"switcher/internal/claudesync"
 	"switcher/internal/codexcfg"
 	"switcher/internal/config"
@@ -60,9 +61,11 @@ type API struct {
 	ManagementKey         string
 	Version               string
 	Updater               UpdateChecker
-	Usage                 *usage.Service
-	Settings              *settings.Store
-	Port                  int
+	// Awake keeps the Mac awake on demand; nil or unsupported off macOS.
+	Awake    *awake.Manager
+	Usage    *usage.Service
+	Settings *settings.Store
+	Port     int
 	// RemoteHost shares this Switcher's accounts with paired devices;
 	// RemoteClient uses another Switcher's. Either may be nil.
 	RemoteHost        *remote.Host
@@ -121,6 +124,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/accounts/{id}", a.handleAccountPatch)
 	mux.HandleFunc("POST /api/update", a.handleUpdate)
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
+	a.registerAwakeRoutes(mux)
 	mux.HandleFunc("PATCH /api/providers/order", a.handleProviderOrder)
 	mux.HandleFunc("POST /api/providers/{id}/hide", a.handleProviderHide)
 	mux.HandleFunc("POST /api/providers/{id}/show", a.handleProviderShow)
@@ -617,6 +621,9 @@ func (a *API) LocalStateFields(r *http.Request) map[string]any {
 		"compact_accounts":    preferences.CompactAccounts,
 		"merge_accounts":      preferences.MergeAccounts,
 		"desktop_relay":       a.desktopRelayStatus(),
+	}
+	if state, ok := a.awakeState(); ok {
+		fields["awake"] = state
 	}
 	// Only local browsers receive the independent management key. Devices
 	// and LAN sessions receive public state without another control authority.
@@ -1310,9 +1317,10 @@ func (a *API) UpdateState() update.State {
 	return a.Updater.State()
 }
 
-// handleUpdate installs the latest release and restarts in place. The
-// exec-restart replaces the process image, so the response may never
-// reach the client; the UI polls /api/state until the new version shows.
+// handleUpdate installs the latest release and restarts. A plain binary
+// exec-restarts in place, so the response may never reach the client; the
+// app answers first and is restarted a moment later. Either way the UI polls
+// /api/state until the new version shows.
 func (a *API) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if a.Updater == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "updates unavailable"})
@@ -1322,7 +1330,6 @@ func (a *API) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	// Unreachable: InstallAndRestart never returns on success.
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

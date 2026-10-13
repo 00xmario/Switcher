@@ -36,6 +36,7 @@ import (
 	"syscall"
 	"time"
 
+	"switcher/internal/awake"
 	"switcher/internal/codexcfg"
 	"switcher/internal/config"
 	"switcher/internal/desktoprelay"
@@ -321,6 +322,8 @@ func run(port, desktopRelayPort int) {
 	mgmtAPI := &mgmtapi.API{Store: st, Proxy: proxyManager, Logins: logins, ManagementKey: managementKey}
 
 	updater := update.New(version)
+	keepAwake := awake.New(config.Dir())
+	defer keepAwake.Close()
 
 	// Background usage sync: the server owns freshness, so the web UI and
 	// the menu bar always agree without waiting for a client to poll.
@@ -357,7 +360,7 @@ func run(port, desktopRelayPort int) {
 		Store: st, Logins: logins, Proxy: proxyManager, Providers: providers,
 		DesktopRelay: desktopRelay, DesktopSettingsPath: desktopSettingsPath(),
 		DesktopSessionMetadata: metadataIndex,
-		ManagementKey:          managementKey, Version: version, Updater: updater, Usage: usageService,
+		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient,
 	}
 

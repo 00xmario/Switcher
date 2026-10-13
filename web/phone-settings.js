@@ -23,16 +23,22 @@ function ago(value, now) {
 
 const spinner = text => `<span class="phone-wait"><i class="phone-spin" aria-hidden="true"></i>${text}</span>`;
 
-// mockHTML is the phone in the hero: Switcher's phone page in miniature.
+// mockHTML is the phone in the hero: Switcher's phone page in miniature,
+// drawn like the page itself: a provider head, one card, compact usage lines.
 function mockHTML() {
+  const usage = (width, delay) => `<div class="pm-usage"><i class="pm-label"></i><span class="pm-bar"><i style="--w:${width};--d:${delay}"></i></span><i class="pm-value"></i></div>`;
   return `<div class="phone-mock" aria-hidden="true">
     <div class="pm-island"></div>
     <div class="pm-screen">
       <div class="pm-top">${switcherMark({ tile: true, size: 18, id: 'pm-mark' })}<b>Switcher</b></div>
-      <div class="pm-card is-active"><div class="pm-line"><i class="pm-email"></i><span class="pm-pill">In use</span></div>
-        <div class="pm-bar"><i style="--w:68%"></i></div><div class="pm-bar"><i style="--w:34%;--d:.3s"></i></div></div>
-      <div class="pm-card"><div class="pm-line"><i class="pm-email is-short"></i></div><div class="pm-bar"><i style="--w:88%;--d:.6s"></i></div></div>
-      <div class="pm-reset">Use banked reset <b>2</b></div>
+      <div class="pm-head"><i class="pm-logo"></i><b>Claude</b></div>
+      <div class="pm-card">
+        <div class="pm-row is-active"><div class="pm-line"><i class="pm-email"></i><i class="pm-plan"></i><span class="pm-check">✓</span></div>
+          ${usage('66%', '0s')}${usage('39%', '.3s')}</div>
+        <div class="pm-row"><div class="pm-line"><i class="pm-email is-short"></i><i class="pm-plan"></i><span class="pm-use">Use</span></div>
+          ${usage('88%', '.6s')}</div>
+      </div>
+      <div class="pm-reset">Use banked reset</div>
     </div>
   </div>`;
 }

@@ -59,6 +59,10 @@ with the most usage left. Errors and limits are the provider's own.
 - **A command line for you and your agents.** Switch, sign in, share between
   Macs and set up Claude Desktop from a terminal or over SSH, with JSON output
   and stable exit codes.
+- **Keep awake for long runs.** From the menu bar, keep the Mac awake for
+  15 minutes up to 8 hours, until a set time or until you turn it off, even
+  with the lid closed. Sleep comes back by itself when time is up, when the
+  battery runs low or when Switcher quits.
 - **Costs and tokens.** A Usage tab reads your CLIs' own session logs and
   prices them, per day, provider and model.
 - **Claude Desktop per conversation.** Optional: pick an account for
@@ -108,9 +112,18 @@ clear the flag once with:
 xattr -dr com.apple.quarantine /Applications/Switcher.app
 ```
 
-Switcher lives in the menu bar and serves its dashboard on
-<http://127.0.0.1:8787>. Turn on **Start at login** in its menu to keep it
-around. To build from source (Go 1.27+): `make install`.
+Switcher runs on macOS 13 or later, on Apple silicon and Intel Macs. It
+lives in the menu bar and serves its dashboard on <http://127.0.0.1:8787>.
+Turn on **Start at login** in its menu to keep it around. To build from
+source (Go 1.27+): `make install`.
+
+**Updates.** *Install update* in the menu or the dashboard downloads the new
+release straight from GitHub, checks it and replaces the whole app, then
+Switcher restarts by itself. No GitHub account or command-line tools are
+needed. If Switcher sits in a folder you cannot change, such as Applications
+on a standard account, macOS asks for an administrator password. Versions
+up to 1.11 updated through the GitHub CLI and fail on Macs without it;
+update those once with the install script above.
 
 ## Quick start
 
@@ -175,6 +188,14 @@ The full matrix, including what is verified per native CLI, is in
 - The phone page is reachable only inside your tailnet, only from your own
   Tailscale devices, and only for phones you approve on the Mac; sessions
   are bound to the phone. See [phone](docs/phone.md).
+- Keeping the Mac running with the lid closed needs root once: an
+  administrator approves a sudoers rule, checked with `visudo`, that lets
+  your user run only `pmset disablesleep 1` and `pmset disablesleep 0`
+  (`/etc/sudoers.d/switcher_lid_<user>`). Switcher turns sleep back on when
+  keep awake ends and never undoes a sleep setting another app made.
+- Updates come only from this repository's GitHub releases over HTTPS. The
+  download must match its published SHA-256, and the new app's version,
+  signature and server must check out before it replaces the old one.
 - An optional dashboard password and an opt-in TLS LAN listener are in
   Settings. The full model is in [details](docs/details.md#security-model).
 

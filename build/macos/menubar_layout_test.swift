@@ -150,11 +150,137 @@ func runMenuActionRegressionFixtures() {
     print("Native update check, refresh errors, unknown reset ledger, bounded owned recovery, and deliberate quit: OK")
 }
 
+// Keep awake: chips start and stop sessions, the lid toggle patches the
+// setting, and a replaced app relaunches itself.
+func runKeepAwakeFixtures() {
+    var requests: [URLRequest] = []
+    var completions: [(Data?, URLResponse?, Error?) -> Void] = []
+    func response(_ status: Int) -> HTTPURLResponse {
+        HTTPURLResponse(url: URL(string: "https://fixture.invalid/awake")!, statusCode: status,
+            httpVersion: nil, headerFields: nil)!
+    }
+    func json(_ request: URLRequest) -> [String: Any] {
+        guard let body = request.httpBody,
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return [:] }
+        return object
+    }
+    func views<T: NSView>(_ type: T.Type, in menu: NSMenu) -> [T] {
+        func walk(_ view: NSView) -> [T] { ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap(walk) }
+        return menu.items.compactMap(\.view).flatMap(walk)
+    }
+    func texts(in menu: NSMenu) -> [String] { views(NSTextField.self, in: menu).map(\.stringValue) }
+    // Answers the newest keep-awake request; state refreshes stay pending.
+    func answerAwake(_ body: String) {
+        guard let index = requests.lastIndex(where: { $0.url?.path == "/api/awake" }) else { fail("No keep-awake request to answer") }
+        let completion = completions[index]
+        requests.remove(at: index); completions.remove(at: index)
+        completion(Data(body.utf8), response(200), nil)
+    }
+    func chip(_ title: String, in menu: NSMenu) -> ChipButton {
+        guard let chip = views(ChipButton.self, in: menu).first(where: { $0.title == title }) else {
+            fail("Keep-awake chip \(title) missing")
+        }
+        return chip
+    }
+
+    var runtime = MenuRuntime()
+    runtime.request = { request, completion in requests.append(request); completions.append(completion) }
+    runtime.deviceToken = { "fixture-device-token" }
+    let delegate = AppDelegate(runtime: runtime)
+    let off = AwakeState(supported: true, active: false, lid_ready: false, allow_display_sleep: false,
+        lid_closed: false, battery_floor: 10)
+    delegate.applyMenuState(AppState(accounts: [], order: [], hidden: [], version: "fixture-1",
+        update: nil, menu_usage_bars: true, reset_notifications: false, awake: off))
+    guard texts(in: delegate.menu).contains("Keep awake"),
+          texts(in: delegate.menu).contains("Keep the Mac awake"),
+          texts(in: delegate.menu).contains("Keep going with the lid closed"),
+          texts(in: delegate.menu).contains("Asks for your password once"),
+          views(ChipButton.self, in: delegate.menu).map(\.title) == ["15m", "30m", "1h", "2h", "4h", "8h", "∞", "Until…"] else {
+        fail("Keep-awake section is incomplete: \(texts(in: delegate.menu))")
+    }
+
+    chip("1h", in: delegate.menu).onClicked?()
+    guard requests.count == 1, requests[0].url?.path == "/api/awake", requests[0].httpMethod == "POST",
+          json(requests[0])["on"] as? Bool == true, json(requests[0])["minutes"] as? Int == 60,
+          requests[0].value(forHTTPHeaderField: "Content-Type") == "application/json" else {
+        fail("A duration chip must start keep awake for its minutes")
+    }
+    let until = Date().addingTimeInterval(3600).timeIntervalSince1970
+    answerAwake(#"{"supported":true,"active":true,"until":\#(until),"lid_ready":false,"battery_floor":10}"#)
+    guard chip("1h", in: delegate.menu).selected, !chip("∞", in: delegate.menu).selected,
+          texts(in: delegate.menu).contains(where: { $0.hasPrefix("Until ") && $0.hasSuffix("left") }) else {
+        fail("A running timed session must show its chip and the time left")
+    }
+    requests.removeAll(); completions.removeAll()
+    chip("1h", in: delegate.menu).onClicked?()
+    guard requests.count == 1, json(requests[0])["on"] as? Bool == false else {
+        fail("Clicking the running chip again must stop keep awake")
+    }
+    answerAwake(#"{"supported":true,"active":false,"lid_ready":false,"battery_floor":10}"#)
+    guard !views(ChipButton.self, in: delegate.menu).contains(where: \.selected) else { fail("A stopped session kept a chip lit") }
+
+    requests.removeAll(); completions.removeAll()
+    chip("Until…", in: delegate.menu).onClicked?()
+    let times = views(ChipButton.self, in: delegate.menu).map(\.title)
+    guard requests.isEmpty, times.count == 8, times.last == "Back" else {
+        fail("Until… must offer seven clock times and Back, without a request: \(times)")
+    }
+    chip(times[0], in: delegate.menu).onClicked?()
+    guard requests.count == 1, let at = json(requests[0])["until"] as? Int, at > Int(Date().timeIntervalSince1970) else {
+        fail("A clock time must start keep awake until that time")
+    }
+    answerAwake(#"{"supported":true,"active":false,"lid_ready":false,"battery_floor":10}"#)
+    requests.removeAll(); completions.removeAll()
+
+    guard let lidTitle = views(NSTextField.self, in: delegate.menu).first(where: { $0.stringValue == "Keep going with the lid closed" }),
+          let lid = lidTitle.superview?.subviews.compactMap({ $0 as? ToggleSwitch }).last else { fail("Lid toggle missing") }
+    lid.isOn = true
+    lid.onChanged?(true)
+    guard requests.count == 1, requests[0].httpMethod == "PATCH", json(requests[0])["lid_closed"] as? Bool == true,
+          requests[0].timeoutInterval > 60 else {
+        fail("The first closed-lid use must patch the setting and wait for the password prompt")
+    }
+    answerAwake(#"{"supported":true,"active":true,"lid_active":true,"lid_ready":true,"lid_closed":true}"#)
+    guard texts(in: delegate.menu).contains("Sleep fully disabled. Mind the power"),
+          texts(in: delegate.menu).contains("Active until you turn it off"),
+          chip("∞", in: delegate.menu).selected else {
+        fail("An active closed lid must warn about power")
+    }
+    guard awakeNotice(AwakeState(supported: true, active: false, ended: "battery"))?.contains("low battery") == true,
+          awakeNotice(AwakeState(supported: true, active: true, ended: "battery")) == nil else {
+        fail("Keep-awake endings were not explained")
+    }
+
+    // Unsupported servers show no section.
+    delegate.applyMenuState(AppState(accounts: [], order: [], hidden: [], version: "fixture-1",
+        update: nil, menu_usage_bars: true, reset_notifications: false, awake: nil))
+    guard !texts(in: delegate.menu).contains("Keep awake") else { fail("Keep awake shown without support") }
+
+    var relaunches = 0, terminations = 0
+    var replaced = MenuRuntime()
+    replaced.launchedAppVersion = { "1.11.0" }
+    replaced.diskAppVersion = { "1.12.0" }
+    replaced.relaunchApp = { relaunches += 1 }
+    replaced.terminateApplication = { terminations += 1 }
+    let old = AppDelegate(runtime: replaced)
+    old.relaunchIfReplaced()
+    old.relaunchIfReplaced()
+    guard relaunches == 1, terminations == 1 else { fail("A replaced app must relaunch exactly once") }
+    var current = MenuRuntime()
+    current.launchedAppVersion = { "1.12.0" }
+    current.diskAppVersion = { "1.12.0" }
+    current.relaunchApp = { relaunches += 1 }
+    AppDelegate(runtime: current).relaunchIfReplaced()
+    guard relaunches == 1 else { fail("An unchanged app must not relaunch") }
+    print("Keep awake chips, closed lid, and relaunch after update: OK")
+}
+
 @main
 struct MenuBarLayoutTest {
     static func main() {
         _ = NSApplication.shared
         runMenuActionRegressionFixtures()
+        runKeepAwakeFixtures()
         guard planNames["free"] == "Free" else { fail("Free accounts must not display a paid tier") }
         guard planNames["claude_max_5x"] == "Max 5x",
               planNames["claude_max_20x"] == "Max 20x",
