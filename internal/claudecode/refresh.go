@@ -62,7 +62,7 @@ func (m *Manager) refreshNativeLocked(ctx context.Context, a *store.Account, cur
 	grantCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	if err := grant(grantCtx, a); err != nil {
-		if errors.Is(err, ErrGrantRejected) {
+		if grantSettled(err) {
 			_ = writePrivate(m.intentPath(a.ID), fileValue{})
 		}
 		return err

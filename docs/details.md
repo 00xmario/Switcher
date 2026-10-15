@@ -129,14 +129,14 @@ required; OpenCode Go uses its own API key.
   Claude Desktop and Codex, and change settings from a terminal, over SSH or
   for an agent, with `--json` output and stable exit codes. See
   [the command line](cli.md).
-- **Claude Desktop account switching (optional, off by default)**: in
-  Settings → Claude Desktop you can pick a Switcher account for individual
-  Desktop Code conversations. Connect once (**Connect Claude Desktop**, then
-  restart Desktop when your work is done); after that, switching is one click
-  and never needs a restart. Conversations you don't pick keep Desktop's login. New
-  messages use the picked account; replies already running finish where they
-  started. The Switcher mark, the default option, keeps the account Desktop is
-  signed in to. A local
+- **Claude Desktop account switching (optional, off by default)**: connect
+  once in Settings → Claude Desktop (**Connect Claude Desktop**, then restart
+  Desktop when your work is done). After that, Desktop's Code conversations use
+  the Claude account selected in Switcher and switch with it, never needing a
+  restart. You can also pick an account for one conversation to keep it there.
+  New messages use the new account; replies already running finish where they
+  started. The Switcher mark, the default option, follows Switcher's
+  selection. A local
   relay swaps only the OAuth token (plus the matching OAuth beta and
   `account_uuid`); errors and rate limits are Anthropic's own, except that a
   conversation whose account runs out of usage moves to another account. **Disconnect**

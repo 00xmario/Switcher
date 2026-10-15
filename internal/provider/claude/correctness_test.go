@@ -2,7 +2,9 @@ package claude
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"switcher/internal/claudecode"
+	"switcher/internal/provider"
 	"switcher/internal/store"
 )
 
@@ -196,5 +199,58 @@ func TestRefreshAfter401ForcesOnlyRejectedNativeGeneration(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// An account fenced by an unknown refresh outcome needs a new sign-in. It must
+// read as a relogin, not as a busy native login, and never call the endpoint.
+func TestFencedRefreshRequiresRelogin(t *testing.T) {
+	home, data := t.TempDir(), t.TempDir()
+	paths := claudecode.Paths{Home: home, ConfigHome: filepath.Join(home, ".claude"), ConfigFile: filepath.Join(home, ".claude.json"), CredentialsFile: filepath.Join(home, ".claude", ".credentials.json"), Service: "Claude Code-credentials"}
+	active := claudecode.Identity{UUID: "active-user", Email: "active@example.test", OrganizationUUID: "fixture-org"}
+	fenced := claudecode.Identity{UUID: "fenced-user", Email: "fenced@example.test", OrganizationUUID: "fixture-org"}
+	credential := func(access, refresh string, expires int64) []byte {
+		value, _ := json.Marshal(map[string]any{"claudeAiOauth": map[string]any{"accessToken": access, "refreshToken": refresh, "expiresAt": expires}})
+		return value
+	}
+	identityJSON, _ := json.Marshal(fenced)
+	a := store.Account{ID: "claude-fenced", Provider: "claude", Email: fenced.Email, Token: store.Token{AccountID: fenced.UUID, AccessToken: "at-fenced", RefreshToken: "rt-fenced", ExpiresAt: 1}, ClaudeCode: &store.ClaudeCodeLogin{Credentials: credential("at-fenced", "rt-fenced", 1000), OAuthAccount: identityJSON}}
+	st := store.New(data)
+	if err := st.Save(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.ConfigHome, 0700); err != nil {
+		t.Fatal(err)
+	}
+	config, _ := json.Marshal(map[string]any{"oauthAccount": active})
+	if err := os.WriteFile(paths.ConfigFile, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.CredentialsFile, credential("at-active", "rt-active", time.Now().Add(time.Hour).UnixMilli()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	intents := filepath.Join(data, "claude-native", "refresh-intents")
+	if err := os.MkdirAll(intents, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(intents, a.ID+".json"), []byte(fmt.Sprintf(`{"predecessor_sha256":"%x","started_at":1}`, sha256.Sum256([]byte("rt-fenced")))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := New()
+	p.Native = claudecode.New(paths, data, st, nil, func(_ context.Context, token string) (claudecode.Identity, error) {
+		if token == "at-active" {
+			return active, nil
+		}
+		return fenced, nil
+	}, p.refreshGrant)
+	old := oauthHTTPClient
+	oauthHTTPClient = &http.Client{Transport: testTransport(func(*http.Request) (*http.Response, error) {
+		t.Fatal("fenced account called the token endpoint")
+		return nil, nil
+	})}
+	t.Cleanup(func() { oauthHTTPClient = old })
+	err := p.Refresh(context.Background(), &a)
+	if !errors.Is(err, provider.ErrReloginRequired) || !errors.Is(err, claudecode.ErrRefreshFenced) {
+		t.Fatalf("fenced refresh: %v", err)
 	}
 }

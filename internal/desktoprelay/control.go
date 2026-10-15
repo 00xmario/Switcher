@@ -96,9 +96,10 @@ func (m *Manager) DeleteScope(id string) error {
 	return m.saveLocked()
 }
 
-// route records the request's session and returns it with the account to use.
-// An empty AccountID means the caller's own credential. Routing never fails a
-// request: unknown sessions and unavailable metadata keep the caller credential.
+// route records the request's session and returns it with the account picked
+// for it. An empty AccountID means nobody picked one: the request follows
+// Switcher's selection (forward). Routing never fails a request: unknown
+// sessions and unavailable metadata are treated as unpicked.
 func (m *Manager) route(ctx context.Context, scope string, v identityView) Session {
 	if v.SessionID == "" {
 		return Session{}
@@ -255,15 +256,22 @@ func (m *Manager) moveTo(s Session, account, thread string) error {
 		m.saveSoonLocked()
 		m.mu.Unlock()
 	}
-	if thread == "create" {
-		m.mu.Lock()
-		if m.threads == nil {
-			m.threads = make(map[string]string)
-		}
-		m.threads[taskKey(s.ScopeID, s.SessionID)] = account
-		m.mu.Unlock()
-	}
+	m.threadMoved(s, account, thread)
 	return nil
+}
+
+// threadMoved records that a thread the request was creating now lives on
+// account.
+func (m *Manager) threadMoved(s Session, account, thread string) {
+	if thread != "create" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.threads == nil {
+		m.threads = make(map[string]string)
+	}
+	m.threads[taskKey(s.ScopeID, s.SessionID)] = account
 }
 
 func (m *Manager) finish(s Session) {

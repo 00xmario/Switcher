@@ -1,8 +1,8 @@
 # Desktop relay module
 
 `internal/desktoprelay` is a local HTTPS proxy that lets Claude Desktop's Code
-tab use a selected Switcher account per conversation. It replaces only the
-bearer credential. Everything else is passed through unchanged, and every error
+tab use the Claude account selected in Switcher, or an account picked for one
+conversation. It replaces only the bearer credential. Everything else is passed through unchanged, and every error
 or rate limit the client sees comes from Anthropic, except the few local cases
 listed under [Local responses](#local-responses) and the move of a conversation
 whose account ran out of usage ([Out of usage](#out-of-usage)).
@@ -17,21 +17,30 @@ whose account ran out of usage ([Out of usage](#out-of-usage)).
    are forwarded unchanged with streaming and upgrades, without a proxy login.
 3. For `POST /v1/messages` and `/v1/messages/count_tokens`, the relay reads the
    session UUID from `X-Claude-Code-Session-Id`, or from `session_id` in the
-   JSON string `metadata.user_id`. Unreadable or missing identity means the
-   caller's own credential is used. Requests are never rejected for it.
-4. The session's account is looked up in memory. A conversation selection
-   applies to every request session that native Desktop metadata links to that
+   JSON string `metadata.user_id`. Unreadable or missing identity counts as
+   no pick. Requests are never rejected for it.
+4. The session's account is looked up in memory. A conversation pick applies
+   to every request session that native Desktop metadata links to that
    conversation, including sessions started later.
-5. With a selected account, the request is sent the way Claude Code logged in
+5. Without a pick, the request follows Switcher's selection
+   (`Selection.Selected`): the Claude account selected in Switcher, or its
+   stand-in while that one is out of usage and Claude switches automatically.
+   If that account's credential cannot be prepared and **Switch Claude
+   automatically** is on, the account with the most usage left
+   (`Failover.Takeover`) answers; otherwise the caller's own credential does,
+   and the relay logs it at most once a minute. Such a request still follows
+   the selection: a later out-of-usage hand-off never pins its conversation. On a Mac
+   connected to a Switcher host, the host applies its own selection instead.
+6. With an account, the request is sent the way Claude Code logged in
    to that account would send it: its bearer token, the `oauth-2025-04-20`
    beta if missing, and `metadata.user_id`'s `account_uuid` set to that
    account. `X-Api-Key` is removed. All other bytes and headers are unchanged.
-6. The response is streamed back as received. A selected-account 401 gets one
+7. The response is streamed back as received. A selected-account 401 gets one
    token refresh and one retry. If the refresh fails, the relay answers 503
    `credential_unavailable` (or 404 `account_not_found`) instead of passing a
    401 that Claude Code would blame on its own login.
-7. A subagent session without its own selection follows its parent session.
-8. Message threads (`thread: {type: "continue"}`) live on the account that
+8. A subagent session without its own pick follows its parent session.
+9. Message threads (`thread: {type: "continue"}`) live on the account that
    created them. If a session's account changed since its last thread request,
    the continuation gets 400 `thread_unsupported_request`; Claude Code answers
    that by resending the full conversation without a thread. Nothing else is
@@ -61,11 +70,11 @@ conversation shows up as one entry. Lookup failures are ignored.
 | Missing or wrong proxy credentials | 407 on CONNECT |
 | Thread continued right after a switch | 400 `thread_unsupported_request` |
 | Non-Anthropic destination cannot be dialed | 502 on CONNECT |
-| Selected account's credential cannot be prepared | 503 `credential_unavailable`, or 404 `account_not_found` |
+| Picked account's credential cannot be prepared | 503 `credential_unavailable`, or 404 `account_not_found` |
 | api.anthropic.com unreachable | 502 |
 | Relay profile revoked while a tunnel is open | 403 |
 
-A credential failure never falls back to the caller's account.
+A picked account's credential failure never falls back to the caller's account.
 
 ## Out of usage
 
@@ -84,9 +93,13 @@ left. `send` handles it before any byte reaches Desktop:
    left, among accounts with a successful usage poll in the last fifteen
    minutes that need no new sign-in. Its credential must prepare. With none,
    or with the setting off, the refusal passes through.
-4. The conversation is bound to that account (`setConversation`), or the
-   session alone when its conversation is unknown, so later requests and
-   subagents follow and the Settings list shows the new account.
+4. A picked conversation is bound to that account (`setConversation`), or
+   the session alone when its conversation is unknown, so later requests and
+   subagents follow and the Settings list shows the new account. A
+   conversation that follows Switcher's selection is not bound: the account
+   that ran out is parked and `TookOver` records the stand-in, so the
+   selection's later requests go to it until Switcher selects another
+   account.
 5. The request is sent again with the new account's credential from its
    original bytes. A continued thread lives on the old account, so the relay
    answers 400 `thread_unsupported_request` instead and Claude Code resends the

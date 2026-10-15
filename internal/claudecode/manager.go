@@ -571,7 +571,7 @@ func (m *Manager) refreshGeneration(ctx context.Context, a *store.Account, grant
 	grantCtx, cancel := context.WithTimeout(locked, 8*time.Second)
 	defer cancel()
 	if err := grant(grantCtx, a); err != nil {
-		if errors.Is(err, ErrGrantRejected) {
+		if grantSettled(err) {
 			_ = writePrivate(m.intentPath(a.ID), fileValue{})
 		}
 		return err
@@ -721,6 +721,21 @@ func (m *Manager) finishAccountSuccessor(a *store.Account, saved successor) erro
 
 var ErrGrantRejected = errors.New("refresh grant was explicitly rejected before issuance")
 
+// ErrGrantNotConsumed means the token endpoint provably never consumed the
+// grant: the request was not written before it failed, or the endpoint
+// answered that it was rate limited. The predecessor stays valid for a retry.
+var ErrGrantNotConsumed = errors.New("refresh grant was not consumed")
+
+// ErrRefreshFenced means an earlier refresh of this generation ended without
+// a known outcome and without a received successor. Only a new sign-in to the
+// account can supersede it.
+var ErrRefreshFenced = errors.New("this account's last token refresh did not finish; sign in to it again")
+
+// grantSettled reports whether a failed grant left the predecessor unconsumed.
+func grantSettled(err error) bool {
+	return errors.Is(err, ErrGrantRejected) || errors.Is(err, ErrGrantNotConsumed)
+}
+
 func (m *Manager) intentPath(id string) string {
 	return filepath.Join(m.dataRoot, "refresh-intents", id+".json")
 }
@@ -731,7 +746,19 @@ func (m *Manager) beginRefresh(token, id string) error {
 		return err
 	}
 	if value.Exists {
-		return errors.New("a prior Claude refresh has no recovered successor; import a new native login before consuming another grant")
+		var intent struct {
+			Predecessor string `json:"predecessor_sha256"`
+		}
+		if json.Unmarshal(value.Data, &intent) != nil || intent.Predecessor == "" || intent.Predecessor == fmt.Sprintf("%x", fingerprint) {
+			return ErrRefreshFenced
+		}
+		// A newer login, such as Claude Code's own /login adopted since,
+		// replaced the fenced generation: this grant was never at risk.
+		// Archive the old record before fencing the new grant.
+		archive := filepath.Join(m.dataRoot, "generations", id+"-retired-refresh-"+rand.Text()+".json")
+		if err := writeRecovery(archive, value); err != nil {
+			return err
+		}
 	}
 	return writePrivate(m.intentPath(id), fileValue{Data: encodedIdentityIntent(fingerprint), Exists: true})
 }

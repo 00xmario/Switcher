@@ -180,13 +180,13 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     const pending = busy?.kind === 'choose' && busy.key === item.key;
     const selected = pending ? busy.account : accounts.some(a => a.id === item.account) ? item.account : '';
     const disabled = !access() || !!busy;
-    // The default is Switcher itself: requests pass through with Desktop's
-    // own login. Picking an account switches just this conversation.
-    const options = [{ id: '', label: 'Desktop login', title: 'Default: Claude Desktop’s own login, through Switcher' },
+    // The default is Switcher itself: the conversation uses the Claude
+    // account selected in Switcher. Picking an account pins just this one.
+    const options = [{ id: '', label: 'Switcher’s account', title: 'Default: the Claude account selected in Switcher' },
       ...accounts.map(a => ({ id: a.id, label: accountLabel(a), title: a.email }))];
     if (options.length > 4) {
       return `<select class="dr-select" data-dr-choose="${escape(item.key)}" aria-label="Account for ${escape(item.title || 'this conversation')}" ${disabled ? 'disabled' : ''}>
-        ${options.map(o => `<option value="${escape(o.id)}" ${o.id === selected ? 'selected' : ''}>${escape(o.id ? o.title : 'Desktop login (default)')}</option>`).join('')}</select>`;
+        ${options.map(o => `<option value="${escape(o.id)}" ${o.id === selected ? 'selected' : ''}>${escape(o.id ? o.title : 'Switcher’s account (default)')}</option>`).join('')}</select>`;
     }
     return `<div class="dr-segmented" role="radiogroup" aria-label="Account for ${escape(item.title || 'this conversation')}">
       ${options.map(o => `<button type="button" role="radio" aria-checked="${o.id === selected}" data-dr-choose="${escape(item.key)}" data-dr-account="${escape(o.id)}" title="${escape(o.title)}" ${o.id ? '' : `aria-label="${escape(o.label)}" class="dr-default"`} ${disabled ? 'disabled' : ''}>
@@ -219,14 +219,14 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     </li>`;
   }
 
-  // Per-conversation routing is opt-in: every conversation uses Desktop's own
-  // login until an account is picked for it here.
+  // Per-conversation routing is opt-in: every conversation uses the account
+  // selected in Switcher until an account is picked for it here.
   function conversationsHTML() {
     if (!connected() && !entries.length) return '';
     const shown = showAll ? entries : entries.slice(0, VISIBLE);
     return `<div class="settings-card dr-conversations">
       <div class="set-card-head"><h3>Per-conversation accounts</h3>
-      <p class="settings-sub">Each conversation uses Desktop's own login (${switcherMark({ size: 14 })}) until you pick an account. A pick applies to its next messages; running replies finish where they started.</p></div>
+      <p class="settings-sub">Each conversation uses the Claude account selected in Switcher (${switcherMark({ size: 14 })}) and switches with it. Pick an account only to keep one conversation on it. A pick applies to its next messages; running replies finish where they started.</p></div>
       ${entries.length ? `<ul class="dr-list">${shown.map(rowHTML).join('')}</ul>` : '<p class="settings-sub">Conversations appear here after you send a message in Claude Desktop.</p>'}
       ${entries.length > VISIBLE ? `<button type="button" class="quiet" data-dr-action="toggle-all">${showAll ? 'Show fewer' : `Show all ${entries.length}`}</button>` : ''}
     </div>`;
@@ -261,9 +261,9 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
       : setup.condition === 'changed' ? 'Settings changed' : setup.condition === 'pending' ? 'Setup pending' : 'Not connected';
     const scopes = snapshot?.scopes || [];
     const lead = connected()
-      ? 'Desktop’s requests go through Switcher. Conversations use Desktop’s own login until you pick an account below; switching never needs a restart.'
+      ? 'Desktop’s requests go through Switcher and use the Claude account selected in Switcher, so switching there switches Desktop too, without a restart.'
       : configured ? 'Switcher is set up for Desktop, but its relay is stopped. Start it under Advanced to resume.'
-        : 'Optional. Connect once and Desktop’s requests go through Switcher, so you can pick an account per conversation. Desktop stays signed in as it is.';
+        : 'Optional. Connect once and Desktop uses the Claude account selected in Switcher, and switches with it. Desktop stays signed in as it is.';
     return `<div class="settings-card set-hero dr-hero">
         <div class="set-hero-status"><span class="dr-status ${connected() ? 'ok' : 'warn'}">${state}</span></div>
         ${flowHTML()}

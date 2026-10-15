@@ -57,6 +57,14 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 	view := identity(r, body)
 	task := m.route(ctx, scope, view)
 	defer m.finish(task)
+	// A conversation nobody picked an account for follows the account
+	// selected in Switcher. A connected host applies its own selection.
+	remote := m.remoteInference()
+	_, selection := m.cfg.Source.(Selection)
+	follows := task.AccountID == "" && remote == nil && selection
+	if follows {
+		task.AccountID = m.selected(ctx)
+	}
 	// A thread continued right after a switch lives on the previous account.
 	// Claude Code answers this code by resending the full conversation
 	// without a thread.
@@ -70,7 +78,7 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 		}
 	}
 	// Connected to another Switcher: that host applies its own account.
-	if remote := m.remoteInference(); remote != nil {
+	if remote != nil {
 		if resp, ok, err := remote(ctx, task.AccountID, r, body); ok {
 			if err != nil {
 				if ctx.Err() == nil {
@@ -85,9 +93,37 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 	}
 	var limit limitFunc
 	if message {
-		limit = m.takeover(ctx, task, view)
+		limit = m.takeover(ctx, task, view, follows)
 	}
 	m.send(w, r, r.URL.Path, body, task.AccountID, run.transport, record, limit)
+}
+
+// selected is the account for a request nobody picked an account for: the one
+// selected in Switcher or, while its credential cannot be used, the account
+// with the most usage left. "" keeps the caller's own credential.
+func (m *Manager) selected(ctx context.Context) string {
+	source, ok := m.cfg.Source.(Selection)
+	if !ok {
+		return ""
+	}
+	account := source.Selected()
+	if account == "" {
+		return ""
+	}
+	if _, err := m.prepare(ctx, account); err == nil {
+		return account
+	}
+	if failover, ok := m.cfg.Source.(Failover); ok {
+		if next := failover.Takeover(ctx, account); next != "" && next != account {
+			if _, err := m.prepare(ctx, next); err == nil {
+				return next
+			}
+		}
+	}
+	if last := m.unselectedLogged.Load(); time.Since(time.Unix(last, 0)) > time.Minute && m.unselectedLogged.CompareAndSwap(last, time.Now().Unix()) {
+		log.Printf("desktop relay: the Claude account selected in Switcher is unavailable and no other can take over; Desktop's own login answers")
+	}
+	return ""
 }
 
 // limitFunc decides what happens to a request Anthropic refused with 429:
@@ -101,7 +137,7 @@ type limitFunc func(account string, resp *http.Response, body []byte) (next stri
 // a refusal that means the account is out counts: Anthropic's limit headers
 // say so for any login, and for a Switcher account its usage is checked too.
 // Other rate limits pass through as Anthropic sent them.
-func (m *Manager) takeover(ctx context.Context, task Session, view identityView) limitFunc {
+func (m *Manager) takeover(ctx context.Context, task Session, view identityView, follows bool) limitFunc {
 	failover, ok := m.cfg.Source.(Failover)
 	if !ok || task.SessionID == "" {
 		return nil
@@ -114,7 +150,15 @@ func (m *Manager) takeover(ctx context.Context, task Session, view identityView)
 			from = failover.AccountByUUID(view.AccountUUID)
 		}
 		next, ok := m.handOver(ctx, failover, from, resp, body)
-		if !ok || m.moveTo(task, next, view.Thread) != nil {
+		if !ok {
+			return "", false
+		}
+		// A conversation following Switcher's selection keeps following it:
+		// the account that ran out is parked, so the selection's stand-in
+		// answers its later requests too. Only a picked conversation moves.
+		if follows {
+			m.threadMoved(task, next, view.Thread)
+		} else if m.moveTo(task, next, view.Thread) != nil {
 			return "", false
 		}
 		failover.TookOver(from, next)

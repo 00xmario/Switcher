@@ -26,15 +26,23 @@ conversations you pick it for.
 
 The relay listens on `127.0.0.1:8789` (`--desktop-relay-port` changes it). The
 shared settings file also affects new terminal `claude` sessions, which then go
-through the relay with their own credentials unless you pick an account for them.
+through the relay too.
+
+## Which account Desktop uses
+
+Desktop's conversations use the Claude account selected in Switcher and switch
+with it, without a restart. When that account runs out of usage and **Switch
+Claude automatically** is on, they move to the account with the most usage left.
+Desktop's own sign-in only answers when no Switcher account can, and for
+Desktop's own non-message requests such as its usage view.
 
 ## Switch a conversation
 
 Per-conversation routing is off by default. **Settings → Claude Desktop →
 Per-conversation accounts** lists recent conversations with their saved title
-and project. Pick an account in a row's switcher. The first option, the
-Switcher mark, is the default: the conversation goes through Switcher with the
-account Desktop is signed in to.
+and project. Pick an account in a row's switcher to keep that conversation on
+it. The first option, the Switcher mark, is the default: the conversation
+follows the account selected in Switcher.
 
 - New messages in that conversation use the picked account, including sessions
   Desktop starts for it later and its subagents.
@@ -64,9 +72,10 @@ Errors and rate limits are Anthropic's own, with four exceptions:
 - A removed account answers 404 `account_not_found`. A credential failure never
   falls back to another account.
 - When a conversation's account runs out of usage, Desktop's own login
-  included, and **Switch Claude automatically** is on, the relay moves the
-  conversation to the Switcher account with the most usage left and sends the
-  request again before Desktop sees the refusal. See
+  included, and **Switch Claude automatically** is on, the relay sends the
+  request again on the Switcher account with the most usage left before
+  Desktop sees the refusal. A picked conversation moves to that account; one
+  that follows Switcher keeps following it. See
   [Out of usage](desktop-relay-module.md#out-of-usage).
 - A message thread continued right after a switch belongs to the previous
   account. The relay answers 400 `thread_unsupported_request`, and Claude Code

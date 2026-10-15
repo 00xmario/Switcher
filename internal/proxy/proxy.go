@@ -292,6 +292,18 @@ func (m *Manager) ActiveID(providerID string) string {
 	return m.active[providerID]
 }
 
+// SelectedID is the account Switcher shows as selected for providerID: the
+// native login when Switcher manages one and it is a Switcher account (Claude
+// Code's), otherwise the proxy's active account.
+func (m *Manager) SelectedID(providerID string) string {
+	if native, ok := m.providers[providerID].(provider.NativeLoginProvider); ok && native.NativeEnabled() {
+		if id := native.NativeStatus().ActiveID; id != "" {
+			return id
+		}
+	}
+	return m.ActiveID(providerID)
+}
+
 // Activate selects an account explicitly within its provider. This is the
 // only manual switch path; it succeeds even when the account is currently
 // marked exhausted (the user is in charge).

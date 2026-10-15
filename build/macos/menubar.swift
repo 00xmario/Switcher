@@ -67,7 +67,12 @@ struct Account: Codable, Equatable {
     let reset_credits: ResetCredits?
     var native_switch_available: Bool? = nil
     var native_active: Bool? = nil
+    var health: AccountHealth? = nil
     var selected: Bool { native_switch_available == true ? native_active == true : active }
+}
+
+struct AccountHealth: Codable, Equatable {
+    let condition: String?
 }
 
 struct UpdateInfo: Codable, Equatable {
@@ -1022,7 +1027,7 @@ func menuHTTPResult(_ data: Data?, response: URLResponse?, error: Error?) -> Res
         let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let message = body?["error"] as? String ?? (body?["error"] as? [String: Any])?["message"] as? String
         let backup = body?["backup"] as? String ?? (body?["result"] as? [String: Any])?["backup"] as? String
-        let detail = [message, body?["details"] as? String, backup.map { "Backup: " + $0 }]
+        let detail = [message, body?["details"] as? String, backup.flatMap { $0.isEmpty ? nil : "Backup: " + $0 }]
             .compactMap { $0 }.joined(separator: "\n")
         return .failure(NSError(domain: "SwitcherHTTP", code: response.statusCode,
             userInfo: [NSLocalizedDescriptionKey: detail.isEmpty ? "Switcher returned HTTP \(response.statusCode)" : detail]))
@@ -1713,9 +1718,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             let bankedFont = NSFont.systemFont(ofSize: 10.5)
             let bankedWidth = bankedText.isEmpty ? CGFloat(0) : textWidth(bankedText, font: bankedFont)
             let exhausted = !account.selected && (account.exhausted_until.map { $0 > Date().timeIntervalSince1970 } ?? false)
+            // Cached bars stay on screen when checks fail, so say when they
+            // are old or the account can no longer refresh at all.
+            let badge: (text: String, color: NSColor, tip: String)?
+            switch account.health?.condition {
+            case "needs_relogin":
+                badge = ("Sign in again", warnColor, "This account's login no longer refreshes; use Relogin in Switcher")
+            case _ where exhausted:
+                badge = ("Out of usage", warnColor, "")
+            case "usage_stale" where account.usage?.windows?.isEmpty == false,
+                 "usage_unavailable" where account.usage?.windows?.isEmpty == false:
+                badge = ("Usage stale", dimColor, "Usage could not be checked recently; these numbers may be old")
+            default:
+                badge = nil
+            }
             let titleFont = NSFont.systemFont(ofSize: 12.5, weight: account.selected ? .medium : .regular)
             let titleColor = account.selected ? accentColor : inkColor
-            let trailingWidth = max(account.selected ? 14 : 0, exhausted ? 90 : 0) +
+            let trailingWidth = (badge != nil ? 90 + (account.selected ? 22 : 0) : (account.selected ? 14 : 0)) +
                 (bankedWidth > 0 ? bankedWidth + 8 : 0)
             let titleWidth = contentWidth - textX - cardInset - trailingWidth - 8
             let titleY = rowH - rowTopPad - titleHeight
@@ -1797,12 +1816,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 check.contentTintColor = accentColor
                 check.toolTip = account.native_switch_available == true ? "Claude Code native login active" : "Proxy account active"
                 row.addSubview(check)
-            } else if exhausted {
-                let badge = label("Out of usage", font: NSFont.systemFont(ofSize: 10.5), color: warnColor)
-                badge.alignment = .right
-                badge.frame = NSRect(x: contentWidth - cardInset - 90 - (bankedWidth > 0 ? bankedWidth + 8 : 0),
-                                     y: titleY, width: 90, height: 14)
-                row.addSubview(badge)
+            }
+            if let badge {
+                let note = label(badge.text, font: NSFont.systemFont(ofSize: 10.5), color: badge.color)
+                note.alignment = .right
+                if !badge.tip.isEmpty { note.toolTip = badge.tip }
+                note.frame = NSRect(x: contentWidth - cardInset - 90 - (account.selected ? 22 : 0) - (bankedWidth > 0 ? bankedWidth + 8 : 0),
+                                    y: titleY, width: 90, height: 14)
+                row.addSubview(note)
             }
 
             if index < accounts.count - 1 {

@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"switcher/internal/claudecode"
@@ -171,6 +173,9 @@ func (p *Provider) Refresh(ctx context.Context, a *store.Account) error {
 			if errors.Is(err, provider.ErrReloginRequired) {
 				return err
 			}
+			if errors.Is(err, claudecode.ErrRefreshFenced) {
+				return fmt.Errorf("%w: %w", provider.ErrReloginRequired, err)
+			}
 			return fmt.Errorf("%w: %v", provider.ErrNativeCredentialBusy, err)
 		}
 		return nil
@@ -192,6 +197,9 @@ func (p *Provider) RefreshAfter401(ctx context.Context, a *store.Account, reject
 		if err := p.Native.RefreshAfter401(ctx, a, rejectedAccessToken, p.refreshGrant); err != nil {
 			if errors.Is(err, provider.ErrReloginRequired) {
 				return err
+			}
+			if errors.Is(err, claudecode.ErrRefreshFenced) {
+				return fmt.Errorf("%w: %w", provider.ErrReloginRequired, err)
 			}
 			return fmt.Errorf("%w: %v", provider.ErrNativeCredentialBusy, err)
 		}
@@ -221,8 +229,19 @@ func (p *Provider) refreshGrant(ctx context.Context, a *store.Account) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-beta", oauthBeta)
+	// A failure before any connection was obtained (DNS, dial, TLS, a cancel
+	// while waiting) cannot have reached the token endpoint, so the grant is
+	// unspent. Once a connection exists the request may have been written:
+	// HTTP/2 can return on a cancel before reporting a finished write.
+	var connected atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	}))
 	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
+		if !connected.Load() {
+			return fmt.Errorf("refresh request: %w", errors.Join(err, claudecode.ErrGrantNotConsumed))
+		}
 		return fmt.Errorf("refresh request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -234,6 +253,9 @@ func (p *Provider) refreshGrant(ctx context.Context, a *store.Account) error {
 		var marker error
 		if definitiveGrantRejection(resp.StatusCode, raw) {
 			marker = claudecode.ErrGrantRejected
+		} else if resp.StatusCode == http.StatusTooManyRequests {
+			// Rate limiting answers before the grant is examined.
+			marker = claudecode.ErrGrantNotConsumed
 		}
 		if provider.RefreshCredentialRejected(resp.StatusCode, raw) {
 			return fmt.Errorf("refresh failed: http %d: %w", resp.StatusCode, errors.Join(provider.ErrReloginRequired, marker))

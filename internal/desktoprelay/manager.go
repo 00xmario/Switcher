@@ -17,18 +17,21 @@ import (
 )
 
 type Manager struct {
-	cfg           Config
-	lifecycle     sync.Mutex
-	mu            sync.Mutex
-	store         *privateStore
-	state         diskState
-	run           *runtime
-	condition     string
-	threads       map[string]string
-	remote        atomic.Pointer[RemoteInference]
-	hostOnce      sync.Once
-	hostTransport http.RoundTripper
-	savePending   bool
+	cfg       Config
+	lifecycle sync.Mutex
+	mu        sync.Mutex
+	store     *privateStore
+	state     diskState
+	run       *runtime
+	condition string
+	threads   map[string]string
+	remote    atomic.Pointer[RemoteInference]
+	// unselectedLogged rate-limits the note that Switcher's selection could
+	// not answer, in Unix seconds.
+	unselectedLogged atomic.Int64
+	hostOnce         sync.Once
+	hostTransport    http.RoundTripper
+	savePending      bool
 	// saveMu orders state.json writes; saveSeq numbers marshalled snapshots
 	// so a slower background write never replaces a newer one.
 	saveMu      sync.Mutex

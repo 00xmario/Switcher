@@ -286,3 +286,45 @@ func TestAStandInStaysWhileItHasRoom(t *testing.T) {
 		t.Fatalf("route %q, want b once c ran out", got)
 	}
 }
+
+func TestDesktopFollowsTheSelectedAccountAndItsStandIn(t *testing.T) {
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
+	src := NewDesktopCredentialSource(m)
+	if err := m.Activate("a"); err != nil {
+		t.Fatal(err)
+	}
+	m.setUsage("a", windows(10, 10))
+	m.setUsage("b", windows(50, 50))
+	m.setUsage("c", windows(20, 20))
+	if got := src.Selected(); got != "a" {
+		t.Fatalf("selected %q, want Switcher's selected a", got)
+	}
+	// Desktop handed a refused request to b; later requests stay there.
+	if !src.OutOfUsage(context.Background(), "a", 429, []byte(`{}`), time.Now().Add(time.Hour)) {
+		t.Fatal("refusal not taken as out of usage")
+	}
+	src.TookOver("a", "b")
+	if got := src.Selected(); got != "b" {
+		t.Fatalf("selected %q after the hand-off, want its stand-in b", got)
+	}
+	if _, err := m.ActivateForClient(context.Background(), "c"); err != nil {
+		t.Fatal(err)
+	}
+	if got := src.Selected(); got != "c" {
+		t.Fatalf("selected %q after switching in Switcher, want c", got)
+	}
+	// Claude Code's login is what Switcher shows as selected, even when it
+	// changed outside Switcher and the proxy's account did not follow.
+	native.mu.Lock()
+	native.status.ActiveID = "b"
+	native.mu.Unlock()
+	if got := src.Selected(); got != "b" {
+		t.Fatalf("selected %q, want Claude Code's login b", got)
+	}
+	native.mu.Lock()
+	native.status.ActiveID = ""
+	native.mu.Unlock()
+	if got := src.Selected(); got != "c" {
+		t.Fatalf("selected %q with an unmanaged Claude Code login, want the proxy's c", got)
+	}
+}

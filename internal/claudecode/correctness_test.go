@@ -604,3 +604,66 @@ func TestPendingInactiveAccountRepairsNativePredecessorAfterRestart(t *testing.T
 		t.Fatal("pending account recovery adopted a consumed native predecessor")
 	}
 }
+
+// A grant that provably never reached the token endpoint leaves its
+// predecessor valid, so it must not fence the account. An unknown outcome
+// still fences it until a new sign-in.
+func TestUnconsumedGrantReleasesFenceAndUnknownOutcomeKeepsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		expire func(*testing.T, *harness) store.Account
+	}{
+		{"active", func(t *testing.T, h *harness) store.Account {
+			expireNativeFixture(t, h)
+			a, _ := h.accounts.Get("claude-a")
+			return a
+		}},
+		{"inactive", func(t *testing.T, h *harness) store.Account {
+			a, _ := h.accounts.Get("claude-b")
+			a.Token.ExpiresAt = 1
+			return a
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, false)
+			a := tc.expire(t, h)
+			unsent := func(context.Context, *store.Account) error {
+				return errors.Join(errors.New("fixture dial failure"), ErrGrantNotConsumed)
+			}
+			if err := h.manager.Refresh(context.Background(), &a, unsent); err == nil {
+				t.Fatal("unsent grant reported success")
+			}
+			if intent, _ := readPrivate(h.manager.intentPath(a.ID)); intent.Exists {
+				t.Fatal("unsent grant left a consume fence")
+			}
+			if err := h.manager.Refresh(context.Background(), &a, h.manager.grant); err != nil {
+				t.Fatalf("retry after an unsent grant: %v", err)
+			}
+			if h.grants != 1 {
+				t.Fatal("retry did not reuse the unconsumed predecessor")
+			}
+
+			h = newHarness(t, false)
+			a = tc.expire(t, h)
+			lost := func(context.Context, *store.Account) error { return context.DeadlineExceeded }
+			if err := h.manager.Refresh(context.Background(), &a, lost); err == nil {
+				t.Fatal("lost response reported success")
+			}
+			err := h.manager.Refresh(context.Background(), &a, h.manager.grant)
+			if !errors.Is(err, ErrRefreshFenced) || h.grants != 0 {
+				t.Fatalf("possibly consumed predecessor was replayed: err=%v grants=%d", err, h.grants)
+			}
+			// A newer login adopted since supersedes the fence for its own grant.
+			if tc.name == "inactive" {
+				a, _ = h.accounts.Get(a.ID)
+				a.Token.RefreshToken, a.Token.AccessToken, a.Token.ExpiresAt = "rt-new-login", "at-b-new-login", 1
+				if err := h.accounts.Save(a); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.manager.Refresh(context.Background(), &a, h.manager.grant); err != nil || h.grants != 1 {
+					t.Fatalf("a newer login stayed fenced: err=%v grants=%d", err, h.grants)
+				}
+			}
+		})
+	}
+}

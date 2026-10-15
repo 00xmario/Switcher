@@ -97,6 +97,20 @@ func (s *DesktopCredentialSource) TookOver(from, to string) {
 	s.manager.mu.Lock()
 	defer s.manager.mu.Unlock()
 	s.manager.recordAutoSwitchLocked("claude", "desktop", from, to)
+	// Requests that follow the selection stay on the same stand-in.
+	if from != "" && to != "" {
+		s.manager.claudeReroute[from] = to
+	}
+}
+
+// Selected names the account for Desktop conversations nobody picked an
+// account for: the Claude account selected in Switcher, or its stand-in while
+// that one is out of usage and Claude switches automatically.
+func (s *DesktopCredentialSource) Selected() string {
+	if s == nil || s.manager == nil {
+		return ""
+	}
+	return s.manager.ClaudeRoute(s.manager.SelectedID("claude"))
 }
 
 func (s *DesktopCredentialSource) Prepare(ctx context.Context, id string) (desktoprelay.Credential, error) {

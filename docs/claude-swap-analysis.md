@@ -120,10 +120,19 @@ generations are fenced; unrelated project-setting changes stay in place.
 Known Keychain writer limits are checked before consuming the live grant.
 
 Before any refresh POST, Switcher saves a private consumption intent.
-An HTTP gateway error, timeout, lost response, or crash leaves that intent in
-place. Only a recognized OAuth rejection with HTTP 400, 401, or 403 clears it
-without an issued successor. A possibly consumed predecessor is never retried
-just because an upstream error is transient.
+An HTTP gateway error, timeout after the request was written, lost response,
+or crash leaves that intent in place. Without an issued successor, it is
+cleared only when the grant provably stayed unspent: a recognized OAuth
+rejection with HTTP 400, 401, or 403, an HTTP 429, or a failure before any
+connection was obtained (DNS, connection, TLS, or a cancel while waiting),
+which an HTTP client trace detects. Once a connection exists the request may
+have been written, so it stays fenced. An intent whose predecessor no longer
+matches the account's refresh token, because a newer login was adopted, is
+archived instead of blocking that new login. opencodex releases its intent on comparable
+not-dispatched evidence. A possibly consumed predecessor is never retried
+just because an upstream error is transient. A fenced account reports
+"relogin required", so the UI asks for a new sign-in instead of showing old
+usage as current.
 
 Issued successors are saved to a private sidecar before account persistence.
 For expired legacy records, the new access token resolves organization identity

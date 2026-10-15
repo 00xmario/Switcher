@@ -54,6 +54,14 @@ type Failover interface {
 	AccountByUUID(uuid string) string
 }
 
+// Selection is an optional part of a CredentialSource: the account a
+// conversation uses when nobody picked one for it, which is the Claude account
+// selected in Switcher (or its stand-in while that one is out of usage).
+// "" leaves the caller's own credential.
+type Selection interface {
+	Selected() string
+}
+
 // ConversationResolver maps request session UUIDs to Desktop conversation
 // UUIDs using native metadata. Missing keys are unknown sessions.
 type ConversationResolver interface {

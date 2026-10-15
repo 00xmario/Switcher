@@ -3,12 +3,16 @@ package claude
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"switcher/internal/claudecode"
 	"switcher/internal/provider"
 	"switcher/internal/store"
 )
@@ -88,6 +92,57 @@ func TestUsageAuthStatus(t *testing.T) {
 		_, err := New().Usage(context.Background(), store.Account{Token: store.Token{AccessToken: "secret-access"}})
 		if !errors.Is(err, provider.ErrUsageUnavailable) || errors.Is(err, provider.ErrUsageAuthRequired) != (s == http.StatusUnauthorized) || errors.Is(err, provider.ErrReloginRequired) || strings.Contains(err.Error(), "do-not-log") || strings.Contains(err.Error(), "secret-access") {
 			t.Fatalf("status %d: unexpected usage error: %v", s, err)
+		}
+	}
+}
+
+func TestRefreshGrantClassifiesConsumption(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreachable := closed.Addr().String()
+	closed.Close()
+	status, hang := http.StatusOK, false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		if hang {
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer srv.Close()
+	base, _ := url.Parse(srv.URL)
+	target := base.Host
+	old := oauthHTTPClient
+	oauthHTTPClient = &http.Client{Transport: testTransport(func(req *http.Request) (*http.Response, error) {
+		copy := req.Clone(req.Context())
+		copy.URL.Scheme, copy.URL.Host = "http", target
+		return http.DefaultTransport.RoundTrip(copy)
+	})}
+	defer func() { oauthHTTPClient = old }()
+
+	for _, tc := range []struct {
+		name              string
+		host              string
+		status            int
+		hang              bool
+		unspent, rejected bool
+	}{
+		{"connection refused", unreachable, 0, false, true, false},
+		{"rate limited", base.Host, http.StatusTooManyRequests, false, true, false},
+		{"rejected", base.Host, http.StatusBadRequest, false, false, true},
+		{"gateway error", base.Host, http.StatusBadGateway, false, false, false},
+		{"lost response", base.Host, 0, true, false, false},
+	} {
+		target, status, hang = tc.host, tc.status, tc.hang
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		err := New().refreshGrant(ctx, &store.Account{Token: store.Token{RefreshToken: "secret"}})
+		cancel()
+		if err == nil || errors.Is(err, claudecode.ErrGrantNotConsumed) != tc.unspent || errors.Is(err, claudecode.ErrGrantRejected) != tc.rejected {
+			t.Fatalf("%s: err = %v, want unspent=%t rejected=%t", tc.name, err, tc.unspent, tc.rejected)
 		}
 	}
 }

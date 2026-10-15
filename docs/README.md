@@ -25,8 +25,9 @@ credential selection, or session-index synchronization.
 ## What is implemented and what is verified
 
 The local authenticated relay routes the Code tab's requests through Switcher.
-For selected conversations, it substitutes the selected account's credential
-while preserving native Anthropic Messages bodies, tools, signatures, and
+For Messages requests, it substitutes the credential of the Claude account
+selected in Switcher, or of the account picked for that conversation, while
+preserving native Anthropic Messages bodies, tools, signatures, and
 streaming. Desktop sign-in and usage/control-plane requests keep their original
 credentials. Real Desktop traffic through the relay has been observed.
 

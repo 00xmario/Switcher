@@ -467,6 +467,19 @@ struct MenuBarLayoutTest {
             return view.subviews.contains(where: hasExpiredBadge)
         }
         guard !providerViews().contains(where: hasExpiredBadge) else { fail("Unrelated provider patch lost an expired exhaustion deadline") }
+        func field(_ text: String, in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.stringValue == text { return field }
+            return view.subviews.lazy.compactMap { field(text, in: $0) }.first
+        }
+        var relogin = changedOther
+        relogin.health = AccountHealth(condition: "needs_relogin")
+        var stale = changedAccount
+        stale.health = AccountHealth(condition: "usage_stale")
+        delegate.applyMenuState(state([stale, relogin], false))
+        guard providerViews().contains(where: { field("Sign in again", in: $0) != nil }),
+              providerViews().contains(where: { field("Usage stale", in: $0) != nil }) else {
+            fail("Accounts that cannot refresh or have old usage were shown as current")
+        }
         let olderPoll = delegate.beginStateRequest()
         let newerNotificationCheck = delegate.beginStateRequest()
         guard delegate.acceptStateResponse(initial, serial: newerNotificationCheck),
