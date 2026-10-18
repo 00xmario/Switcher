@@ -67,6 +67,11 @@ type healthState struct {
 	checking    int
 	queued      bool
 	retryAt     time.Time
+	// syncErr and syncFailures track the current native login failure. A
+	// passing conflict while Claude Code writes is retried quietly; a
+	// lasting one is logged once instead of every poll.
+	syncErr      string
+	syncFailures int
 }
 
 // Upstream result of a request that hit an exhausted account.
@@ -699,7 +704,9 @@ func (m *Manager) refreshAccount(ctx context.Context, id string, gen uint64, for
 	if !ok {
 		return provider.Usage{}
 	}
-	if err := m.syncNative(ctx, prov, &a); err != nil {
+	err = m.syncNative(ctx, prov, &a)
+	m.noteSyncFailure(id, a, err)
+	if err != nil {
 		return m.recordUsage(id, gen, provider.Usage{}, false, err)
 	}
 	m.mu.Lock()
@@ -820,6 +827,29 @@ func (m *Manager) recordRefresh(id string, gen uint64, err error) {
 		h.relogin = false
 	} else if errors.Is(err, provider.ErrReloginRequired) {
 		h.relogin = true
+	}
+}
+
+// noteSyncFailure logs a native login check that fails twice in a row with
+// the same error. It blocks the account's usage poll, so it must not pass
+// silently, but one conflict with a Claude Code write is ordinary.
+func (m *Manager) noteSyncFailure(id string, a store.Account, err error) {
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	m.mu.Lock()
+	h := m.healthLocked(id)
+	if h.syncErr != text {
+		h.syncErr, h.syncFailures = text, 0
+	}
+	if err != nil {
+		h.syncFailures++
+	}
+	lasting := h.syncFailures == 2
+	m.mu.Unlock()
+	if lasting {
+		log.Printf("proxy: usage paused for %s (%s): the native login check keeps failing: %v", a.Email, a.Provider, err)
 	}
 }
 

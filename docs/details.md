@@ -111,7 +111,10 @@ required; OpenCode Go uses its own API key.
   OAuth fields, project configuration, and transcripts stay in place.
   The operation uses Claude Code's own refresh/config locks, creates private
   backups, verifies writes, and rolls back partial failures. The native
-  active badge is separate from automatic proxy routing. Running macOS
+  active badge is separate from automatic proxy routing. Claude Desktop's
+  Code sessions run as Desktop's own login and can relabel Code's shared
+  config with that account. Switcher follows the login Code actually holds
+  and puts the label back. Running macOS
   sessions may take about 30 seconds to notice a switch; reopen Code for
   immediate application. This changes Claude Code, not Claude Desktop's
   signed-in account. Do not `/logout` first because it can revoke the old

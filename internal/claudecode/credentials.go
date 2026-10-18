@@ -20,6 +20,65 @@ type Identity struct {
 	OrganizationName string `json:"organizationName,omitempty"`
 	DisplayName      string `json:"displayName,omitempty"`
 	Plan             string `json:"-"`
+	// Record holds the oauthAccount fields Claude Code itself derives from a
+	// fresh profile, so a label Switcher writes is complete and current.
+	Record map[string]json.RawMessage `json:"-"`
+}
+
+// OAuthAccountRecord maps an /api/oauth/profile response to the oauthAccount
+// fields Claude Code writes from it. planDisplayName, which Claude Code derives
+// separately, is not written; a saved one is kept. It re-fetches the profile at startup
+// when profileFetchedAt is older than a day or one of billingType,
+// accountCreatedAt, subscriptionCreatedAt or ccOnboardingFlags is missing,
+// and then writes the profile of the token that process holds. Claude
+// Desktop's Code sessions hold Desktop's own login, so an incomplete or old
+// record lets them relabel the shared config with Desktop's account.
+func OAuthAccountRecord(profile []byte, fetched time.Time) (map[string]json.RawMessage, error) {
+	var p struct {
+		Account      map[string]json.RawMessage `json:"account"`
+		Organization map[string]json.RawMessage `json:"organization"`
+	}
+	if err := json.Unmarshal(profile, &p); err != nil {
+		return nil, err
+	}
+	record := map[string]json.RawMessage{}
+	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
+	copyField := func(to string, from map[string]json.RawMessage, key string) {
+		if present(from[key]) {
+			record[to] = from[key]
+		}
+	}
+	// Claude Code keeps these as null rather than leaving them out.
+	nullable := func(to string, from map[string]json.RawMessage, key string) {
+		if present(from[key]) {
+			record[to] = from[key]
+		} else {
+			record[to] = json.RawMessage("null")
+		}
+	}
+	copyField("accountUuid", p.Account, "uuid")
+	copyField("emailAddress", p.Account, "email")
+	copyField("displayName", p.Account, "display_name")
+	copyField("fullName", p.Account, "full_name")
+	copyField("accountCreatedAt", p.Account, "created_at")
+	copyField("organizationUuid", p.Organization, "uuid")
+	copyField("organizationName", p.Organization, "name")
+	copyField("organizationType", p.Organization, "organization_type")
+	copyField("organizationRateLimitTier", p.Organization, "rate_limit_tier")
+	copyField("billingType", p.Organization, "billing_type")
+	copyField("subscriptionCreatedAt", p.Organization, "subscription_created_at")
+	record["hasExtraUsageEnabled"] = json.RawMessage("false")
+	copyField("hasExtraUsageEnabled", p.Organization, "has_extra_usage_enabled")
+	record["ccOnboardingFlags"] = json.RawMessage("{}")
+	copyField("ccOnboardingFlags", p.Organization, "cc_onboarding_flags")
+	nullable("claudeCodeTrialEndsAt", p.Organization, "claude_code_trial_ends_at")
+	nullable("claudeCodeTrialDurationDays", p.Organization, "claude_code_trial_duration_days")
+	nullable("seatTier", p.Organization, "seat_tier")
+	if !present(record["accountUuid"]) || !present(record["emailAddress"]) {
+		return nil, errors.New("profile has no account identity")
+	}
+	record["profileFetchedAt"] = json.RawMessage(strconv.FormatInt(fetched.UnixMilli(), 10))
+	return record, nil
 }
 
 type oauthData struct {
@@ -123,6 +182,10 @@ func identityRecord(a store.Account, identity Identity) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	// A fresh profile wins over the stored copy; fields it lacks are kept.
+	for key, value := range identity.Record {
+		result[key] = value
 	}
 	known, _ := object(encodedIdentity(identity))
 	for _, key := range []string{"accountUuid", "emailAddress", "organizationUuid"} {

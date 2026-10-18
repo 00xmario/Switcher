@@ -32,7 +32,11 @@ func (p *Provider) nativeProfile(ctx context.Context, token string) (claudecode.
 	if err != nil {
 		return claudecode.Identity{}, err
 	}
-	return claudecode.Identity{UUID: profile.Account.UUID, Email: profile.Account.Email, OrganizationUUID: profile.Organization.UUID, OrganizationName: profile.Organization.Name, Plan: profile.plan()}, nil
+	identity := claudecode.Identity{UUID: profile.Account.UUID, Email: profile.Account.Email, OrganizationUUID: profile.Organization.UUID, OrganizationName: profile.Organization.Name, Plan: profile.plan()}
+	if record, err := claudecode.OAuthAccountRecord(profile.raw, time.Now()); err == nil {
+		identity.Record = record
+	}
+	return identity, nil
 }
 func (p *Provider) NativeEnabled() bool { return p.Native != nil || p.nativeError != nil }
 

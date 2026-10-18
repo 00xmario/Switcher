@@ -210,6 +210,32 @@ not proof that an HTTP proxy transparently switches every native client.
 - Account identity includes the Claude organization UUID. Legacy IDs are reused
   only after organization verification or an exact native token-lineage match.
   Displaced generations are retained before adoption or re-login replacement.
+- The credential decides who Claude Code is, never the `oauthAccount` label.
+  Claude Desktop's Code sessions share `~/.claude.json` but run as Desktop's
+  own login (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_ACCOUNT_UUID`). Claude
+  Code re-fetches the profile at startup when `profileFetchedAt` is a day old
+  or `billingType`, `accountCreatedAt`, `subscriptionCreatedAt` or
+  `ccOnboardingFlags` is missing, and writes the profile of the token that
+  process holds. A Desktop session therefore relabels the config with
+  Desktop's account while the keychain still holds the account Switcher
+  selected. Such a label never blocks an account. Synchronization resolves the
+  owner from token lineage or the profile, and the owner's sync relabels the
+  config under Claude's locks. Finishing an interrupted native refresh is
+  fenced by the credential generations and, for a displaced login, by the
+  profile of the credential, not by the label. A label mismatch once failed
+  every Claude account's sync for days: no usage, no automatic switching, and
+  Desktop answered with its own login.
+- Every label Switcher writes, on a switch or a relabel, carries the fields
+  Claude Code builds from a fresh profile, with `profileFetchedAt` set to that
+  fetch. Claude Code then keeps it for a day instead of re-fetching it in the
+  next session. An organization whose profile has no billing type or
+  subscription date stays incomplete to Claude Code, as its own writes do, so
+  sessions re-fetch on start and Switcher relabels on the next poll. When no
+  profile can be fetched, the saved record is written and Claude Code
+  completes it. Unmanaged owners are never relabeled.
+- A native check that keeps failing pauses that account's usage. It is logged
+  once it fails twice in a row with the same error; a single conflict with a
+  Claude Code write is retried quietly on the next poll.
 - Automatic Claude usage checks have a three-minute minimum interval. Manual
   Recheck can run sooner; native credential observation still runs on the
   server's ordinary refresh tick. Upstream's complete adaptive polling engine

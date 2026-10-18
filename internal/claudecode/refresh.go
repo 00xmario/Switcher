@@ -275,9 +275,12 @@ func (m *Manager) finishNativeRefreshLocked(ctx context.Context, a *store.Accoun
 		return ErrConflict
 	}
 	before := saved.Native.Before
-	configured, err := identityOf(current.Config.Data)
+	// The credential generations below fence this, not the oauthAccount label:
+	// Claude Desktop's Code sessions relabel the shared config with Desktop's
+	// own login, while a /login replaces the credential itself.
+	_, err := identityOf(current.Config.Data)
 	config, _ := object(current.Config.Data)
-	if err != nil || !sameIdentity(configured, accountIdentity(saved.Account)) || len(config["primaryApiKey"]) != 0 || !reflect.DeepEqual(current.ManagedKey, before.ManagedKey) {
+	if err != nil || len(config["primaryApiKey"]) != 0 || !reflect.DeepEqual(current.ManagedKey, before.ManagedKey) {
 		return m.recoverDisplacedNative(ctx, a, saved, current)
 	}
 	credential, err := credentialsFor(saved.Account, current.credential())
@@ -379,15 +382,16 @@ func validRefreshTransition(current, before, next snapshot) bool {
 func (m *Manager) recoverDisplacedNative(ctx context.Context, a *store.Account, saved successor, current snapshot) error {
 	oauth, err := parseOAuth(current.credential())
 	before, _ := parseOAuth(saved.Native.Before.credential())
-	configured, configErr := identityOf(current.Config.Data)
+	_, configErr := identityOf(current.Config.Data)
 	config, _ := object(current.Config.Data)
 	if err != nil || configErr != nil || oauth.AccessToken == "" || oauth.RefreshToken == "" ||
 		oauth.ExpiresAt <= time.Now().Add(time.Minute).UnixMilli() ||
 		oauth.RefreshToken == before.RefreshToken || current.ManagedKey.Exists || len(config["primaryApiKey"]) != 0 {
 		return ErrConflict
 	}
+	// The profile says whose credential this is; the label may be Desktop's.
 	identity, err := m.profile(ctx, oauth.AccessToken)
-	if err != nil || identity.UUID == "" || identity.Email == "" || !sameIdentity(identity, configured) {
+	if err != nil || identity.UUID == "" || identity.Email == "" {
 		return ErrConflict
 	}
 	observed, err := m.readSnapshot(ctx)

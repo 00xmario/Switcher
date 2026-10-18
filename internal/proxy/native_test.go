@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,3 +278,52 @@ func (p *nativeUsageFixture) Usage(ctx context.Context, a store.Account) (provid
 func (*nativeUsageFixture) ResolvePlan(context.Context, store.Account) (string, error) {
 	return "", nil
 }
+
+type failingSyncFixture struct {
+	*nativeProviderFixture
+	err error
+}
+
+func (p *failingSyncFixture) SyncNative(ctx context.Context, a *store.Account) (bool, error) {
+	return false, p.err
+}
+
+// A native login check that keeps failing pauses the account's usage, so it
+// is logged once it lasts, not silently and not every poll. A single
+// conflict with a Claude Code write is retried quietly.
+func TestLastingNativeSyncFailureIsLoggedOnce(t *testing.T) {
+	m := newManager(t, nil, account("a"))
+	p := &failingSyncFixture{nativeProviderFixture: &nativeProviderFixture{fakeProvider: &fakeProvider{id: "fake"}}, err: claudecode.ErrConflict}
+	m.providers["fake"] = p
+	var out strings.Builder
+	var mu sync.Mutex
+	log.SetOutput(writerFunc(func(b []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return out.Write(b) }))
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	poll := func() { m.refreshAccount(context.Background(), "a", m.generation["a"], true) }
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Count(out.String(), "usage paused for a@example.com")
+	}
+	poll()
+	if got := count(); got != 0 {
+		t.Fatalf("a single conflict was logged:\n%s", out.String())
+	}
+	poll()
+	poll()
+	if got := count(); got != 1 {
+		t.Fatalf("logged %d times, want once:\n%s", got, out.String())
+	}
+	p.err = nil
+	poll()
+	p.err = claudecode.ErrNativeOwned
+	poll()
+	poll()
+	if got := count(); got != 2 {
+		t.Fatalf("a new lasting failure after recovery was not logged:\n%s", out.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(b []byte) (int, error) { return f(b) }

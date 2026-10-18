@@ -400,13 +400,19 @@ func TestNativeRefreshDoesNotOverwriteForeignUpdateDuringGrant(t *testing.T) {
 			return err
 		}
 		return writePrivate(h.paths.CredentialsFile, fileValue{Data: rawCredential("b"), Exists: true})
-	}); !errors.Is(err, ErrConflict) {
+	}); err != nil {
 		t.Fatalf("foreign update during grant: %v", err)
 	}
+	// The profile proves the live login is now B's, whatever the label says.
+	// B's login stays in place and A keeps the successor it was issued.
 	current, _ := h.manager.inspect(context.Background())
 	oauth, _ := parseOAuth(current.credential())
-	if oauth.RefreshToken != "rt-b" || h.grants != 1 || h.manager.volatileSuccessors[a.ID].Account.Token.RefreshToken != "rt-successor" {
+	saved, _ := h.accounts.Get("claude-a")
+	if oauth.RefreshToken != "rt-b" || h.grants != 1 || saved.Token.RefreshToken != "rt-successor" || a.Token.RefreshToken != "rt-successor" {
 		t.Fatal("foreign update or issued successor was lost")
+	}
+	if status := h.manager.Status(); status.ActiveID != "claude-b" {
+		t.Fatalf("status %+v; Claude Code now runs as B", status)
 	}
 }
 

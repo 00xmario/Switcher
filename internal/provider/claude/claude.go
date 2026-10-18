@@ -625,6 +625,7 @@ type claudeProfile struct {
 	} `json:"organization"`
 	HasClaudeMax bool `json:"has_claude_max"`
 	HasClaudePro bool `json:"has_claude_pro"`
+	raw          []byte
 }
 
 // ImportFromKeychain implements the optional importer interface: it lifts
@@ -738,6 +739,7 @@ func (p *Provider) fetchProfile(ctx context.Context, accessToken string) (claude
 	if err := json.Unmarshal(raw, &profile); err != nil {
 		return claudeProfile{}, err
 	}
+	profile.raw = raw
 	return profile, nil
 }
 

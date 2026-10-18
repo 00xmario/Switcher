@@ -359,10 +359,14 @@ func (m *Manager) Synchronize(ctx context.Context, a *store.Account) (bool, erro
 	m.publish(owner, accounts)
 	configured, _ := identityOf(s.Config.Data)
 	config, _ := object(s.Config.Data)
-	if owner.UUID != "" && (!sameIdentity(configured, owner) || s.ManagedKey.Exists || len(config["primaryApiKey"]) > 0) {
+	if owner.UUID != "" && (s.ManagedKey.Exists || len(config["primaryApiKey"]) > 0) {
 		m.unavailable(ErrConflict)
 		return false, ErrConflict
 	}
+	// The credential decides who Claude Code is, never the oauthAccount label.
+	// Claude Desktop's Code sessions share this config but run as Desktop's
+	// own login, and write that account there when they re-fetch the profile.
+	relabel := owner.UUID != "" && !sameIdentity(configured, owner)
 	if err := m.prepareLegacy(ctx, a, owner, s.credential()); err != nil {
 		if unownedExpiredLegacy(*a, owner, s.credential()) {
 			return false, nil
@@ -372,6 +376,16 @@ func (m *Manager) Synchronize(ctx context.Context, a *store.Account) (bool, erro
 	if !owns(owner, *a) {
 		after, _ := json.Marshal(a)
 		return !bytes.Equal(before, after), nil
+	}
+	label := owner
+	if relabel && label.Record == nil {
+		// Resolved from a known token, so no profile was fetched yet. A fresh
+		// one keeps Claude Code from re-fetching, and relabeling, for a day.
+		if oauth, err := parseOAuth(s.credential()); err == nil && oauth.AccessToken != "" {
+			if fresh, err := m.profile(ctx, oauth.AccessToken); err == nil && sameIdentity(fresh, owner) {
+				label = fresh
+			}
+		}
 	}
 	locked, unlock, err := m.locks(ctx)
 	if err != nil {
@@ -385,6 +399,11 @@ func (m *Manager) Synchronize(ctx context.Context, a *store.Account) (bool, erro
 	if !reflect.DeepEqual(current, s) {
 		return false, ErrConflict
 	}
+	if relabel {
+		if s, err = m.relabel(locked, current, *a, label); err != nil {
+			return false, err
+		}
+	}
 	if err := m.preserveBeforeAdoption(*a, s.credential()); err != nil {
 		return false, err
 	}
@@ -395,6 +414,31 @@ func (m *Manager) Synchronize(ctx context.Context, a *store.Account) (bool, erro
 	m.publish(owner, []store.Account{*a})
 	after, _ := json.Marshal(a)
 	return !bytes.Equal(before, after), nil
+}
+
+// relabel points oauthAccount at the account that owns the credential and
+// keeps every other config key. The caller holds Claude's locks and has
+// verified current against its own read.
+func (m *Manager) relabel(ctx context.Context, current snapshot, a store.Account, owner Identity) (snapshot, error) {
+	identityData, err := identityRecord(a, owner)
+	if err != nil {
+		return current, err
+	}
+	config, err := object(current.Config.Data)
+	if err != nil {
+		return current, err
+	}
+	config["oauthAccount"] = identityData
+	data, _ := json.MarshalIndent(config, "", "  ")
+	next := current
+	next.Config = fileValue{Data: data, Exists: true}
+	if err := validateSnapshotSize(next); err != nil {
+		return current, err
+	}
+	if err := writeLocked(ctx, m.paths.ConfigFile, next.Config); err != nil {
+		return current, err
+	}
+	return next, nil
 }
 
 // Refresh is the sole refresh-grant gate once the native bridge is enabled.
