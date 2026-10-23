@@ -5,6 +5,7 @@ import { createDesktopRelay, desktopRelayLoopback } from './desktop-relay.js';
 import { createRemote } from './remote.js';
 import { createPhoneSettings } from './phone-settings.js';
 import { switcherMark, playMark } from './brand.js';
+import { mergeInstallProgress, installProgressHTML, paintInstallProgress } from './update-progress.js';
 import { SECTIONS, navHTML, sectionHeadHTML, accountLayout, LAYOUTS, layoutChooserHTML, menuPreviewHTML, ladderHTML, securityHeroHTML } from './settings-visuals.js';
 
 const providersEl = document.getElementById('providers');
@@ -751,6 +752,7 @@ function updateBannerHTML() {
         (you are running ${escapeHTML(data.version)})
       </span>
       <button class="update-install" data-act="install-update" ${updateRunning ? 'disabled' : ''}>${updateRunning ? 'Installing…' : 'Install &amp; restart'}</button>
+      ${updateRunning && updateProgress ? installProgressHTML(updateProgress, info.latest) : ''}
     </div>`;
 }
 
@@ -1465,25 +1467,33 @@ document.addEventListener('click', (event) => {
 /* ---------- update flow ---------- */
 
 let updateRunning = false;
+let updateProgress = null; // the install's latest report while one runs
 
 async function runUpdateFlow(button) {
   if (authState.locked || updateRunning) return;
   updateRunning = true;
+  updateProgress = { step: 'starting', fraction: 0 };
   const oldVersion = data.version;
   const banner = button.closest('.update-banner');
   const original = button.textContent;
   button.disabled = true;
   button.textContent = 'Installing...';
   banner.classList.add('updating');
+  banner.insertAdjacentHTML('beforeend', installProgressHTML(updateProgress, data.update?.latest));
+  let finished = false;
+  watchUpdateProgress(() => finished);
   try {
     // A successful exec can disconnect the request. A completed HTTP error
     // is definitive and must interrupt both the delay and state polling.
     let installError, fail;
     const failure = new Promise(resolve => { fail = resolve; });
-    api('/api/update', { method: 'POST', timeoutMs: 660000 }).catch(error => {
+    const restarting = () => showUpdateProgress({ step: 'restarting', fraction: 1 });
+    api('/api/update', { method: 'POST', timeoutMs: 660000 }).then(restarting, error => {
       if (error.status || error.name === 'TimeoutError' || authState.locked) {
         installError = error;
         fail();
+      } else {
+        restarting(); // the server restarted under the request
       }
     });
     const deadline = Date.now() + 690000;
@@ -1509,12 +1519,33 @@ async function runUpdateFlow(button) {
   } catch (err) {
     if (!authState.locked) toast('Update failed: ' + err.message);
   } finally {
+    finished = true;
     updateRunning = false;
+    updateProgress = null;
+    for (const node of document.querySelectorAll('.update-progress')) node.remove();
     button.disabled = false;
     button.textContent = original;
     banner.classList.remove('updating');
     render();
   }
+}
+
+// While an install runs, its progress is read a few times a second.
+async function watchUpdateProgress(finished) {
+  while (!finished() && updateProgress?.step !== 'restarting') {
+    await new Promise(resolve => setTimeout(resolve, 400));
+    if (finished()) return;
+    const report = await api('/api/update', { timeoutMs: 2000 }).catch(() => null);
+    if (!finished()) showUpdateProgress(report?.install);
+  }
+}
+
+// Every update banner on the page paints the same report in place.
+function showUpdateProgress(report) {
+  const next = mergeInstallProgress(updateProgress, report);
+  if (!updateRunning || next === updateProgress) return;
+  updateProgress = next;
+  for (const node of document.querySelectorAll('.update-progress')) paintInstallProgress(node, next);
 }
 
 /* ---------- boot ---------- */
@@ -2367,7 +2398,8 @@ async function renderSettings() {
         <p class="set-version">Version ${escapeHTML(data.version || 'unknown')}</p>
         ${update.update_available
           ? `<div class="update-banner set-update"><span>Version ${escapeHTML(update.latest || '')} is available.</span>
-              <button type="button" class="update-install primary" data-act="install-update" ${updateRunning ? 'disabled' : ''}>${updateRunning ? 'Installing…' : 'Install &amp; restart'}</button></div>`
+              <button type="button" class="update-install primary" data-act="install-update" ${updateRunning ? 'disabled' : ''}>${updateRunning ? 'Installing…' : 'Install &amp; restart'}</button>
+              ${updateRunning && updateProgress ? installProgressHTML(updateProgress, update.latest) : ''}</div>`
           : `<button type="button" id="check-updates">Check for updates</button>`}
         <p class="set-about-tag">One harness, all your AI accounts.</p>
         <p class="set-foot">Unofficial; not affiliated with Anthropic, OpenAI, xAI, Google or GitHub.</p>

@@ -80,6 +80,32 @@ struct UpdateInfo: Codable, Equatable {
     let update_available: Bool?
 }
 
+// InstallProgress mirrors the server's update.Progress: the step an install
+// is on, how far along it is (0…1) and the bytes downloaded so far.
+struct InstallProgress: Codable, Equatable {
+    let step: String
+    let fraction: Double
+    var done: Int64? = nil
+    var total: Int64? = nil
+}
+
+struct UpdateProgressResponse: Decodable {
+    let install: InstallProgress?
+}
+
+func installStepText(_ progress: InstallProgress) -> String {
+    switch progress.step {
+    case "downloading":
+        guard let total = progress.total, total > 0 else { return "Downloading…" }
+        let megabytes = { (bytes: Int64) in String(format: "%.1f", Double(bytes) / 1_000_000) }
+        return "Downloading · \(megabytes(progress.done ?? 0)) of \(megabytes(total)) MB"
+    case "checking": return "Checking the new version"
+    case "installing": return "Installing"
+    case "restarting": return "Restarting Switcher…"
+    default: return "Starting…"
+    }
+}
+
 // AwakeState mirrors the server's keep-awake state (internal/awake).
 struct AwakeState: Codable, Equatable {
     let supported: Bool
@@ -887,6 +913,101 @@ final class SpinnerButton: NSView {
     }
 }
 
+// UpdateProgressView is the install card: the release on its way, the step
+// it is on and a bar that eases toward each report, with a soft shine
+// running along the filled part while the work goes on. Layer animations
+// are used because AppKit's animator() stalls in the menu's run loop.
+final class UpdateProgressView: NSView {
+    static let height: CGFloat = 66
+    private let percent = label("", font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium), color: dimColor)
+    private let detail = label("", font: NSFont.systemFont(ofSize: 11), color: dimColor)
+    private let track = CALayer()
+    private let fill = CAGradientLayer()
+    private let shine = CAGradientLayer()
+    private(set) var progress: InstallProgress
+
+    init(width: CGFloat, release: String?, progress: InstallProgress) {
+        self.progress = progress
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.height))
+        wantsLayer = true
+        layer?.backgroundColor = surfaceColor.cgColor
+        layer?.borderColor = cardBorderColor.cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 10
+        let inner = width - 2 * cardInset
+        let titleText = release.map { "Updating to \($0)" } ?? "Updating Switcher"
+        let title = label(titleText, font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), color: inkColor)
+        title.frame = NSRect(x: cardInset, y: 40, width: inner - 52, height: 16)
+        addSubview(title)
+        percent.alignment = .right
+        percent.frame = NSRect(x: width - cardInset - 48, y: 40, width: 48, height: 16)
+        addSubview(percent)
+
+        track.frame = CGRect(x: cardInset, y: 29, width: inner, height: 6)
+        track.cornerRadius = 3
+        track.masksToBounds = true
+        track.backgroundColor = (palette.dark ? NSColor.white.withAlphaComponent(0.1)
+            : NSColor.black.withAlphaComponent(0.07)).cgColor
+        layer?.addSublayer(track)
+        fill.frame = CGRect(x: 0, y: 0, width: track.bounds.height, height: track.bounds.height)
+        fill.cornerRadius = 3
+        fill.masksToBounds = true
+        fill.startPoint = CGPoint(x: 0, y: 0.5)
+        fill.endPoint = CGPoint(x: 1, y: 0.5)
+        fill.colors = [accentColor.blended(withFraction: 0.12, of: .black) ?? accentColor,
+            accentColor.blended(withFraction: 0.22, of: .white) ?? accentColor].map(\.cgColor)
+        track.addSublayer(fill)
+        shine.frame = CGRect(x: -56, y: 0, width: 56, height: track.bounds.height)
+        shine.startPoint = CGPoint(x: 0, y: 0.5)
+        shine.endPoint = CGPoint(x: 1, y: 0.5)
+        shine.colors = [0, 0.5, 0].map { NSColor.white.withAlphaComponent($0).cgColor }
+        fill.addSublayer(shine)
+
+        detail.frame = NSRect(x: cardInset, y: 9, width: inner, height: 14)
+        addSubview(detail)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel(titleText)
+        show(progress, animated: false)
+        #if !SWITCHER_LAYOUT_TEST
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { startShine() }
+        #endif
+    }
+
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    var fillWidth: CGFloat { fill.frame.width }
+    var percentText: String { percent.stringValue }
+    var detailText: String { detail.stringValue }
+
+    func show(_ progress: InstallProgress, animated: Bool = true) {
+        self.progress = progress
+        let fraction = min(max(progress.fraction, 0), 1)
+        percent.stringValue = "\(Int((fraction * 100).rounded()))%"
+        detail.stringValue = installStepText(progress)
+        detail.toolTip = detail.stringValue
+        setAccessibilityValue(detail.stringValue + ", \(percent.stringValue)")
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        CATransaction.setAnimationDuration(0.45)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        fill.frame.size.width = max(track.bounds.height, track.bounds.width * CGFloat(fraction))
+        CATransaction.commit()
+    }
+
+    // The shine crosses the whole track; the fill clips it, so it only
+    // shows on the part already done and rests a beat before the next pass.
+    private func startShine() {
+        let run = CABasicAnimation(keyPath: "position.x")
+        run.fromValue = -shine.bounds.width / 2
+        run.toValue = track.bounds.width + shine.bounds.width / 2
+        run.duration = 1.8
+        run.repeatCount = .infinity
+        run.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        shine.add(run, forKey: "shine")
+    }
+}
+
 struct OwnedServer {
     let id: UUID
     let terminate: () -> Void
@@ -1035,6 +1156,41 @@ func menuHTTPResult(_ data: Data?, response: URLResponse?, error: Error?) -> Res
     return .success(data ?? Data())
 }
 
+// badgedStatusImage puts the update badge on the menu bar mark: a disc at
+// the lower right with an up arrow cut out of it, set apart from the mark
+// by a thin gap. The image grows a little to the right, so the badge
+// covers less of the S. Everything stays one template image, so macOS
+// tints the badge with the mark for a light or dark menu bar.
+func badgedStatusImage(_ mark: NSImage) -> NSImage {
+    let size = NSSize(width: mark.size.width + mark.size.height * 0.3, height: mark.size.height)
+    let image = NSImage(size: size, flipped: false) { rect in
+        guard let context = NSGraphicsContext.current?.cgContext else { return false }
+        mark.draw(in: NSRect(origin: .zero, size: mark.size))
+        let radius = rect.height * 0.25
+        let center = CGPoint(x: rect.maxX - radius, y: rect.minY + radius)
+        func disc(_ r: CGFloat) -> CGRect { CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r) }
+        context.setBlendMode(.clear)
+        context.fillEllipse(in: disc(radius + rect.height * 0.07))
+        context.setBlendMode(.normal)
+        context.setFillColor(NSColor.black.cgColor)
+        context.fillEllipse(in: disc(radius))
+        let arm = radius * 0.5, rise = radius * 0.55
+        context.move(to: CGPoint(x: center.x, y: center.y - rise))
+        context.addLine(to: CGPoint(x: center.x, y: center.y + rise))
+        context.move(to: CGPoint(x: center.x - arm, y: center.y + rise - arm))
+        context.addLine(to: CGPoint(x: center.x, y: center.y + rise))
+        context.addLine(to: CGPoint(x: center.x + arm, y: center.y + rise - arm))
+        context.setBlendMode(.clear)
+        context.setLineWidth(rect.height * 0.08)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.strokePath()
+        return true
+    }
+    image.isTemplate = true
+    return image
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     #if SWITCHER_LAYOUT_TEST
     let statusItem: NSStatusItem? = nil
@@ -1044,7 +1200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     let menu = NSMenu()
     let runtime: MenuRuntime
     var serverProcess: OwnedServer?
-    var cachedState: AppState?
+    var cachedState: AppState? { didSet { refreshStatusIcon() } }
     var hoverCards: [HoverCard] = []
     var hoverTimer: Timer?
     var menuOpen = false
@@ -1074,6 +1230,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var refreshButton: SpinnerButton?
     private var updateActionRunning = false
     private var updateGeneration = 0
+    private(set) var installProgress: InstallProgress?   // set while an install runs
+    private var installRelease: String?
+    private(set) var installProgressView: UpdateProgressView?
     private var menuActionMessage = ""
     private var awakeBusy = false
     private var awakeChoice: String?        // the chip that started the running session
@@ -1082,6 +1241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var awakeStatusLabel: NSTextField?
     private var relaunching = false
     private var terminationSignal: DispatchSourceSignal?
+    private var statusMark: NSImage?
+    private(set) var statusBadge: String?   // the release the menu bar badge announces
 
     init(runtime: MenuRuntime = MenuRuntime()) {
         self.runtime = runtime
@@ -1144,11 +1305,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         if let mark = Bundle.main.image(forResource: "MenubarTemplate") {
             mark.isTemplate = true
             mark.size = NSSize(width: 18, height: 18)
+            statusMark = mark
             statusItem?.button?.image = mark
         } else {
             statusItem?.button?.title = "⇄"
         }
         statusItem?.button?.toolTip = "Switcher"
+        refreshStatusIcon()
         menu.autoenablesItems = false
         statusItem?.menu = menu
         menu.delegate = self
@@ -1160,6 +1323,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let alerts = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.deliverDueResetAlerts() }
         RunLoop.main.add(alerts, forMode: .common)
         #endif
+    }
+
+    // The menu bar mark carries a badge while a newer release waits.
+    func refreshStatusIcon() {
+        let update = cachedState?.update
+        let badge = update?.update_available == true ? (update?.latest ?? "") : nil
+        guard badge != statusBadge else { return }
+        statusBadge = badge
+        guard let button = statusItem?.button else { return }
+        button.toolTip = badge.map { $0.isEmpty ? "Switcher · Update available" : "Switcher · \($0) available" } ?? "Switcher"
+        guard let mark = statusMark else { return }
+        let image = badge == nil ? mark : badgedStatusImage(mark)
+        image.accessibilityDescription = badge == nil ? "Switcher" : "Switcher, update available"
+        button.image = image
     }
 
     // Opening draws from the cache immediately (no network on the main
@@ -1614,7 +1791,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
         // Bottom actions: equal-width buttons, text vertically centered.
         let installAvailable = state?.update?.update_available == true
-        let updateTitle = updateActionRunning ? "Working…" : installAvailable ? "Install update" : "Check for updates"
+        let updateTitle = installProgress != nil ? "Installing…" : updateActionRunning ? "Working…"
+            : installAvailable ? "Install update" : "Check for updates"
         let buttonWidth = (menuWidth - 2 * edgeInset - 10) / 2
         let actionRow = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 46))
         let webCard = cardView(width: buttonWidth, height: 38)
@@ -1644,7 +1822,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         updateCard.addSubview(updateButton)
         actionRow.addSubview(updateCard)
         menu.addItem(menuItemWithView(actionRow))
-        if !menuActionMessage.isEmpty {
+        installProgressView = nil
+        if let progress = installProgress {
+            let card = UpdateProgressView(width: contentWidth, release: installRelease, progress: progress)
+            installProgressView = card
+            menu.addItem(menuItemWithView(centered(card, verticalPadding: 4)))
+        } else if !menuActionMessage.isEmpty {
             let feedback = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 26))
             let text = label(menuActionMessage, font: NSFont.systemFont(ofSize: 11), color: dimColor)
             text.frame = NSRect(x: edgeInset, y: 5, width: contentWidth, height: 16)
@@ -2193,7 +2376,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         updateGeneration += 1
         let generation = updateGeneration
         let oldVersion = cachedState?.version
-        menuActionMessage = install ? "Installing update… Switcher restarts by itself" : "Checking for updates…"
+        menuActionMessage = install ? "" : "Checking for updates…"
+        if install {
+            installProgress = InstallProgress(step: "starting", fraction: 0)
+            installRelease = cachedState?.update?.latest
+            pollInstallProgress(generation: generation)
+        }
         rebuildMenu()
         post(path: install ? "api/update" : "api/update/check", timeout: install ? 660 : 30) { [weak self] result in
             guard let self = self else { return }
@@ -2201,6 +2389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 if case .failure(let error) = result, (error as NSError).domain == "SwitcherHTTP" {
                     self.finishUpdateFailure(error, install: true)
                 } else {
+                    // Installed, or the server restarted under the request.
+                    self.showInstallProgress(InstallProgress(step: "restarting", fraction: 1))
                     self.awaitUpdatedServer(oldVersion: oldVersion, generation: generation, remaining: 20)
                 }
                 return
@@ -2227,8 +2417,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
+    // While an install runs, the menu reads its progress a few times a
+    // second. Reports never move the bar backwards.
+    private func pollInstallProgress(generation: Int) {
+        runtime.schedule(0.4) { [weak self] in
+            guard let self = self, !self.quitting, self.updateGeneration == generation,
+                  let current = self.installProgress, current.step != "restarting" else { return }
+            self.performRequest(self.makeRequest(path: "api/update", timeout: 2)) { [weak self] data, response, _ in
+                guard let self = self, !self.quitting, self.updateGeneration == generation else { return }
+                if (response as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                   let progress = (try? JSONDecoder().decode(UpdateProgressResponse.self, from: data))?.install {
+                    self.showInstallProgress(progress)
+                }
+                self.pollInstallProgress(generation: generation)
+            }
+        }
+    }
+
+    func showInstallProgress(_ progress: InstallProgress) {
+        guard let current = installProgress, progress.fraction >= current.fraction else { return }
+        installProgress = progress
+        installProgressView?.show(progress)
+    }
+
     private func finishUpdateFailure(_ error: Error, install: Bool) {
         updateActionRunning = false
+        installProgress = nil
         menuActionMessage = install ? "Update installation failed" : "Update check failed"
         rebuildMenu()
         runtime.showError(install ? "Could not install update" : "Could not check for updates", error.localizedDescription)
@@ -2250,6 +2464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                    let state = try? JSONDecoder().decode(AppState.self, from: data),
                    let version = state.version, version != oldVersion {
                     self.updateActionRunning = false
+                    self.installProgress = nil
                     self.menuActionMessage = "Updated to \(version)"
                     _ = self.acceptStateResponse(state, serial: serial)
                     self.rebuildMenu()

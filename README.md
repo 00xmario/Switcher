@@ -117,10 +117,12 @@ lives in the menu bar and serves its dashboard on <http://127.0.0.1:8787>.
 Turn on **Start at login** in its menu to keep it around. To build from
 source (Go 1.27+): `make install`.
 
-**Updates.** *Install update* in the menu or the dashboard downloads the new
+**Updates.** When a new release is out, the menu bar icon shows a small
+arrow badge. *Install update* in the menu or the dashboard downloads the new
 release straight from GitHub, checks it and replaces the whole app, then
-Switcher restarts by itself. No GitHub account or command-line tools are
-needed. If Switcher sits in a folder you cannot change, such as Applications
+Switcher restarts by itself; the menu and the dashboard show a progress
+bar meanwhile. No GitHub account or command-line tools are needed. If
+Switcher sits in a folder you cannot change, such as Applications
 on a standard account, macOS asks for an administrator password. Versions
 up to 1.11 updated through the GitHub CLI and fail on Macs without it;
 update those once with the install script above.

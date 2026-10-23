@@ -122,6 +122,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts", a.handleAddKey)
 	mux.HandleFunc("POST /api/accounts/{id}/use-reset", a.handleUseReset)
 	mux.HandleFunc("PATCH /api/accounts/{id}", a.handleAccountPatch)
+	mux.HandleFunc("GET /api/update", a.handleUpdateState)
 	mux.HandleFunc("POST /api/update", a.handleUpdate)
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
 	a.registerAwakeRoutes(mux)
@@ -1315,6 +1316,12 @@ func (a *API) UpdateState() update.State {
 		return update.State{}
 	}
 	return a.Updater.State()
+}
+
+// handleUpdateState answers the cached check and any install in flight. The
+// menu polls it while an install runs, without the cost of a full state.
+func (a *API) handleUpdateState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.UpdateState())
 }
 
 // handleUpdate installs the latest release and restarts. A plain binary

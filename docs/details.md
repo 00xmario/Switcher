@@ -215,7 +215,11 @@ required; OpenCode Go uses its own API key.
   unexpectedly exited server that it started at most three times; an existing
   external server is never adopted or terminated. **Check for updates** fetches
   release metadata only. Installation is a separate explicit action that
-  verifies the asset checksum and version before atomic replacement.
+  verifies the asset checksum and version before atomic replacement. A
+  waiting release badges the menu bar icon. During an install the menu and
+  the dashboard poll `GET /api/update`, whose `install` field reports the step
+  (downloading, checking, installing, restarting), the downloaded bytes and a
+  0–1 fraction; their bars never move backwards.
 - **CLI setup status**: Settings checks the inspected Codex user config for
   Switcher's URL and lists stored Switcher accounts separately from native
   CLI configuration. Configure Codex can update that file; no native CLI

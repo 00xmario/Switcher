@@ -263,7 +263,11 @@ func (c *fakeUpdateChecker) Check(context.Context) (update.State, error) {
 	return c.State(), c.checkErr
 }
 func (c *fakeUpdateChecker) State() update.State {
-	return update.State{Latest: "v9.0.0", Available: c.refreshes.Load() > 0}
+	state := update.State{Latest: "v9.0.0", Available: c.refreshes.Load() > 0}
+	if c.installs.Load() > 0 {
+		state.Install = &update.Progress{Step: "downloading", Fraction: 0.4, Done: 4, Total: 8}
+	}
+	return state
 }
 func (c *fakeUpdateChecker) InstallAndRestart() error {
 	c.installs.Add(1)
@@ -280,7 +284,7 @@ func TestUpdateCheckRefreshesOnlyMetadataAndKeepsAuthAndCSRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	checker := &fakeUpdateChecker{}
-	api := &API{Settings: prefs, Updater: checker}
+	api := &API{Settings: prefs, Updater: checker, Version: "8.0.0"}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	handler := (&AuthGate{Store: prefs}).Wrap(mux)
@@ -314,6 +318,15 @@ func TestUpdateCheckRefreshesOnlyMetadataAndKeepsAuthAndCSRF(t *testing.T) {
 	}
 	if w := call("POST", "/api/update", true, true); w.Code != 500 || checker.installs.Load() != 1 {
 		t.Fatal("install route no longer uses the separate install operation")
+	}
+	if w := call("GET", "/api/update", false, false); w.Code != 401 {
+		t.Fatalf("anonymous progress read: %d", w.Code)
+	}
+	w = call("GET", "/api/update", true, false)
+	var progress update.State
+	if err := json.Unmarshal(w.Body.Bytes(), &progress); err != nil || w.Code != 200 || progress.Install == nil ||
+		progress.Install.Step != "downloading" || progress.Install.Fraction != 0.4 || checker.refreshes.Load() != 1 || checker.installs.Load() != 1 {
+		t.Fatalf("progress read did not answer the cached state alone: %d %s", w.Code, w.Body.String())
 	}
 	checker.checkErr = errors.New("fixture metadata unavailable")
 	if w := call("POST", "/api/update/check", true, true); w.Code != 503 || checker.installs.Load() != 1 {

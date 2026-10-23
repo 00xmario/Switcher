@@ -27,7 +27,7 @@ func appBundle(exe string) (string, bool) {
 // install at one boundary. Tests supply all of them.
 type appOps struct {
 	tempDir  func(dir, pattern string) (string, error)
-	download func(ctx context.Context, tag, asset, dir string) error
+	download func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error
 	attach   func(ctx context.Context, image, mountpoint string) error
 	detach   func(mountpoint string) error
 	// version reads CFBundleShortVersionString of an app.
@@ -82,9 +82,12 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	}
 	defer ops.removeAll(work)
 	asset := "Switcher_" + latest + ".dmg"
-	if err := ops.download(ctx, tag, asset, work); err != nil {
+	c.setStep("downloading", 0)
+	defer c.setStep("", 0)
+	if err := ops.download(ctx, tag, asset, work, c.downloaded); err != nil {
 		return err
 	}
+	c.setStep("checking", downloadShare)
 	image := filepath.Join(work, asset)
 	if err := verifyChecksum(image, asset); err != nil {
 		return err
@@ -102,6 +105,7 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 		return err
 	}
 
+	c.setStep("installing", installingShare)
 	if !writable {
 		if err := ops.adminSwap(ctx, source, bundle); err != nil {
 			return fmt.Errorf("install update in %s: %w", parent, err)
@@ -110,6 +114,7 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 		return err
 	}
 	log.Printf("update: installed Switcher %s, restarting", latest)
+	c.setStep("restarting", 1)
 	if err := ops.restart(bundle, exe); err != nil {
 		return fmt.Errorf("Switcher %s is installed but did not restart; quit and open Switcher: %w", latest, err)
 	}
@@ -184,8 +189,8 @@ func swapApp(ctx context.Context, ops appOps, source, bundle, latest string) err
 func systemAppOps() appOps {
 	return appOps{
 		tempDir: os.MkdirTemp,
-		download: func(ctx context.Context, tag, asset, dir string) error {
-			return downloadRelease(ctx, tag, asset, dir, 500<<20)
+		download: func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
+			return downloadRelease(ctx, tag, asset, dir, 500<<20, progress)
 		},
 		attach: func(ctx context.Context, image, mountpoint string) error {
 			return run(ctx, "/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mountpoint, image)

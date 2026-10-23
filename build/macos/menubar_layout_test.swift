@@ -150,6 +150,114 @@ func runMenuActionRegressionFixtures() {
     print("Native update check, refresh errors, unknown reset ledger, bounded owned recovery, and deliberate quit: OK")
 }
 
+// Update badge and install progress: the menu bar mark announces a waiting
+// release, and an install draws its progress from the server's reports.
+func runUpdateBadgeAndProgressFixtures() {
+    let mark = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+        NSColor.black.setFill(); rect.fill(); return true
+    }
+    let badged = badgedStatusImage(mark)
+    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(badged.size.width * 4), pixelsHigh: 72,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0)!
+    bitmap.size = badged.size
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+    badged.draw(in: NSRect(origin: .zero, size: badged.size))
+    NSGraphicsContext.restoreGraphicsState()
+    func alpha(_ x: CGFloat, _ y: CGFloat) -> CGFloat {   // points, origin bottom left
+        bitmap.colorAt(x: Int(x * 4), y: Int((badged.size.height - y) * 4))?.alphaComponent ?? -1
+    }
+    let center = CGPoint(x: badged.size.width - 4.5, y: 4.5)
+    guard badged.isTemplate, badged.size.width > 18, badged.size.height == 18,
+          alpha(3, 15) > 0.99,                                  // the mark itself
+          alpha(center.x - 4.9, center.y) < 0.01,               // the gap around the badge
+          alpha(center.x - 3, center.y - 1.5) > 0.99,           // the disc
+          alpha(center.x, center.y) < 0.01,                     // the arrow's stem
+          alpha(center.x, center.y + 2.4) < 0.01 else {         // the arrow's head
+        fail("The update badge must be a disc with an arrow cut out, set apart from the mark")
+    }
+
+    func response(_ status: Int) -> HTTPURLResponse {
+        HTTPURLResponse(url: URL(string: "https://fixture.invalid/update")!, statusCode: status,
+            httpVersion: nil, headerFields: nil)!
+    }
+    func fixtureState(_ update: UpdateInfo?, version: String = "fixture-1") -> AppState {
+        AppState(accounts: [], order: [], hidden: [], version: version,
+            update: update, menu_usage_bars: true, reset_notifications: false)
+    }
+    var requests: [URLRequest] = []
+    var completions: [(Data?, URLResponse?, Error?) -> Void] = []
+    var tasks: [(TimeInterval, () -> Void)] = []
+    var errors: [String] = []
+    var runtime = MenuRuntime()
+    runtime.request = { request, completion in requests.append(request); completions.append(completion) }
+    runtime.schedule = { delay, task in tasks.append((delay, task)) }
+    runtime.showError = { title, message in errors.append(title + ": " + message) }
+    runtime.deviceToken = { "fixture-device-token" }
+    func runTask(_ delay: TimeInterval) {
+        guard let index = tasks.firstIndex(where: { $0.0 == delay }) else { fail("Missing scheduled task after \(delay)s") }
+        tasks.remove(at: index).1()
+    }
+
+    let delegate = AppDelegate(runtime: runtime)
+    delegate.applyMenuState(fixtureState(UpdateInfo(latest: "v2.0.0", update_available: true)))
+    guard delegate.statusBadge == "v2.0.0" else { fail("A waiting release must badge the menu bar mark") }
+    delegate.applyMenuState(fixtureState(UpdateInfo(latest: "fixture-1", update_available: false)))
+    guard delegate.statusBadge == nil else { fail("The badge must go once no newer release waits") }
+    delegate.applyMenuState(fixtureState(UpdateInfo(latest: "v2.0.0", update_available: true)))
+
+    delegate.runUpdate()
+    guard requests.count == 1, requests[0].url?.path == "/api/update", requests[0].httpMethod == "POST",
+          let card = delegate.installProgressView, card.percentText == "0%",
+          delegate.menu.items.contains(where: { $0.view?.subviews.contains(card) == true }) else {
+        fail("Installing must show the progress card in the menu")
+    }
+    let install = completions.removeFirst()
+    runTask(0.4)
+    guard requests.count == 2, requests[1].url?.path == "/api/update", requests[1].httpMethod == "GET",
+          requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+        fail("An install must poll its progress")
+    }
+    completions.removeFirst()(Data(#"{"update_available":true,"install":{"step":"downloading","fraction":0.4,"done":4000000,"total":8000000}}"#.utf8), response(200), nil)
+    let trackWidth = menuWidth - 2 * edgeInset - 2 * cardInset
+    guard card.percentText == "40%", card.detailText == "Downloading · 4.0 of 8.0 MB",
+          abs(card.fillWidth - trackWidth * 0.4) < 0.5 else {
+        fail("A progress report must move the bar and say what is happening: \(card.percentText) \(card.detailText) \(card.fillWidth)")
+    }
+    runTask(0.4)
+    completions.removeFirst()(Data(#"{"install":{"step":"downloading","fraction":0.2}}"#.utf8), response(200), nil)
+    guard card.percentText == "40%" else { fail("A late report must not move the bar backwards") }
+    runTask(0.4)
+    completions.removeFirst()(nil, nil, URLError(.timedOut))
+    guard card.percentText == "40%", tasks.contains(where: { $0.0 == 0.4 }) else { fail("A failed progress read must keep polling") }
+    install(Data(#"{"status":"ok"}"#.utf8), response(200), nil)
+    guard card.percentText == "100%", card.detailText == "Restarting Switcher…" else {
+        fail("A finished install must show the restart")
+    }
+    let before = requests.count
+    runTask(0.4)
+    guard requests.count == before else { fail("Progress polling must stop once Switcher restarts") }
+    runTask(1.5)
+    completions.removeLast()(try! JSONEncoder().encode(fixtureState(nil, version: "2.0.0")), response(200), nil)
+    guard delegate.installProgress == nil, delegate.installProgressView == nil else {
+        fail("The progress card must go once the new version answers")
+    }
+
+    requests.removeAll(); completions.removeAll(); tasks.removeAll()
+    let failing = AppDelegate(runtime: runtime)
+    failing.applyMenuState(fixtureState(UpdateInfo(latest: "v2.0.0", update_available: true)))
+    failing.runUpdate()
+    completions.removeFirst()(Data(#"{"error":"fixture install failed"}"#.utf8), response(500), nil)
+    guard failing.installProgress == nil, failing.installProgressView == nil,
+          errors.last?.contains("fixture install failed") == true else {
+        fail("A failed install must drop the progress card and report the error")
+    }
+    runTask(0.4)
+    guard requests.count == 1 else { fail("A failed install must stop polling") }
+    print("Update badge, install progress polling, restart and failure: OK")
+}
+
 // Keep awake: chips start and stop sessions, the lid toggle patches the
 // setting, and a replaced app relaunches itself.
 func runKeepAwakeFixtures() {
@@ -280,6 +388,7 @@ struct MenuBarLayoutTest {
     static func main() {
         _ = NSApplication.shared
         runMenuActionRegressionFixtures()
+        runUpdateBadgeAndProgressFixtures()
         runKeepAwakeFixtures()
         guard planNames["free"] == "Free" else { fail("Free accounts must not display a paid tier") }
         guard planNames["claude_max_5x"] == "Max 5x",

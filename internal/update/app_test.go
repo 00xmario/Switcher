@@ -82,7 +82,7 @@ func newAppFixture(t *testing.T) *appFixture {
 			}
 			return os.MkdirTemp(dir, pattern)
 		},
-		download: func(ctx context.Context, tag, asset, dir string) error {
+		download: func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
 			f.downloads++
 			if tag != "v1.12.0" || asset != "Switcher_1.12.0.dmg" {
 				t.Errorf("download %s %s", tag, asset)
@@ -196,6 +196,65 @@ func TestAppInstallReplacesTheWholeAppAndRestarts(t *testing.T) {
 	}
 	if f.adminSwaps != 0 {
 		t.Error("a writable folder must not ask for an administrator")
+	}
+}
+
+func TestAppInstallReportsEachStepThenClears(t *testing.T) {
+	f := newAppFixture(t)
+	var steps []string
+	step := func() *Progress {
+		install := f.checker.State().Install
+		if install == nil {
+			t.Fatal("no install progress while installing")
+		}
+		steps = append(steps, install.Step)
+		return install
+	}
+	download, attach, copyApp, restart := f.ops.download, f.ops.attach, f.ops.copyApp, f.ops.restart
+	f.ops.download = func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
+		progress(5, 20)
+		if got := step(); got.Fraction != downloadShare/4 || got.Done != 5 || got.Total != 20 {
+			t.Errorf("a quarter downloaded reports %+v", got)
+		}
+		progress(9, -1) // a server that does not say the size
+		if got := step(); got.Fraction != downloadShare/4 || got.Done != 9 || got.Total != 0 {
+			t.Errorf("an unknown size moved the bar: %+v", got)
+		}
+		return download(ctx, tag, asset, dir, progress)
+	}
+	f.ops.attach = func(ctx context.Context, image, mountpoint string) error {
+		if got := step(); got.Fraction != downloadShare {
+			t.Errorf("checking reports %+v", got)
+		}
+		return attach(ctx, image, mountpoint)
+	}
+	f.ops.copyApp = func(ctx context.Context, from, to string) error {
+		if got := step(); got.Fraction != installingShare {
+			t.Errorf("installing reports %+v", got)
+		}
+		return copyApp(ctx, from, to)
+	}
+	f.ops.restart = func(bundle, exe string) error {
+		if got := step(); got.Fraction != 1 {
+			t.Errorf("restarting reports %+v", got)
+		}
+		return restart(bundle, exe)
+	}
+	if err := f.install(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"downloading", "downloading", "checking", "installing", "restarting"}
+	if strings.Join(steps, " ") != strings.Join(want, " ") {
+		t.Errorf("steps = %v, want %v", steps, want)
+	}
+	if f.checker.State().Install != nil {
+		t.Error("a finished install still reports progress")
+	}
+
+	failed := newAppFixture(t)
+	failed.ops.verify = func(context.Context, string) error { return errors.New("fixture signature") }
+	if err := failed.install(); err == nil || failed.checker.State().Install != nil {
+		t.Errorf("a failed install left progress behind: %v", err)
 	}
 }
 
@@ -346,20 +405,26 @@ func TestDownloadReleaseFetchesAssetAndChecksum(t *testing.T) {
 		}
 	})
 	dir := t.TempDir()
-	if err := downloadRelease(context.Background(), "v1.12.0", "Switcher_1.12.0.dmg", dir, 1<<20); err != nil {
+	var reports [][2]int64
+	if err := downloadRelease(context.Background(), "v1.12.0", "Switcher_1.12.0.dmg", dir, 1<<20, func(done, total int64) {
+		reports = append(reports, [2]int64{done, total})
+	}); err != nil {
 		t.Fatal(err)
+	}
+	if len(reports) < 2 || reports[0] != [2]int64{0, 5} || reports[len(reports)-1] != [2]int64{5, 5} {
+		t.Errorf("progress reports %v, want the image's 5 bytes from 0 to 5", reports)
 	}
 	if readFixture(t, filepath.Join(dir, "Switcher_1.12.0.dmg")) != "image" ||
 		readFixture(t, filepath.Join(dir, "Switcher_1.12.0.dmg.sha256")) != "sum" {
 		t.Error("downloaded files differ")
 	}
-	if err := downloadRelease(context.Background(), "v1.12.0", "missing", t.TempDir(), 1<<20); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+	if err := downloadRelease(context.Background(), "v1.12.0", "missing", t.TempDir(), 1<<20, nil); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
 		t.Errorf("missing asset: %v", err)
 	}
-	if err := downloadRelease(context.Background(), "v1.12.0", "Switcher_1.12.0.dmg", t.TempDir(), 2); err == nil || !strings.Contains(err.Error(), "larger than") {
+	if err := downloadRelease(context.Background(), "v1.12.0", "Switcher_1.12.0.dmg", t.TempDir(), 2, nil); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("oversized asset: %v", err)
 	}
-	if err := downloadRelease(context.Background(), "--help", "x", t.TempDir(), 2); err == nil {
+	if err := downloadRelease(context.Background(), "--help", "x", t.TempDir(), 2, nil); err == nil {
 		t.Error("a malformed tag must not reach a URL")
 	}
 }

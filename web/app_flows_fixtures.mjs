@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
+import { mergeInstallProgress, installProgressHTML, paintInstallProgress } from './update-progress.js';
 
 // Imported by app_state_test.mjs so the existing verify target runs these fixtures.
 const source = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
@@ -199,44 +200,103 @@ test('activation is deduplicated across controls and stays pending across a repa
   assert.equal(pendingActivations.size, 0, 'a failure must release the shared guard');
 });
 
-function updateFixture(install) {
-  const messages = [], requests = [];
+// An update bar that records what it was painted with.
+function progressBar() {
+  const parts = { '.update-progress-fill': { style: {} }, '.update-progress-step': {}, '.update-progress-percent': {} };
+  const bar = { paints: [], removed: false, querySelector: selector => parts[selector],
+    setAttribute(name, value) { if (name === 'aria-valuetext') bar.paints.push(value); },
+    remove() { bar.removed = true; } };
+  return bar;
+}
+
+function updateFixture(install, {
+  progress = () => Promise.resolve({}),
+  state = () => Promise.resolve({ version: '2.0', accounts: [] }),
+  timer = callback => callback(),
+} = {}) {
+  const messages = [], requests = [], inserted = [], bars = [];
   let clock = 0;
   const context = vm.createContext({
-    updateRunning: false, data: { version: '1.0' }, stateEpoch: 0, authState: { locked: false },
+    updateRunning: false, updateProgress: null, data: { version: '1.0', update: { latest: 'v2.0' } },
+    stateEpoch: 0, authState: { locked: false },
     Date: { now: () => clock },
     api: (path, options) => {
       requests.push({ path, options });
-      return path === '/api/update' ? install() : Promise.resolve({ version: '2.0', accounts: [] });
+      if (path === '/api/update') return options?.method === 'POST' ? install() : progress();
+      return state();
     },
     fetch: async () => ({ json: async () => ({ version: '1.0' }) }),
-    setTimeout: callback => { clock += 1500; callback(); },
+    setTimeout: callback => { clock += 1500; timer(callback); },
+    document: { querySelectorAll: selector => selector === '.update-progress' ? bars : [] },
+    mergeInstallProgress, installProgressHTML, paintInstallProgress,
     toast: message => messages.push(message), refreshState: async () => {}, render() {}, renderAddProviderMenu() {},
   });
   vm.runInContext(section('async function runUpdateFlow(button) {', '\n/* ---------- boot') + '\nthis.runUpdateFlow = runUpdateFlow;', context);
   const classes = new Set();
   const button = { disabled: false, textContent: 'Install & restart', closest: () => ({
     classList: { add: name => classes.add(name), remove: name => classes.delete(name) },
+    insertAdjacentHTML: (where, html) => inserted.push(html),
   }) };
-  return { context, messages, requests, button, classes };
+  // Progress reads poll alongside the install; these are the other requests.
+  const calls = () => requests.filter(r => r.path !== '/api/update' || r.options?.method === 'POST').map(r => r.path);
+  return { context, messages, requests, calls, button, classes, inserted, bars };
 }
 
 test('a definitive update failure is surfaced before version polling', async () => {
   const error = Object.assign(new Error('fixture download failed'), { status: 500 });
-  const { context, messages, requests, button, classes } = updateFixture(() => Promise.reject(error));
+  const { context, messages, calls, button, classes } = updateFixture(() => Promise.reject(error));
   await context.runUpdateFlow(button);
   assert.deepEqual(messages, ['Update failed: fixture download failed']);
-  assert.deepEqual(requests.map(r => r.path), ['/api/update']);
+  assert.deepEqual(calls(), ['/api/update']);
   assert.equal(button.disabled, false);
   assert.equal(classes.has('updating'), false);
 });
 
 test('an update disconnect is reconciled by authenticated version polling', async () => {
-  const { context, messages, requests, button } = updateFixture(() => Promise.reject(new Error('network disconnected')));
+  const { context, messages, calls, button } = updateFixture(() => Promise.reject(new Error('network disconnected')));
   await context.runUpdateFlow(button);
   assert.deepEqual(messages, ['Updated to Switcher v2.0']);
-  assert.deepEqual(requests.map(r => r.path), ['/api/update', '/api/state']);
+  assert.deepEqual(calls(), ['/api/update', '/api/state']);
   assert.equal(context.stateEpoch, 1, 'old state requests must not undo the observed upgrade');
+  assert.equal(button.disabled, false);
+});
+
+test('install progress paints the bar from server reports, never backwards, then clears it', async () => {
+  const reports = [
+    { update_available: true, install: { step: 'downloading', fraction: 0.4, done: 4e6, total: 8e6 } },
+    { install: { step: 'downloading', fraction: 0.2 } },
+    { update_available: true },
+    { install: { step: 'checking', fraction: 0.8 } },
+  ];
+  const posted = deferred();
+  let version = '1.0';
+  const { context, messages, requests, button, inserted, bars } = updateFixture(() => posted.promise, {
+    progress: () => Promise.resolve(reports.shift() ?? {}),
+    state: () => Promise.resolve({ version, accounts: [] }),
+    timer: callback => setImmediate(callback),
+  });
+  const bar = progressBar();
+  bars.push(bar);
+  const pump = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const run = context.runUpdateFlow(button);
+  assert.equal(inserted.length, 1, 'the banner the install started from must get a bar');
+  assert.match(inserted[0], /aria-valuenow="0"/);
+  assert.match(inserted[0], /Installing Switcher v2\.0/);
+  for (let i = 0; i < 10 && reports.length; i++) await pump();
+  assert.equal(reports.length, 0);
+  assert.deepEqual(bar.paints, ['Downloading · 4.0 of 8.0 MB, 40%', 'Checking the new version, 80%']);
+  posted.resolve({ status: 'ok' });
+  await pump();
+  assert.deepEqual(bar.paints.at(-1), 'Restarting Switcher…, 100%');
+  const reads = requests.filter(r => r.path === '/api/update' && !r.options?.method).length;
+  await pump();
+  assert.equal(requests.filter(r => r.path === '/api/update' && !r.options?.method).length, reads,
+    'progress reads must stop once Switcher restarts');
+  version = '2.0';
+  await run;
+  assert.deepEqual(messages, ['Updated to Switcher v2.0']);
+  assert.equal(bar.removed, true, 'the bar must go once the install ends');
+  assert.equal(context.updateProgress, null);
   assert.equal(button.disabled, false);
 });
 

@@ -36,9 +36,27 @@ const Repo = "00xmario/switcher"
 
 // State carries the cached update check so the UI can render it.
 type State struct {
-	Latest    string `json:"latest,omitempty"`
-	Available bool   `json:"update_available"`
+	Latest    string    `json:"latest,omitempty"`
+	Available bool      `json:"update_available"`
+	Install   *Progress `json:"install,omitempty"`
 }
+
+// Progress is the install in flight, so the menu and the web app can draw
+// a bar. Done and Total count the release download's bytes; Total is 0
+// while the server has not said how large the download is.
+type Progress struct {
+	Step     string  `json:"step"` // downloading, checking, installing, restarting
+	Fraction float64 `json:"fraction"`
+	Done     int64   `json:"done,omitempty"`
+	Total    int64   `json:"total,omitempty"`
+}
+
+// The download fills most of the bar. The steps after it cannot be
+// measured, so each one starts at a fixed point.
+const (
+	downloadShare   = 0.8
+	installingShare = 0.9
+)
 
 // Checker caches the latest known release and refreshes it on demand.
 type Checker struct {
@@ -51,6 +69,7 @@ type Checker struct {
 	metadataFetch   func(context.Context) (string, error) // fixture hook, set before use
 	metadataTimeout time.Duration                         // fixture timeout, capped at 20s
 	installMu       sync.Mutex
+	install         *Progress // the install in flight, guarded by mu
 }
 
 const metadataCheckTimeout = 20 * time.Second
@@ -105,7 +124,36 @@ func (c *Checker) Check(ctx context.Context) (State, error) {
 }
 
 func (c *Checker) stateLocked() State {
-	return State{Latest: c.latest, Available: c.latest != "" && compare(c.latest, c.Current) > 0}
+	state := State{Latest: c.latest, Available: c.latest != "" && compare(c.latest, c.Current) > 0}
+	if c.install != nil {
+		progress := *c.install
+		state.Install = &progress
+	}
+	return state
+}
+
+// setStep moves the install to its next step. An empty step ends it.
+func (c *Checker) setStep(step string, fraction float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if step == "" {
+		c.install = nil
+		return
+	}
+	c.install = &Progress{Step: step, Fraction: fraction}
+}
+
+// downloaded records how much of the release has arrived.
+func (c *Checker) downloaded(done, total int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.install == nil || c.install.Step != "downloading" {
+		return
+	}
+	c.install.Done, c.install.Total = done, max(total, 0)
+	if total > 0 {
+		c.install.Fraction = downloadShare * min(float64(done)/float64(total), 1)
+	}
 }
 
 func (c *Checker) checkCanceled(err error) (State, error) {
@@ -364,8 +412,8 @@ func (c *Checker) InstallAndRestart() error {
 	}
 	return c.installAndRestart(installOps{
 		tempDir: os.MkdirTemp,
-		download: func(ctx context.Context, tag, asset, dir string) error {
-			return downloadRelease(ctx, tag, asset, dir, 200<<20)
+		download: func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
+			return downloadRelease(ctx, tag, asset, dir, 200<<20, progress)
 		},
 		smoke: func(ctx context.Context, path string) ([]byte, error) {
 			return exec.CommandContext(ctx, path, "version").CombinedOutput()
@@ -385,21 +433,38 @@ const userAgent = "Switcher-updater"
 
 // downloadRelease fetches a release asset and its .sha256 into dir. Files
 // are created fresh, so a partial download can never pass for a whole one.
-func downloadRelease(ctx context.Context, tag, asset, dir string, limit int64) error {
+// progress, when set, follows the asset's bytes as they arrive.
+func downloadRelease(ctx context.Context, tag, asset, dir string, limit int64, progress func(done, total int64)) error {
 	if !validTag.MatchString(tag) {
 		return fmt.Errorf("refusing to download malformed release tag %q", tag)
 	}
 	client := &http.Client{}
 	for _, name := range []string{asset + ".sha256", asset} {
 		url := releaseHost + "/" + Repo + "/releases/download/" + tag + "/" + name
-		if err := downloadFile(ctx, client, url, filepath.Join(dir, name), limit); err != nil {
+		var report func(done, total int64)
+		if name == asset {
+			report = progress
+		}
+		if err := downloadFile(ctx, client, url, filepath.Join(dir, name), limit, report); err != nil {
 			return fmt.Errorf("download release: %s: %w", name, err)
 		}
 	}
 	return nil
 }
 
-func downloadFile(ctx context.Context, client *http.Client, url, dest string, limit int64) error {
+// progressWriter reports the running byte count after every write.
+type progressWriter struct {
+	done, total int64
+	report      func(done, total int64)
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	w.done += int64(len(p))
+	w.report(w.done, w.total)
+	return len(p), nil
+}
+
+func downloadFile(ctx context.Context, client *http.Client, url, dest string, limit int64, progress func(done, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -418,7 +483,12 @@ func downloadFile(ctx context.Context, client *http.Client, url, dest string, li
 		return err
 	}
 	defer f.Close()
-	n, err := io.Copy(f, io.LimitReader(resp.Body, limit+1))
+	var body io.Reader = io.LimitReader(resp.Body, limit+1)
+	if progress != nil {
+		progress(0, resp.ContentLength)
+		body = io.TeeReader(body, &progressWriter{total: resp.ContentLength, report: progress})
+	}
+	n, err := io.Copy(f, body)
 	if err != nil {
 		return err
 	}
@@ -435,7 +505,7 @@ func downloadFile(ctx context.Context, client *http.Client, url, dest string, li
 // at the updater boundary. Tests supply every hook and only fixture paths.
 type installOps struct {
 	tempDir    func(string, string) (string, error)
-	download   func(context.Context, string, string, string) error
+	download   func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error
 	smoke      func(context.Context, string) ([]byte, error)
 	executable func() (string, error)
 	rename     func(string, string) error
@@ -476,9 +546,12 @@ func (c *Checker) installAndRestart(ops installOps) error {
 	defer os.RemoveAll(dir)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if err := ops.download(ctx, tag, asset, dir); err != nil {
+	c.setStep("downloading", 0)
+	defer c.setStep("", 0)
+	if err := ops.download(ctx, tag, asset, dir, c.downloaded); err != nil {
 		return err
 	}
+	c.setStep("checking", downloadShare)
 	binaryPath := filepath.Join(dir, asset)
 
 	if err := verifyChecksum(binaryPath, asset); err != nil {
@@ -510,6 +583,7 @@ func (c *Checker) installAndRestart(ops installOps) error {
 
 	// Copy the original without removing its live path. Publish the durable
 	// backup first, then atomically rename the staged binary over the original.
+	c.setStep("installing", installingShare)
 	backup := current + ".previous"
 	backupStage := filepath.Join(dir, "previous")
 	if err := copyBinary(current, backupStage); err != nil {
@@ -543,6 +617,7 @@ func (c *Checker) installAndRestart(ops installOps) error {
 	}
 
 	log.Printf("update: installed %s, restarting", latest)
+	c.setStep("restarting", 1)
 	if err := ops.exec(current); err != nil {
 		return rollback(fmt.Errorf("restart updated binary: %w", err))
 	}

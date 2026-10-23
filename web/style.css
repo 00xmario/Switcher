@@ -932,23 +932,35 @@ html[data-theme="dark"] .menu-logo.monochrome img { filter: invert(1); }
 }
 #update-slot .update-banner button { margin-left: auto; }
 
-/* update flow: thin indeterminate progress across the banner */
-.update-banner { position: relative; overflow: hidden; }
-.update-banner.updating::after {
+/* update flow: the install's real progress, as the server reports it. The
+   bar eases toward each report; a soft shine runs along the part done. */
+.update-banner { position: relative; overflow: hidden; flex-wrap: wrap; }
+.update-progress { flex: 1 0 100%; display: grid; gap: 6px; text-align: left; contain: inline-size; }
+.update-progress-track { height: 6px; border-radius: 3px; overflow: hidden; background: var(--chart-fill); }
+.update-progress-fill {
+  position: relative;
+  height: 100%;
+  min-width: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 88%, #000), color-mix(in srgb, var(--accent) 78%, #fff));
+  transition: width .45s ease-out;
+}
+.update-progress-fill::after {
   content: '';
   position: absolute;
-  left: 0;
+  top: 0;
   bottom: 0;
-  height: 3px;
-  width: 40%;
-  background: var(--accent);
-  border-radius: 2px;
-  animation: update-sweep 1.2s ease-in-out infinite;
+  left: -56px;
+  width: 56px;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / .5), transparent);
+  animation: update-shine 1.8s ease-in-out infinite;
 }
-@keyframes update-sweep {
-  0% { left: -40%; }
-  100% { left: 100%; }
+@keyframes update-shine {
+  70%, 100% { left: 100%; }
 }
+.update-progress-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--dim); font-size: 12px; }
+.update-progress-percent { font-weight: 600; font-variant-numeric: tabular-nums; }
 
 
 /* version badge and footer credit */
@@ -1089,7 +1101,7 @@ button.quiet.danger { color: var(--danger); }
 .logout-card p { color: var(--dim); margin: 14px 0 22px; }
 .logout-card button { color: var(--accent); border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
-  .update-banner.updating::after, #usage-refresh.spinning svg,
+  .update-progress-fill::after, #usage-refresh.spinning svg,
   .recheck-btn.busy svg, .confirm-overlay, .confirm-modal { animation: none; }
 }
 
@@ -1238,7 +1250,7 @@ html[data-effective-theme="dark"] { --mark-knob: #f4fff8; }
 .set-about h3 { margin-top: 10px; font-size: 21px; }
 .set-version { margin: 0 0 8px; color: var(--dim); font-size: 13px; }
 .set-about .settings-sub { max-width: 46ch; margin-top: 6px; }
-.set-update { display: flex; align-items: center; gap: 12px; margin: 0; }
+.set-update { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0; }
 .set-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 18px; margin-top: 6px; }
 .set-links a { color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
 .set-links a:hover { text-decoration: underline; }

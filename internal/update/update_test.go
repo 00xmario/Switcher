@@ -52,7 +52,7 @@ func newInstallFixture(t *testing.T) *installFixture {
 			f.stage = dir
 			return dir, err
 		},
-		download: func(ctx context.Context, tag, asset, dir string) error {
+		download: func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
 			data := []byte("new fixture")
 			if err := os.WriteFile(filepath.Join(dir, asset), data, 0o600); err != nil {
 				return err
@@ -285,13 +285,13 @@ func TestConcurrentReplacementsAreSerialized(t *testing.T) {
 	f := newInstallFixture(t)
 	download := f.ops.download
 	var active atomic.Int32
-	f.ops.download = func(ctx context.Context, tag, asset, dir string) error {
+	f.ops.download = func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
 		if active.Add(1) != 1 {
 			t.Error("overlapping replacements")
 		}
 		defer active.Add(-1)
 		time.Sleep(time.Millisecond)
-		return download(ctx, tag, asset, dir)
+		return download(ctx, tag, asset, dir, progress)
 	}
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
