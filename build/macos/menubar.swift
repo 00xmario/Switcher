@@ -162,6 +162,14 @@ func awakeStatusText(_ state: AwakeState) -> String {
     return "Until \(awakeClock(Date(timeIntervalSince1970: until))) · \(left) left"
 }
 
+// What the closed Keep awake header says, and whether it reads as on.
+func awakeSummary(_ state: AwakeState) -> (text: String, on: Bool) {
+    if let error = state.error, !error.isEmpty { return ("Needs attention", false) }
+    guard state.active else { return ("Off", false) }
+    guard let until = state.until else { return ("On", true) }
+    return ("On · " + (resetRemaining(until) ?? "under a minute") + " left", true)
+}
+
 func awakeLidSubtitle(_ state: AwakeState) -> String {
     if state.lid_active == true { return "Sleep fully disabled. Mind the power" }
     if state.lid_closed == true {
@@ -209,27 +217,28 @@ struct ResetAlertLedger: Codable, Equatable {
 struct ResetAlertPermission: Equatable {
     let message: String
     let canSend: Bool
+    var short: String = ""   // the few words the menu's alerts row has room for
 }
 
 func resetAlertPermission(_ status: UNAuthorizationStatus, alertSetting: UNNotificationSetting,
                           alertStyle: UNAlertStyle, centerSetting: UNNotificationSetting) -> ResetAlertPermission {
     switch status {
     case .authorized where alertSetting == .enabled && alertStyle != .none:
-        return ResetAlertPermission(message: "macOS allows banners (Focus may silence)", canSend: true)
+        return ResetAlertPermission(message: "macOS allows banners (Focus may silence)", canSend: true, short: "Banners allowed")
     case .authorized where centerSetting == .enabled:
-        return ResetAlertPermission(message: "Reset alerts go to Notification Center", canSend: true)
+        return ResetAlertPermission(message: "Reset alerts go to Notification Center", canSend: true, short: "Notification Center only")
     case .authorized:
-        return ResetAlertPermission(message: "Reset alerts hidden in macOS Settings", canSend: false)
+        return ResetAlertPermission(message: "Reset alerts hidden in macOS Settings", canSend: false, short: "Hidden in macOS Settings")
     case .provisional where centerSetting == .enabled:
-        return ResetAlertPermission(message: "Reset alerts delivered quietly by macOS", canSend: true)
+        return ResetAlertPermission(message: "Reset alerts delivered quietly by macOS", canSend: true, short: "Delivered quietly")
     case .provisional:
-        return ResetAlertPermission(message: "Reset alerts hidden in macOS Settings", canSend: false)
+        return ResetAlertPermission(message: "Reset alerts hidden in macOS Settings", canSend: false, short: "Hidden in macOS Settings")
     case .denied:
-        return ResetAlertPermission(message: "Reset alerts blocked in macOS Settings", canSend: false)
+        return ResetAlertPermission(message: "Reset alerts blocked in macOS Settings", canSend: false, short: "Blocked in macOS Settings")
     case .notDetermined:
-        return ResetAlertPermission(message: "Waiting for notification permission", canSend: false)
+        return ResetAlertPermission(message: "Waiting for notification permission", canSend: false, short: "Waiting for permission")
     @unknown default:
-        return ResetAlertPermission(message: "Check macOS notification permission", canSend: false)
+        return ResetAlertPermission(message: "Check macOS notification permission", canSend: false, short: "Check macOS Settings")
     }
 }
 
@@ -1119,6 +1128,19 @@ struct MenuRuntime {
         return plist["CFBundleShortVersionString"] as? String
         #endif
     }
+    // Small per-Mac menu preferences, such as a closed section.
+    var loadFlag: (String) -> Bool = { key in
+        #if SWITCHER_LAYOUT_TEST
+        return false
+        #else
+        return UserDefaults.standard.bool(forKey: key)
+        #endif
+    }
+    var saveFlag: (String, Bool) -> Void = { key, value in
+        #if !SWITCHER_LAYOUT_TEST
+        UserDefaults.standard.set(value, forKey: key)
+        #endif
+    }
     // relaunchApp opens the app again once this process has exited.
     var relaunchApp: () -> Void = {
         #if !SWITCHER_LAYOUT_TEST
@@ -1191,6 +1213,8 @@ func badgedStatusImage(_ mark: NSImage) -> NSImage {
     return image
 }
 
+let awakeCollapsedKey = "keepAwakeCollapsed"
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     #if SWITCHER_LAYOUT_TEST
     let statusItem: NSStatusItem? = nil
@@ -1233,12 +1257,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private(set) var installProgress: InstallProgress?   // set while an install runs
     private var installRelease: String?
     private(set) var installProgressView: UpdateProgressView?
-    private var menuActionMessage = ""
+    private var menuActionMessage = ""     // stays until the next action
+    private var menuNote = ""              // a success note, gone when the menu closes
+    private(set) var updateCheckNote: String?  // shown in the update button until the menu closes
     private var awakeBusy = false
     private var awakeChoice: String?        // the chip that started the running session
     private var awakeShowingTimes = false   // "Until…" shows clock times instead of durations
     private var awakeOptionsOpen = false
+    private(set) var awakeCollapsed = false
     private var awakeStatusLabel: NSTextField?
+    private var awakeSummaryLabel: NSTextField?
     private var relaunching = false
     private var terminationSignal: DispatchSourceSignal?
     private var statusMark: NSImage?
@@ -1247,6 +1275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     init(runtime: MenuRuntime = MenuRuntime()) {
         self.runtime = runtime
         super.init()
+        awakeCollapsed = runtime.loadFlag(awakeCollapsedKey)
     }
 
     var resetAlertLedger: ResetAlertLedger {
@@ -1427,9 +1456,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         hoverTimer?.invalidate()
         hoverTimer = nil
         hoverCards.forEach { $0.clearHover() }
-        // The menu opens on durations again, not on a half-made time choice.
-        if awakeShowingTimes {
+        // The menu opens on durations again, not on a half-made time choice,
+        // and without the notes of the last visit.
+        if awakeShowingTimes || !menuNote.isEmpty || updateCheckNote != nil {
             awakeShowingTimes = false
+            menuNote = ""
+            updateCheckNote = nil
             rebuildMenu()
         }
     }
@@ -1442,9 +1474,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     // The keep-awake countdown changes without new server data.
     private func refreshAwakeStatus() {
-        guard let label = awakeStatusLabel, let awake = cachedState?.awake else { return }
-        let text = awakeStatusText(awake)
-        if label.stringValue != text { label.stringValue = text }
+        guard let awake = cachedState?.awake else { return }
+        if let label = awakeStatusLabel {
+            let text = awakeStatusText(awake)
+            if label.stringValue != text { label.stringValue = text }
+        }
+        if let label = awakeSummaryLabel {
+            let text = awakeSummary(awake).text
+            if label.stringValue != text { label.stringValue = text }
+        }
     }
 
     // fetchStateAsync refreshes the cache off the main thread. The menu is
@@ -1781,10 +1819,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
 
         awakeStatusLabel = nil
+        awakeSummaryLabel = nil
         if let awake = state?.awake, awake.supported {
             menu.addItem(menuItemWithView(spacerView(height: 12)))
-            menu.addItem(menuItemWithView(awakeHead(contentWidth: contentWidth)))
-            menu.addItem(menuItemWithView(centered(awakeCard(awake, contentWidth: contentWidth))))
+            menu.addItem(menuItemWithView(awakeHead(awake, contentWidth: contentWidth)))
+            if !awakeCollapsed {
+                menu.addItem(menuItemWithView(centered(awakeCard(awake, contentWidth: contentWidth))))
+            }
         }
 
         menu.addItem(.separator())
@@ -1792,7 +1833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // Bottom actions: equal-width buttons, text vertically centered.
         let installAvailable = state?.update?.update_available == true
         let updateTitle = installProgress != nil ? "Installing…" : updateActionRunning ? "Working…"
-            : installAvailable ? "Install update" : "Check for updates"
+            : installAvailable ? "Install update" : updateCheckNote ?? "Check for updates"
         let buttonWidth = (menuWidth - 2 * edgeInset - 10) / 2
         let actionRow = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 46))
         let webCard = cardView(width: buttonWidth, height: 38)
@@ -1817,7 +1858,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         updateButton.frame = NSRect(x: 0, y: 9, width: buttonWidth, height: 20)
         updateButton.alignment = .center
         updateButton.attributedTitle = NSAttributedString(string: updateButton.title, attributes: [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: inkColor,
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: updateTitle == updateCheckNote ? accentColor : inkColor,
             .paragraphStyle: centeredParagraph])
         updateCard.addSubview(updateButton)
         actionRow.addSubview(updateCard)
@@ -1827,36 +1869,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             let card = UpdateProgressView(width: contentWidth, release: installRelease, progress: progress)
             installProgressView = card
             menu.addItem(menuItemWithView(centered(card, verticalPadding: 4)))
-        } else if !menuActionMessage.isEmpty {
+        } else if !(menuActionMessage.isEmpty ? menuNote : menuActionMessage).isEmpty {
+            let message = menuActionMessage.isEmpty ? menuNote : menuActionMessage
             let feedback = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 26))
-            let text = label(menuActionMessage, font: NSFont.systemFont(ofSize: 11), color: dimColor)
+            let text = label(message, font: NSFont.systemFont(ofSize: 11), color: dimColor)
             text.frame = NSRect(x: edgeInset, y: 5, width: contentWidth, height: 16)
-            text.toolTip = menuActionMessage
+            text.toolTip = message
             feedback.addSubview(text)
             menu.addItem(menuItemWithView(feedback))
         }
 
-        // Start at login: symmetric card, label left, toggle right.
-        let toggleCard = cardView(width: contentWidth, height: 42)
-        let field = label("Start at login", font: NSFont.systemFont(ofSize: 13), color: inkColor)
-        field.frame = NSRect(x: cardInset, y: 13, width: 180, height: 16)
-        toggleCard.addSubview(field)
-        let toggle = ToggleSwitch(isOn: startAtLoginEnabled())
-        toggle.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: 9)
-        toggle.onChanged = { [weak self] _ in self?.toggleStartAtLogin() }
-        toggleCard.addSubview(toggle)
-        menu.addItem(menuItemWithView(centered(toggleCard, verticalPadding: 4)))
-
-        if state?.reset_notifications == true {
-            let statusItem = NSMenuItem(title: notificationPermission?.message ?? "Checking notification permission",
-                action: nil, keyEquivalent: "")
-            statusItem.isEnabled = false
-            menu.addItem(statusItem)
-            let testItem = NSMenuItem(title: "Send test reset alert", action: #selector(testResetAlert), keyEquivalent: "")
-            testItem.target = self
-            testItem.isEnabled = notificationPermission?.canSend == true
-            menu.addItem(testItem)
-        }
+        menu.addItem(menuItemWithView(centered(settingsCard(contentWidth: contentWidth,
+            alerts: state?.reset_notifications == true), verticalPadding: 4)))
 
         let quitItem = NSMenuItem(title: "Quit Switcher", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -2027,19 +2051,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         return rowTopPad + titleHeight + selectionBlock + usageBlock + rowBottomPad
     }
 
+    // Start at login and, while they are on, reset alerts: one card with a
+    // compact row each. The alerts row says in a few words what macOS
+    // allows; the full sentence is its tooltip.
+    func settingsCard(contentWidth: CGFloat, alerts: Bool) -> NSView {
+        let row: CGFloat = 34, inner = contentWidth - 2 * cardInset
+        let card = cardView(width: contentWidth, height: alerts ? 2 * row + 1 : row)
+        let top = card.frame.height - row
+        let login = label("Start at login", font: NSFont.systemFont(ofSize: 13), color: inkColor)
+        login.frame = NSRect(x: cardInset, y: top + 9, width: inner - 48, height: 16)
+        card.addSubview(login)
+        let toggle = ToggleSwitch(isOn: startAtLoginEnabled())
+        toggle.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: top + 5)
+        toggle.onChanged = { [weak self] _ in self?.toggleStartAtLogin() }
+        card.addSubview(toggle)
+        guard alerts else { return card }
+
+        let divider = NSView(frame: NSRect(x: cardInset, y: row, width: inner, height: 1))
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = cardBorderColor.cgColor
+        card.addSubview(divider)
+        let titleFont = NSFont.systemFont(ofSize: 13)
+        let title = label("Reset alerts", font: titleFont, color: inkColor)
+        let titleWidth = ceil(textWidth(title.stringValue, font: titleFont))
+        title.frame = NSRect(x: cardInset, y: 9, width: titleWidth, height: 16)
+        card.addSubview(title)
+        let permission = notificationPermission
+        let canSend = permission?.canSend == true
+        let testFont = NSFont.systemFont(ofSize: 12.5, weight: .medium)
+        let testWidth = ceil(textWidth("Send test", font: testFont)) + 8
+        let test = NSButton(title: "Send test", target: self, action: #selector(testResetAlert))
+        test.isBordered = false
+        test.isEnabled = canSend
+        test.attributedTitle = NSAttributedString(string: test.title, attributes: [
+            .font: testFont, .foregroundColor: canSend ? accentColor : dimColor])
+        test.frame = NSRect(x: contentWidth - cardInset - testWidth + 4, y: 8, width: testWidth, height: 18)
+        test.setAccessibilityLabel("Send a test reset alert")
+        card.addSubview(test)
+        let statusText = permission.map { $0.short.isEmpty ? $0.message : $0.short } ?? "Checking permission"
+        let status = label(statusText, font: NSFont.systemFont(ofSize: 11.5), color: canSend || permission == nil ? dimColor : warnColor)
+        let statusX = title.frame.maxX + 8
+        status.frame = NSRect(x: statusX, y: 8.5, width: test.frame.minX - 8 - statusX, height: 15)
+        status.toolTip = permission?.message
+        card.addSubview(status)
+        return card
+    }
+
     // MARK: keep awake
 
-    func awakeHead(contentWidth: CGFloat) -> NSView {
-        let head = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 32))
+    // The section header opens and closes the section. Closed, it still
+    // says whether the Mac is being kept awake.
+    func awakeHead(_ state: AwakeState, contentWidth: CGFloat) -> NSView {
+        let head = TapArea(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 32))
         let icon = NSImageView(frame: NSRect(x: edgeInset, y: 5, width: 22, height: 22))
         icon.image = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
         icon.contentTintColor = inkColor
         head.addSubview(icon)
-        let name = label("Keep awake", font: NSFont.systemFont(ofSize: 13, weight: .semibold), color: inkColor)
-        name.frame = NSRect(x: edgeInset + 22 + 10, y: 8, width: contentWidth - 32, height: 16)
+        let nameFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let name = label("Keep awake", font: nameFont, color: inkColor)
+        name.frame = NSRect(x: edgeInset + 22 + 10, y: 8, width: ceil(textWidth(name.stringValue, font: nameFont)), height: 16)
         head.addSubview(name)
+        let chevron = NSImageView(frame: NSRect(x: menuWidth - edgeInset - 12, y: 10, width: 12, height: 12))
+        chevron.image = NSImage(systemSymbolName: awakeCollapsed ? "chevron.right" : "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        chevron.contentTintColor = dimColor
+        head.addSubview(chevron)
+        if awakeCollapsed {
+            let summary = awakeSummary(state)
+            let attention = state.error.map { !$0.isEmpty } ?? false
+            let field = label(summary.text, font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                color: attention ? warnColor : summary.on ? accentColor : dimColor)
+            field.alignment = .right
+            field.frame = NSRect(x: name.frame.maxX + 10, y: 8, width: chevron.frame.minX - 8 - name.frame.maxX - 10, height: 16)
+            field.toolTip = attention ? state.error : awakeStatusText(state)
+            head.addSubview(field)
+            awakeSummaryLabel = field
+        }
+        head.toolTip = awakeCollapsed ? "Show keep awake" : "Hide keep awake"
+        head.setAccessibilityRole(.disclosureTriangle)
+        head.setAccessibilityLabel("Keep awake")
+        head.setAccessibilityValue(awakeCollapsed ? 0 : 1)
+        head.onClicked = { [weak self] in self?.toggleAwakeSection() }
         return head
+    }
+
+    func toggleAwakeSection() {
+        awakeCollapsed.toggle()
+        awakeShowingTimes = false
+        runtime.saveFlag(awakeCollapsedKey, awakeCollapsed)
+        rebuildMenu()
     }
 
     // The chip that matches the running session, if any.
@@ -2353,7 +2454,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self.refreshButton?.setBusy(false)
             switch result {
             case .success:
-                self.menuActionMessage = "Usage refresh accepted"
+                self.menuNote = "Usage refresh accepted"
                 self.fetchStateAsync()
             case .failure(let error):
                 self.menuActionMessage = "Usage refresh failed"
@@ -2409,8 +2510,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                     return
                 }
                 self.updateActionRunning = false
-                self.menuActionMessage = info.update_available == true ? "Update available: \(info.latest ?? "new release")"
-                    : info.latest == nil ? "No update metadata available" : "No newer release available"
+                // An available update turns the button into Install update
+                // and badges the menu bar mark; nothing else needs saying.
+                self.menuActionMessage = ""
+                self.menuNote = info.latest == nil && info.update_available != true ? "No update metadata available" : ""
+                self.updateCheckNote = info.latest != nil && info.update_available != true ? "Up to date" : nil
                 _ = self.beginStateRequest()
                 if let state = self.cachedState { self.applyMenuState(state.withUpdate(info)) }
                 else { self.fetchStateAsync() }
@@ -2470,7 +2574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                    let version = state.version, version != oldVersion {
                     self.updateActionRunning = false
                     self.installProgress = nil
-                    self.menuActionMessage = "Updated to \(version)"
+                    self.menuNote = "Updated to \(version)"
                     _ = self.acceptStateResponse(state, serial: serial)
                     self.rebuildMenu()
                 } else {

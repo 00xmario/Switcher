@@ -38,6 +38,30 @@ func runMenuActionRegressionFixtures() {
           !delegate.acceptStateResponse(fixtureState(), serial: stalePoll) else {
         fail("A successful update check must refresh the install action")
     }
+    func menuTexts(_ menu: NSMenu) -> [String] {
+        func walk(_ view: NSView) -> [String] {
+            ((view as? NSTextField).map { [$0.stringValue] } ?? []) + ((view as? NSButton).map { [$0.title] } ?? [])
+                + view.subviews.flatMap(walk)
+        }
+        return menu.items.compactMap(\.view).flatMap(walk)
+    }
+    guard menuTexts(delegate.menu).contains("Install update"),
+          !menuTexts(delegate.menu).contains(where: { $0.hasPrefix("Update available") }) else {
+        fail("An available update needs no note beside its Install button")
+    }
+    let upToDate = AppDelegate(runtime: runtime)
+    upToDate.applyMenuState(fixtureState(UpdateInfo(latest: "fixture-1", update_available: false)))
+    requests.removeAll(); completions.removeAll()
+    upToDate.runUpdate()
+    completions.removeFirst()(Data(#"{"status":"ok","update":{"latest":"fixture-1","update_available":false}}"#.utf8), response(200), nil)
+    guard upToDate.updateCheckNote == "Up to date", menuTexts(upToDate.menu).contains("Up to date"),
+          !menuTexts(upToDate.menu).contains("No newer release available") else {
+        fail("A check without a newer release must say so in its button, not in a row of its own")
+    }
+    upToDate.menuDidClose(upToDate.menu)
+    guard upToDate.updateCheckNote == nil, menuTexts(upToDate.menu).contains("Check for updates") else {
+        fail("The update check note must go when the menu closes")
+    }
     requests.removeAll(); completions.removeAll()
     delegate.runUpdate()
     guard requests.count == 1, requests[0].url?.path == "/api/update" else { fail("An explicit available update must use installation") }
@@ -370,6 +394,49 @@ func runKeepAwakeFixtures() {
         fail("Keep-awake endings were not explained")
     }
 
+    // The header closes and opens the section, says what runs while closed,
+    // and the choice is remembered.
+    var saved: [(String, Bool)] = []
+    var remembering = runtime
+    remembering.saveFlag = { key, value in saved.append((key, value)) }
+    let folding = AppDelegate(runtime: remembering)
+    let timed = AwakeState(supported: true, active: true, until: Date().timeIntervalSince1970 + 2 * 3600 + 120,
+        lid_ready: true, allow_display_sleep: false, lid_closed: false, battery_floor: 10)
+    folding.applyMenuState(AppState(accounts: [], order: [], hidden: [], version: "fixture-1",
+        update: nil, menu_usage_bars: true, reset_notifications: false, awake: timed))
+    func header(_ menu: NSMenu) -> TapArea {
+        guard let head = menu.items.compactMap({ $0.view as? TapArea })
+            .first(where: { $0.subviews.contains { ($0 as? NSTextField)?.stringValue == "Keep awake" } }) else {
+            fail("Keep-awake header is not a click target")
+        }
+        return head
+    }
+    guard !folding.awakeCollapsed, !views(ChipButton.self, in: folding.menu).isEmpty else { fail("Keep awake must start open") }
+    header(folding.menu).onClicked?()
+    guard folding.awakeCollapsed, views(ChipButton.self, in: folding.menu).isEmpty,
+          saved.last.map({ $0.0 == "keepAwakeCollapsed" && $0.1 }) == true,
+          let summary = texts(in: folding.menu).first(where: { $0.hasPrefix("On · ") }), summary.hasSuffix(" left"),
+          !texts(in: folding.menu).contains("Keep going with the lid closed") else {
+        fail("Closing keep awake must hide the card, remember it and say what runs: \(texts(in: folding.menu))")
+    }
+    header(folding.menu).onClicked?()
+    guard !folding.awakeCollapsed, saved.last.map({ !$0.1 }) == true,
+          views(ChipButton.self, in: folding.menu).map(\.title).first == "15m" else {
+        fail("Opening keep awake must bring the card back")
+    }
+    var closedBefore = runtime
+    closedBefore.loadFlag = { $0 == "keepAwakeCollapsed" }
+    let reopened = AppDelegate(runtime: closedBefore)
+    reopened.applyMenuState(AppState(accounts: [], order: [], hidden: [], version: "fixture-1",
+        update: nil, menu_usage_bars: true, reset_notifications: false, awake: off))
+    guard reopened.awakeCollapsed, views(ChipButton.self, in: reopened.menu).isEmpty,
+          texts(in: reopened.menu).contains("Off") else { fail("A closed keep awake must stay closed on the next launch") }
+    guard awakeSummary(AwakeState(supported: true, active: true)).text == "On",
+          awakeSummary(AwakeState(supported: true, active: false)).text == "Off",
+          awakeSummary(AwakeState(supported: true, active: true, error: "fixture")).text == "Needs attention" else {
+        fail("Closed keep-awake summaries are wrong")
+    }
+
     // Unsupported servers show no section.
     delegate.applyMenuState(AppState(accounts: [], order: [], hidden: [], version: "fixture-1",
         update: nil, menu_usage_bars: true, reset_notifications: false, awake: nil))
@@ -570,8 +637,10 @@ struct MenuBarLayoutTest {
         guard nextCards[0] !== cards[0], nextCards[1] === cards[1] else { fail("Provider patch rebuilt unrelated cards") }
         delegate.applyMenuState(state([changedAccount, otherProvider], true))
         delegate.applyNotificationPermission(ResetAlertPermission(message: "Fixture permission granted", canSend: true))
-        guard delegate.menu.items.contains(where: { $0.title == "Fixture permission granted" }),
-              delegate.menu.items.contains(where: { $0.title == "Send test reset alert" && $0.isEnabled }) else {
+        func subviews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(subviews) }
+        let bottom = delegate.menu.items.compactMap(\.view).flatMap(subviews)
+        guard bottom.contains(where: { ($0 as? NSTextField)?.stringValue == "Fixture permission granted" }),
+              bottom.contains(where: { ($0 as? NSButton)?.title == "Send test" && ($0 as? NSButton)?.isEnabled == true }) else {
             fail("Permission change while closed left stale prepared controls")
         }
         let expiry = Date().timeIntervalSince1970 + 1
