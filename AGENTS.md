@@ -2,11 +2,14 @@
 
 ## Versioning
 
-Bump `VERSION`, build-time version strings, and app bundle versions only when
-preparing a release explicitly requested by the user. Ordinary development,
-testing, local installs, and work sessions keep the current release version.
-Do not invent a new preview version for each session. Mark unreleased work in
-the task summary or Git state instead.
+Bump `VERSION` without being asked when committing a user-facing change (a
+feature or a fix a user would notice) to main: after the change, raise it to
+the next release number in its own commit, "Release vX.Y.0: <what changed>".
+Bump once per release, not per commit: while `VERSION` is ahead of the newest
+`v*` tag, later changes ship under that number. Build-time version strings
+and the app bundle versions come from `VERSION` and the tag, so nothing else
+is edited. Internal work (tests, docs, refactors), local installs and test
+builds keep the current version; never invent preview versions.
 
 Release numbers after v1.1.0 raise the middle number by one, with the last
 number at 0: v1.1.0, then v1.11.0, v1.12.0, v1.13.0 and so on. Do not use
