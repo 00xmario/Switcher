@@ -17,6 +17,15 @@ test('a usage line shows what is left, a bar and the reset countdown', () => {
   assert.equal(duration(2 * 3600 + 20 * 60), '2h 20m');
 });
 
+test('Codex Go and Plus accounts show their plan, and an unknown plan still shows', () => {
+  const base = { id: 'codex-b', provider: 'codex', email: 'b@example.com', active: false, usage: { windows: [] } };
+  assert.match(accountHTML({ ...base, plan: 'go' }, now), /<span class="plan">· Go<\/span>/);
+  assert.match(accountHTML({ ...base, plan: 'plus' }, now), /<span class="plan">· Plus<\/span>/);
+  assert.match(accountHTML({ ...base, plan: 'business' }, now), /<span class="plan">· Business<\/span>/);
+  assert.match(accountHTML({ ...base, plan: 'new_tier' }, now), /<span class="plan">· new_tier<\/span>/);
+  assert.doesNotMatch(accountHTML({ ...base, plan: '' }, now), /class="plan"/);
+});
+
 test('the account in use shows its plan and check mark and offers no switch', () => {
   const codex = { id: 'codex-a', provider: 'codex', email: 'a@example.com', plan: 'prolite', active: true,
     exhausted_until: now + 3600, usage: { windows: [{ label: 'Weekly', used_percent: 100 }] },

@@ -10,7 +10,8 @@ import { switcherMark, playMark } from './brand.js';
 const PROVIDERS = { codex: 'Codex', claude: 'Claude', grok: 'Grok', opencode: 'OpenCode', antigravity: 'Antigravity', gemini: 'Gemini', copilot: 'Copilot' };
 const PLANS = {
   claude_max_5x: 'Max 5x', claude_max_20x: 'Max 20x', claude_max: 'Max', claude_pro: 'Pro', max: 'Max', pro: 'Pro 20x',
-  prolite: 'Pro 5x', plus: 'Plus', free: 'Free', copilot_pro: 'Pro', copilot_pro_plus: 'Pro+', copilot_business: 'Business',
+  prolite: 'Pro 5x', plus: 'Plus', go: 'Go', free: 'Free', team: 'Team', business: 'Business', enterprise: 'Enterprise',
+  edu: 'Edu', copilot_pro: 'Pro', copilot_pro_plus: 'Pro+', copilot_business: 'Business',
   copilot_enterprise: 'Enterprise', copilot_free: 'Free',
 };
 const OUTCOMES = {
@@ -78,7 +79,7 @@ export function accountHTML(a, now = Date.now() / 1000) {
   const windows = a.usage?.windows || [];
   const credits = a.reset_credits?.count || 0;
   const out = a.exhausted_until > now;
-  const plan = PLANS[a.plan] || '';
+  const plan = PLANS[a.plan] || a.plan || '';
   const title = `<span class="title">
       <span class="email">${esc(a.email || a.id)}</span>${plan ? `<span class="plan">· ${esc(plan)}</span>` : ''}
       ${credits > 0 ? `<span class="banked">⚡ ${credits} banked</span>` : ''}

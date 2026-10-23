@@ -154,6 +154,15 @@ func TestStatusShowsAccountsSharingAndDesktop(t *testing.T) {
 	}
 }
 
+func TestCodexPlansAreNamed(t *testing.T) {
+	for plan, want := range map[string]string{"go": "Go", "plus": "Plus", "free": "Free", "pro": "Pro 20x",
+		"prolite": "Pro 5x", "team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu"} {
+		if got := planNames[plan]; got != want {
+			t.Errorf("planNames[%q] = %q, want %q", plan, got, want)
+		}
+	}
+}
+
 func TestJSONOutputIsOneDocument(t *testing.T) {
 	_, url := fake(t)
 	code, out, _ := run(t, url, "", "accounts", "--provider", "claude", "--json")

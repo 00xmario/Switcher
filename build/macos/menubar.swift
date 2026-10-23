@@ -341,9 +341,17 @@ func recordDeliveredResetAlert(_ id: String, alerts: inout [ResetAlert], deliver
 let providerNames = ["codex": "Codex", "claude": "Claude", "grok": "Grok", "opencode": "OpenCode",
     "antigravity": "Antigravity", "gemini": "Gemini", "copilot": "Copilot"]
 let planNames = ["claude_max_5x": "Max 5x", "claude_max_20x": "Max 20x", "claude_max": "Max", "claude_pro": "Pro",
-    "max": "Max", "pro": "Pro 20x", "prolite": "Pro 5x", "plus": "Plus", "free": "Free",
+    "max": "Max", "pro": "Pro 20x", "prolite": "Pro 5x", "plus": "Plus", "go": "Go", "free": "Free",
+    "team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu",
     "copilot_pro": "Pro", "copilot_pro_plus": "Pro+", "copilot_business": "Business", "copilot_enterprise": "Enterprise",
     "copilot_free": "Free"]
+
+// planLabel names an account's plan. A plan Switcher does not know yet
+// still shows, tidied, so a new tier never leaves the row blank.
+func planLabel(_ plan: String?) -> String? {
+    guard let plan = plan?.trimmingCharacters(in: .whitespacesAndNewlines), !plan.isEmpty else { return nil }
+    return planNames[plan] ?? plan.replacingOccurrences(of: "_", with: " ").capitalized
+}
 
 // Palette mirrors the web app's light and dark tokens (web/style.css).
 // Layer colours cannot be dynamic NSColors, so the menu picks a palette from
@@ -1902,9 +1910,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // Column widths shared by every row in this card (measured with the
         // medium weight, the wider of the two title weights).
         let measureFont = NSFont.systemFont(ofSize: 12.5, weight: .medium)
+        // An unknown plan's tidied name can run long; it truncates rather
+        // than squeezing the emails.
         let planColumn = accounts
-            .compactMap { $0.plan.flatMap { planNames[$0] } }
-            .map { textWidth("· " + $0, font: measureFont) }.max() ?? 0
+            .compactMap { planLabel($0.plan) }
+            .map { min(textWidth("· " + $0, font: measureFont), 120) }.max() ?? 0
         let emailColumn = accounts.map { textWidth($0.email, font: measureFont) }.max() ?? 0
         var y = height
         for (index, account) in accounts.enumerated() {
@@ -1920,7 +1930,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             // column is as wide as the widest email that still leaves room
             // for the widest plan; longer emails truncate with an ellipsis.
             let textX = cardInset
-            let planText = account.plan.flatMap { planNames[$0] }.map { "· " + $0 } ?? ""
+            let planText = planLabel(account.plan).map { "· " + $0 } ?? ""
             let bankedText = bankedResetText(account.reset_credits) ?? ""
             let bankedFont = NSFont.systemFont(ofSize: 10.5)
             let bankedWidth = bankedText.isEmpty ? CGFloat(0) : textWidth(bankedText, font: bankedFont)
@@ -1954,6 +1964,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             if !planText.isEmpty {
                 let plan = label(planText, font: titleFont, color: titleColor)
                 plan.frame = NSRect(x: textX + emailWidth + 6, y: titleY, width: planColumn, height: titleHeight)
+                plan.toolTip = planLabel(account.plan)
                 row.addSubview(plan)
             }
             if bankedWidth > 0 {

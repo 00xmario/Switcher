@@ -469,6 +469,20 @@ struct MenuBarLayoutTest {
         runUpdateBadgeAndProgressFixtures()
         runKeepAwakeFixtures()
         guard planNames["free"] == "Free" else { fail("Free accounts must not display a paid tier") }
+        guard planLabel("go") == "Go", planLabel("plus") == "Plus", planLabel("team") == "Team",
+              planLabel("business") == "Business", planLabel("self_serve_business") == "Self Serve Business",
+              planLabel(nil) == nil, planLabel(" ") == nil else {
+            fail("Codex plans must be named, and an unknown plan must still show")
+        }
+        let goAccount = Account(id: "codex-go", provider: "codex", email: "go@example.test", plan: "go",
+            active: false, exhausted_until: nil, usage: nil, reset_credits: nil)
+        func labels(_ view: NSView) -> [String] {
+            ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(labels)
+        }
+        guard labels(AppDelegate().providerCard(providerID: "codex", accounts: [goAccount],
+            contentWidth: menuWidth - 2 * edgeInset, showUsageBars: true)).contains("· Go") else {
+            fail("A Go account's row must show its plan")
+        }
         guard planNames["claude_max_5x"] == "Max 5x",
               planNames["claude_max_20x"] == "Max 20x",
               planNames["claude_max"] == "Max" else { fail("Claude Max tiers must not be inferred from a generic max flag") }
