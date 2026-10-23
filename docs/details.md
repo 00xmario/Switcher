@@ -219,7 +219,9 @@ required; OpenCode Go uses its own API key.
   waiting release badges the menu bar icon. During an install the menu and
   the dashboard poll `GET /api/update`, whose `install` field reports the step
   (downloading, checking, installing, restarting), the downloaded bytes and a
-  0–1 fraction; their bars never move backwards.
+  0–1 fraction. `/api/state` leaves the progress out, so the dashboard does
+  not repaint on every report. A finished app install keeps reporting its
+  restart and refuses another install until Switcher has restarted.
 - **CLI setup status**: Settings checks the inspected Codex user config for
   Switcher's URL and lists stored Switcher accounts separately from native
   CLI configuration. Configure Codex can update that file; no native CLI

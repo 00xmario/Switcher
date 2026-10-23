@@ -1487,13 +1487,13 @@ async function runUpdateFlow(button) {
     // is definitive and must interrupt both the delay and state polling.
     let installError, fail;
     const failure = new Promise(resolve => { fail = resolve; });
+    // Only an answer proves the install done; a dropped request may be the
+    // restart or a lost connection, so the bar keeps following the server.
     const restarting = () => showUpdateProgress({ step: 'restarting', fraction: 1 });
     api('/api/update', { method: 'POST', timeoutMs: 660000 }).then(restarting, error => {
       if (error.status || error.name === 'TimeoutError' || authState.locked) {
         installError = error;
         fail();
-      } else {
-        restarting(); // the server restarted under the request
       }
     });
     const deadline = Date.now() + 690000;

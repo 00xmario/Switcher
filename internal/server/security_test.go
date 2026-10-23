@@ -328,6 +328,9 @@ func TestUpdateCheckRefreshesOnlyMetadataAndKeepsAuthAndCSRF(t *testing.T) {
 		progress.Install.Step != "downloading" || progress.Install.Fraction != 0.4 || checker.refreshes.Load() != 1 || checker.installs.Load() != 1 {
 		t.Fatalf("progress read did not answer the cached state alone: %d %s", w.Code, w.Body.String())
 	}
+	if state := api.UpdateState(); state.Install != nil || !state.Available {
+		t.Fatalf("/api/state's update must keep the check and leave the install progress out: %+v", state)
+	}
 	checker.checkErr = errors.New("fixture metadata unavailable")
 	if w := call("POST", "/api/update/check", true, true); w.Code != 503 || checker.installs.Load() != 1 {
 		t.Fatal("failed metadata refresh was reported as a successful check or invoked installation")

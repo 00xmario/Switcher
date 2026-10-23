@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // appFixture models an installed Switcher.app and a release disk image as
@@ -66,6 +67,7 @@ func newAppFixture(t *testing.T) *appFixture {
 		imageApp:   filepath.Join(root, "image", "Switcher.app"),
 		imageBytes: []byte("disk image fixture")}
 	f.checker.latest = "v1.12.0"
+	f.checker.lastCheck = time.Now() // so State() never starts a real check
 	f.exe = filepath.Join(f.bundle, "Contents", "MacOS", "SwitcherServer")
 	writeApp(t, f.bundle, "1.11.0")
 	writeApp(t, f.imageApp, "1.12.0")
@@ -199,7 +201,7 @@ func TestAppInstallReplacesTheWholeAppAndRestarts(t *testing.T) {
 	}
 }
 
-func TestAppInstallReportsEachStepThenClears(t *testing.T) {
+func TestAppInstallReportsEachStepAndRefusesASecondInstall(t *testing.T) {
 	f := newAppFixture(t)
 	var steps []string
 	step := func() *Progress {
@@ -247,8 +249,11 @@ func TestAppInstallReportsEachStepThenClears(t *testing.T) {
 	if strings.Join(steps, " ") != strings.Join(want, " ") {
 		t.Errorf("steps = %v, want %v", steps, want)
 	}
-	if f.checker.State().Install != nil {
-		t.Error("a finished install still reports progress")
+	if got := f.checker.State().Install; got == nil || got.Step != "restarting" || got.Fraction != 1 {
+		t.Errorf("a finished install must keep reporting its restart, got %+v", got)
+	}
+	if err := f.install(); err == nil || !strings.Contains(err.Error(), "restarting") || f.downloads != 1 || len(f.restarts) != 1 {
+		t.Errorf("a second install while Switcher restarts must be refused before downloading: %v, downloads=%d", err, f.downloads)
 	}
 
 	failed := newAppFixture(t)

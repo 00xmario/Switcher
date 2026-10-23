@@ -1310,8 +1310,16 @@ func (a *API) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// UpdateState wraps the updater's cached state.
+// UpdateState wraps the updater's cached check for /api/state. An install's
+// progress stays out: it changes several times a second, and each change
+// would repaint the whole dashboard on its next state poll.
 func (a *API) UpdateState() update.State {
+	state := a.updateWithProgress()
+	state.Install = nil
+	return state
+}
+
+func (a *API) updateWithProgress() update.State {
 	if a.Updater == nil || a.Version == "" {
 		return update.State{}
 	}
@@ -1319,9 +1327,9 @@ func (a *API) UpdateState() update.State {
 }
 
 // handleUpdateState answers the cached check and any install in flight. The
-// menu polls it while an install runs, without the cost of a full state.
+// menu and the dashboard poll it while an install runs.
 func (a *API) handleUpdateState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.UpdateState())
+	writeJSON(w, http.StatusOK, a.updateWithProgress())
 }
 
 // handleUpdate installs the latest release and restarts. A plain binary

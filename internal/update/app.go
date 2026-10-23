@@ -54,6 +54,12 @@ type appOps struct {
 func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	c.installMu.Lock()
 	defer c.installMu.Unlock()
+	// This process lives on for a few seconds after a finished install,
+	// until the relaunch stops it. Another install of the same release
+	// would be cut off by that stop.
+	if c.restarting() {
+		return errors.New("the update is installed and Switcher is restarting")
+	}
 	tag := c.Latest()
 	if tag == "" {
 		return errors.New("no update known; check for updates first")
@@ -83,7 +89,12 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	defer ops.removeAll(work)
 	asset := "Switcher_" + latest + ".dmg"
 	c.setStep("downloading", 0)
-	defer c.setStep("", 0)
+	installed := false
+	defer func() {
+		if !installed { // a finished install keeps reporting its restart
+			c.setStep("", 0)
+		}
+	}()
 	if err := ops.download(ctx, tag, asset, work, c.downloaded); err != nil {
 		return err
 	}
@@ -118,6 +129,7 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	if err := ops.restart(bundle, exe); err != nil {
 		return fmt.Errorf("Switcher %s is installed but did not restart; quit and open Switcher: %w", latest, err)
 	}
+	installed = true
 	return nil
 }
 

@@ -32,6 +32,7 @@ func newInstallFixture(t *testing.T) *installFixture {
 	t.Helper()
 	f := &installFixture{checker: New("0.5.5"), current: filepath.Join(t.TempDir(), "switcher"), version: "switcher 0.5.6\n"}
 	f.checker.latest = "v0.5.6"
+	f.checker.lastCheck = time.Now() // so State() never starts a real check
 	if err := os.WriteFile(f.current, []byte("old fixture"), 0o711); err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +198,48 @@ func TestExecFailureRestoresOriginal(t *testing.T) {
 		t.Errorf("error=%v, want EACCES", err)
 	}
 	assertFixtureFile(t, f.current, "old fixture", 0o711)
+}
+
+func TestBinaryInstallReportsEachStepThenClears(t *testing.T) {
+	f := newInstallFixture(t)
+	var steps []string
+	step := func() {
+		if p := f.checker.State().Install; p != nil {
+			steps = append(steps, fmt.Sprintf("%s %.1f", p.Step, p.Fraction))
+		} else {
+			steps = append(steps, "none")
+		}
+	}
+	download, smoke, rename, exec := f.ops.download, f.ops.smoke, f.ops.rename, f.ops.exec
+	f.ops.download = func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
+		progress(1, 2)
+		step()
+		return download(ctx, tag, asset, dir, progress)
+	}
+	f.ops.smoke = func(ctx context.Context, path string) ([]byte, error) { step(); return smoke(ctx, path) }
+	renames := 0
+	f.ops.rename = func(from, to string) error {
+		if renames++; renames == 1 {
+			step()
+		}
+		return rename(from, to)
+	}
+	f.ops.exec = func(path string) error { step(); return exec(path) }
+	if err := f.checker.installAndRestart(f.ops); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(steps, ", "), "downloading 0.4, checking 0.8, installing 0.9, restarting 1.0"; got != want {
+		t.Errorf("steps = %s, want %s", got, want)
+	}
+	if f.checker.State().Install != nil {
+		t.Error("progress outlived the install")
+	}
+
+	failed := newInstallFixture(t)
+	failed.ops.exec = func(string) error { return syscall.EACCES }
+	if err := failed.checker.installAndRestart(failed.ops); !errors.Is(err, syscall.EACCES) || failed.checker.State().Install != nil {
+		t.Errorf("a failed restart left progress behind: %v", err)
+	}
 }
 
 func TestStageIsCleanedBeforeExec(t *testing.T) {

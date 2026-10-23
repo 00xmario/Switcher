@@ -934,7 +934,9 @@ html[data-theme="dark"] .menu-logo.monochrome img { filter: invert(1); }
 
 /* update flow: the install's real progress, as the server reports it. The
    bar eases toward each report; a soft shine runs along the part done. */
-.update-banner { position: relative; overflow: hidden; flex-wrap: wrap; }
+.update-banner { position: relative; overflow: hidden; }
+.update-banner:has(.update-progress) { flex-wrap: wrap; }
+.update-banner:has(.update-progress) > .update-text { flex: 1 1 0; min-width: 0; }
 .update-progress { flex: 1 0 100%; display: grid; gap: 6px; text-align: left; contain: inline-size; }
 .update-progress-track { height: 6px; border-radius: 3px; overflow: hidden; background: var(--chart-fill); }
 .update-progress-fill {

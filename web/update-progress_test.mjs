@@ -3,11 +3,13 @@ import { mergeInstallProgress, installPercent, installStepText, installProgressH
 
 const downloading = { step: 'downloading', fraction: 0.4, done: 4_000_000, total: 8_000_000 };
 assert.equal(mergeInstallProgress(null, downloading), downloading);
-assert.equal(mergeInstallProgress(downloading, { step: 'downloading', fraction: 0.2 }), downloading, 'a late report must not move the bar backwards');
+const again = { step: 'downloading', fraction: 0 };
+assert.equal(mergeInstallProgress({ step: 'checking', fraction: 0.8 }, again), again, 'a new install after a failed one starts the bar over');
 assert.equal(mergeInstallProgress(downloading, undefined), downloading, 'a read without an install keeps the bar');
 assert.equal(mergeInstallProgress(downloading, { step: 'checking', fraction: NaN }), downloading);
 const restarting = { step: 'restarting', fraction: 1 };
 assert.equal(mergeInstallProgress(downloading, restarting), restarting);
+assert.equal(mergeInstallProgress(restarting, { step: 'installing', fraction: 0.9 }), restarting, 'a read answered before the install finished must not leave the restart');
 
 assert.equal(installPercent(downloading), 40);
 assert.equal(installPercent({ fraction: 1.4 }), 100);

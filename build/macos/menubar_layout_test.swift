@@ -226,15 +226,16 @@ func runUpdateBadgeAndProgressFixtures() {
         fail("A progress report must move the bar and say what is happening: \(card.percentText) \(card.detailText) \(card.fillWidth)")
     }
     runTask(0.4)
-    completions.removeFirst()(Data(#"{"install":{"step":"downloading","fraction":0.2}}"#.utf8), response(200), nil)
-    guard card.percentText == "40%" else { fail("A late report must not move the bar backwards") }
-    runTask(0.4)
     completions.removeFirst()(nil, nil, URLError(.timedOut))
     guard card.percentText == "40%", tasks.contains(where: { $0.0 == 0.4 }) else { fail("A failed progress read must keep polling") }
+    runTask(0.4)
+    let inFlight = completions.removeFirst()
     install(Data(#"{"status":"ok"}"#.utf8), response(200), nil)
     guard card.percentText == "100%", card.detailText == "Restarting Switcher…" else {
         fail("A finished install must show the restart")
     }
+    inFlight(Data(#"{"install":{"step":"installing","fraction":0.9}}"#.utf8), response(200), nil)
+    guard card.percentText == "100%" else { fail("A poll answered before the install finished must not move the bar off the restart") }
     let before = requests.count
     runTask(0.4)
     guard requests.count == before else { fail("Progress polling must stop once Switcher restarts") }
@@ -243,6 +244,16 @@ func runUpdateBadgeAndProgressFixtures() {
     guard delegate.installProgress == nil, delegate.installProgressView == nil else {
         fail("The progress card must go once the new version answers")
     }
+
+    requests.removeAll(); completions.removeAll(); tasks.removeAll()
+    let dropped = AppDelegate(runtime: runtime)
+    dropped.applyMenuState(fixtureState(UpdateInfo(latest: "v2.0.0", update_available: true)))
+    dropped.runUpdate()
+    completions.removeFirst()(nil, nil, URLError(.networkConnectionLost))
+    guard dropped.installProgress?.step == "starting" else { fail("A dropped install request must not claim the restart") }
+    runTask(0.4)
+    completions.removeFirst()(Data(#"{"install":{"step":"downloading","fraction":0.5}}"#.utf8), response(200), nil)
+    guard dropped.installProgressView?.percentText == "50%" else { fail("After a dropped request the bar must keep following the server") }
 
     requests.removeAll(); completions.removeAll(); tasks.removeAll()
     let failing = AppDelegate(runtime: runtime)

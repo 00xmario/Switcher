@@ -2389,8 +2389,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 if case .failure(let error) = result, (error as NSError).domain == "SwitcherHTTP" {
                     self.finishUpdateFailure(error, install: true)
                 } else {
-                    // Installed, or the server restarted under the request.
-                    self.showInstallProgress(InstallProgress(step: "restarting", fraction: 1))
+                    // A dropped request may be the restart or a lost
+                    // connection; only an answer proves the install done.
+                    if case .success = result {
+                        self.showInstallProgress(InstallProgress(step: "restarting", fraction: 1))
+                    }
                     self.awaitUpdatedServer(oldVersion: oldVersion, generation: generation, remaining: 20)
                 }
                 return
@@ -2418,7 +2421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     // While an install runs, the menu reads its progress a few times a
-    // second. Reports never move the bar backwards.
+    // second.
     private func pollInstallProgress(generation: Int) {
         runtime.schedule(0.4) { [weak self] in
             guard let self = self, !self.quitting, self.updateGeneration == generation,
@@ -2434,8 +2437,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
+    // The bar follows the server, but nothing moves it off the restart: a
+    // poll answered before the install finished can arrive after it.
     func showInstallProgress(_ progress: InstallProgress) {
-        guard let current = installProgress, progress.fraction >= current.fraction else { return }
+        guard let current = installProgress, current.step != "restarting" else { return }
         installProgress = progress
         installProgressView?.show(progress)
     }

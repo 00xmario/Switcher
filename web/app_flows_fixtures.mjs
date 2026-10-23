@@ -253,45 +253,52 @@ test('a definitive update failure is surfaced before version polling', async () 
 });
 
 test('an update disconnect is reconciled by authenticated version polling', async () => {
-  const { context, messages, calls, button } = updateFixture(() => Promise.reject(new Error('network disconnected')));
+  const { context, messages, calls, button, bars } = updateFixture(() => Promise.reject(new Error('network disconnected')));
+  const bar = progressBar();
+  bars.push(bar);
   await context.runUpdateFlow(button);
   assert.deepEqual(messages, ['Updated to Switcher v2.0']);
+  assert.deepEqual(bar.paints, [], 'a dropped request must not claim the restart');
   assert.deepEqual(calls(), ['/api/update', '/api/state']);
   assert.equal(context.stateEpoch, 1, 'old state requests must not undo the observed upgrade');
   assert.equal(button.disabled, false);
 });
 
-test('install progress paints the bar from server reports, never backwards, then clears it', async () => {
-  const reports = [
-    { update_available: true, install: { step: 'downloading', fraction: 0.4, done: 4e6, total: 8e6 } },
-    { install: { step: 'downloading', fraction: 0.2 } },
-    { update_available: true },
-    { install: { step: 'checking', fraction: 0.8 } },
-  ];
+test('install progress paints the bar from server reports, holds the restart, then clears it', async () => {
+  const reads = [];
   const posted = deferred();
   let version = '1.0';
-  const { context, messages, requests, button, inserted, bars } = updateFixture(() => posted.promise, {
-    progress: () => Promise.resolve(reports.shift() ?? {}),
+  const { context, messages, button, inserted, bars } = updateFixture(() => posted.promise, {
+    progress: () => { const read = deferred(); reads.push(read); return read.promise; },
     state: () => Promise.resolve({ version, accounts: [] }),
     timer: callback => setImmediate(callback),
   });
   const bar = progressBar();
   bars.push(bar);
   const pump = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const answer = async report => {
+    for (let i = 0; i < 10 && !reads.length; i++) await pump();
+    reads.shift().resolve(report);
+    await pump();
+  };
   const run = context.runUpdateFlow(button);
   assert.equal(inserted.length, 1, 'the banner the install started from must get a bar');
   assert.match(inserted[0], /aria-valuenow="0"/);
   assert.match(inserted[0], /Installing Switcher v2\.0/);
-  for (let i = 0; i < 10 && reports.length; i++) await pump();
-  assert.equal(reports.length, 0);
+  await answer({ update_available: true, install: { step: 'downloading', fraction: 0.4, done: 4e6, total: 8e6 } });
+  await answer({ update_available: true });
+  await answer({ install: { step: 'checking', fraction: 0.8 } });
   assert.deepEqual(bar.paints, ['Downloading · 4.0 of 8.0 MB, 40%', 'Checking the new version, 80%']);
+  for (let i = 0; i < 10 && !reads.length; i++) await pump();
+  const inFlight = reads.shift();
   posted.resolve({ status: 'ok' });
   await pump();
-  assert.deepEqual(bar.paints.at(-1), 'Restarting Switcher…, 100%');
-  const reads = requests.filter(r => r.path === '/api/update' && !r.options?.method).length;
+  assert.equal(bar.paints.at(-1), 'Restarting Switcher…, 100%');
+  inFlight.resolve({ install: { step: 'installing', fraction: 0.9 } });
   await pump();
-  assert.equal(requests.filter(r => r.path === '/api/update' && !r.options?.method).length, reads,
-    'progress reads must stop once Switcher restarts');
+  await pump();
+  assert.equal(bar.paints.at(-1), 'Restarting Switcher…, 100%', 'a read answered before the install finished must not leave the restart');
+  assert.equal(reads.length, 0, 'progress reads must stop once Switcher restarts');
   version = '2.0';
   await run;
   assert.deepEqual(messages, ['Updated to Switcher v2.0']);

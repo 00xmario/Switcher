@@ -2,10 +2,11 @@
 // 0–1 fraction and the bytes downloaded. The update banners draw it as a bar.
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// A late or partial report never moves the bar backwards.
+// The bar follows the server, but nothing moves it off the restart: a read
+// answered before the install finished can arrive after it.
 export function mergeInstallProgress(current, next) {
   if (!next || typeof next.fraction !== 'number' || !Number.isFinite(next.fraction)) return current;
-  if (current && next.fraction < current.fraction) return current;
+  if (current?.step === 'restarting') return current;
   return next;
 }
 

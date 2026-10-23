@@ -143,6 +143,14 @@ func (c *Checker) setStep(step string, fraction float64) {
 	c.install = &Progress{Step: step, Fraction: fraction}
 }
 
+// restarting reports an install that finished in this process: the app is
+// restarting into the new release.
+func (c *Checker) restarting() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.install != nil && c.install.Step == "restarting"
+}
+
 // downloaded records how much of the release has arrived.
 func (c *Checker) downloaded(done, total int64) {
 	c.mu.Lock()
