@@ -56,3 +56,30 @@ func TestUsagePlanPresenceAndNormalization(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageReportsWhenCodexRefusesRequests(t *testing.T) {
+	old := oauthHTTPClient
+	t.Cleanup(func() { oauthHTTPClient = old })
+	window := `"primary_window":{"limit_window_seconds":2592000,"used_percent":0,"reset_at":2000000000}`
+	for _, tc := range []struct {
+		body    string
+		refused bool
+	}{
+		{`{"rate_limit":{"allowed":false,` + window + `}}`, true},
+		{`{"rate_limit":{"allowed":true,` + window + `}}`, false},
+		{`{"rate_limit":{"allowed":true,"limit_reached":true,` + window + `}}`, true},
+		{`{"rate_limit":{"allowed":true,"limit_reached":false,` + window + `}}`, false},
+		{`{"rate_limit":{` + window + `}}`, false},
+	} {
+		oauthHTTPClient = &http.Client{Transport: testTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+		})}
+		u, err := New().Usage(context.Background(), store.Account{})
+		if err != nil || u.Refused != tc.refused || len(u.Windows) != 1 {
+			t.Fatalf("body=%s refused=%v err=%v", tc.body, u.Refused, err)
+		}
+		if raw, _ := json.Marshal(u); strings.Contains(string(raw), "efused") {
+			t.Fatalf("refusal leaked into the usage JSON: %s", raw)
+		}
+	}
+}

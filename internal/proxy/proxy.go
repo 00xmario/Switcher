@@ -723,6 +723,8 @@ func (m *Manager) refreshAccount(ctx context.Context, id string, gen uint64, for
 	}
 	forceRefresh := force && h.relogin
 	h.checking++
+	// Only a park that existed before this check began can be lifted by it.
+	parked, wasParked := m.exhausted[id]
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -807,7 +809,46 @@ func (m *Manager) refreshAccount(ctx context.Context, id string, gen uint64, for
 			}
 		}
 	}
-	return m.recordUsage(id, gen, usage, true, nil)
+	recorded := m.recordUsage(id, gen, usage, true, nil)
+	if wasParked {
+		m.liftParkWithRoom(id, a.Email, gen, parked, usage)
+	}
+	return recorded
+}
+
+// liftParkWithRoom puts a parked account back into rotation when a reading
+// contradicts the park. A refused request parks an account until the reset
+// its error names; a later reading with room in every window means that
+// window is gone, as after a new subscription period. If the provider still
+// refuses, the next request bounces to another account and parks this one
+// again. A provider that says in the reading that it refuses keeps the park.
+func (m *Manager) liftParkWithRoom(id, email string, gen uint64, parked time.Time, usage provider.Usage) {
+	if !usageHasRoom(usage) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A new park during the check, or a new sign-in, belongs to later evidence.
+	if until, ok := m.exhausted[id]; !ok || !until.Equal(parked) || m.generation[id] != gen {
+		return
+	}
+	if err := m.clearExhaustedLocked(id); err != nil {
+		log.Printf("proxy: save routing state: %v", err)
+		return
+	}
+	log.Printf("proxy: usage for %s shows room again; lifted its out-of-usage mark (was until %s)", email, parked.Format(time.RFC3339))
+}
+
+func usageHasRoom(u provider.Usage) bool {
+	if !u.Available || u.Refused || len(u.Windows) == 0 {
+		return false
+	}
+	for _, w := range u.Windows {
+		if w.UsedPercent >= 100 {
+			return false
+		}
+	}
+	return true
 }
 
 // Only the usage endpoint's known HTTP 401 errors indicate a stale access

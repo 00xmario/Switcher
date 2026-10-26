@@ -218,8 +218,10 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 	var parsed struct {
 		PlanType  string `json:"plan_type"`
 		RateLimit struct {
-			Primary   *rateLimitWindow `json:"primary_window"`
-			Secondary *rateLimitWindow `json:"secondary_window"`
+			Allowed      *bool            `json:"allowed"`
+			LimitReached bool             `json:"limit_reached"`
+			Primary      *rateLimitWindow `json:"primary_window"`
+			Secondary    *rateLimitWindow `json:"secondary_window"`
 		} `json:"rate_limit"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -237,7 +239,8 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 			ResetsAt:    w.ResetAt,
 		})
 	}
-	return provider.Usage{Available: true, Windows: windows, Plan: strings.ToLower(strings.TrimSpace(parsed.PlanType))}, nil
+	return provider.Usage{Available: true, Windows: windows, Plan: strings.ToLower(strings.TrimSpace(parsed.PlanType)),
+		Refused: parsed.RateLimit.Allowed != nil && !*parsed.RateLimit.Allowed || parsed.RateLimit.LimitReached}, nil
 }
 
 // windowLabel names a quota window by its duration.

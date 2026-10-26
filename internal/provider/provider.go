@@ -32,6 +32,9 @@ type Usage struct {
 	// Plan is current upstream account metadata from the same usage response.
 	// Empty means not reported, never an inferred free or paid subscription.
 	Plan string `json:"plan,omitempty"`
+	// Refused means the provider said in the same response that it refuses
+	// requests now, whatever the windows show.
+	Refused bool `json:"-"`
 }
 
 // ErrUsageUnavailable reports that usage could not be determined.
