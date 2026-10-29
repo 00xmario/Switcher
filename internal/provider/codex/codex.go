@@ -94,7 +94,7 @@ func (p *Provider) LoginStart(_ context.Context) (provider.LoginInfo, error) {
 	q.Set("codex_cli_simplified_flow", "true")
 	q.Set("id_token_add_organizations", "true")
 	q.Set("prompt", "login")
-	return provider.LoginInfo{Kind: "browser", URL: authorizeURL + "?" + q.Encode(), State: state}, nil
+	return provider.LoginInfo{Kind: "browser", URL: authorizeURL + "?" + q.Encode(), State: state, PKCE: true}, nil
 }
 
 // DeviceStart implements provider.Provider: codex has no device flow.

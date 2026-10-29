@@ -245,6 +245,15 @@ renderContext.data.compact_accounts = false;
 renderContext.render();
 assert.equal(compactPage, false);
 assert.match(providersEl.innerHTML, /class="account-list "[\s\S]*expanded-a[\s\S]*expanded-b/);
+// A paired host supplies provider ids; none of them may become markup.
+const realEscape = source.slice(source.indexOf('function escapeHTML(s) {'), source.indexOf('\n// fmtRemaining'));
+vm.runInContext(realEscape, renderContext);
+renderContext.data.order = ['codex', 'x"><meta http-equiv="refresh" content="0;url=https://evil.example">'];
+renderContext.render();
+assert.doesNotMatch(providersEl.innerHTML, /<meta/);
+assert.match(providersEl.innerHTML, /data-provider="x&quot;&gt;&lt;meta/);
+renderContext.escapeHTML = hover.escapeHTML;
+renderContext.data.order = ['codex'];
 renderContext.data.compact_accounts = true;
 renderContext.render();
 const pageStart = source.indexOf('setPage = function (page) {');

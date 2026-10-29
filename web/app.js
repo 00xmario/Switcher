@@ -786,19 +786,20 @@ function render() {
   let html = '';
   order.forEach((providerID) => {
     const accounts = byProvider.get(providerID) || [];
+    const provider = escapeHTML(providerID);
     html += `
-      <section class="provider ${compact ? 'compact-provider' : ''}" data-provider="${providerID}" id="provider-${providerID}">
+      <section class="provider ${compact ? 'compact-provider' : ''}" data-provider="${provider}" id="provider-${provider}">
         <div class="provider-head" draggable="true">
           <span class="drag-grip" title="Drag to reorder">
             <svg viewBox="0 0 12 18" aria-hidden="true"><circle cx="4" cy="3" r="1.5"/><circle cx="10" cy="3" r="1.5"/><circle cx="4" cy="9" r="1.5"/><circle cx="10" cy="9" r="1.5"/><circle cx="4" cy="15" r="1.5"/><circle cx="10" cy="15" r="1.5"/></svg>
           </span>
-          <span class="logo logo-${providerID}">${LOGOS[providerID] || ''}</span>
+          <span class="logo logo-${provider}">${LOGOS[providerID] || ''}</span>
           <h2>${escapeHTML(PROVIDER_NAMES[providerID] || providerID)}</h2>
           ${providerID === 'claude' ? claudeSessionSync.html() : ''}
           <span class="count">${accounts.length}</span>
-          ${usingHost ? '' : `<button class="add-provider" data-add="${providerID}">Add account</button>`}
+          ${usingHost ? '' : `<button class="add-provider" data-add="${provider}">Add account</button>`}
           <span class="provider-tools">
-            <button data-menu="${providerID}" title="Provider options">⋯</button>
+            <button data-menu="${provider}" title="Provider options">⋯</button>
           </span>
         </div>
         ${merge && accounts.length > 1 ? `<div class="account-list merged-list">${accounts.map(mergedAccountHTML).join('')}</div>${mergedWindowsHTML(accounts, providerID)}` : `
@@ -844,7 +845,7 @@ function render() {
 let usageTimer = null;
 async function refreshAllUsage() {
   for (const account of data.accounts) {
-    try { await api(`/api/accounts/${account.id}/refresh`, { method: 'POST' }); } catch { /* keep old data */ }
+    try { await api(`/api/accounts/${encodeURIComponent(account.id)}/refresh`, { method: 'POST' }); } catch { /* keep old data */ }
   }
   await refreshState();
 }
@@ -891,7 +892,7 @@ function openProviderMenu(anchor, providerID) {
       logoHTML: LOGOS[providerID] || '',
     });
     if (!yes) return;
-    await api(`/api/providers/${providerID}/hide`, { method: 'POST' });
+    await api(`/api/providers/${encodeURIComponent(providerID)}/hide`, { method: 'POST' });
     await refreshState();
   });
 }
@@ -1032,7 +1033,7 @@ async function runAccountAction(button) {
       button.disabled = true;
       render();
       try {
-        const response = await fetchWithCSRF(`/api/accounts/${id}/activate`, { method: 'POST', timeoutMs: 90000 });
+        const response = await fetchWithCSRF(`/api/accounts/${encodeURIComponent(id)}/activate`, { method: 'POST', timeoutMs: 90000 });
         const result = await response.json();
         if (!response.ok) {
           if (result.details) await confirmDialog({ title: errorMessage(result, 'Account switch failed'),
@@ -1054,7 +1055,7 @@ async function runAccountAction(button) {
       const account = data.accounts.find(a => a.id === id);
       accountStatusAnnouncer.textContent = `Checking usage for ${account?.email || 'this account'}`;
       render(); // Show Checking usage and the spinner immediately.
-      await api(`/api/accounts/${id}/recheck`, { method: 'POST' });
+      await api(`/api/accounts/${encodeURIComponent(id)}/recheck`, { method: 'POST' });
       pendingRechecks.get(id).accepted = true;
       stateEpoch++;
       await refreshState();
@@ -1075,7 +1076,7 @@ async function runAccountAction(button) {
       if (!resetFeedback.begin(id)) return;
       button.disabled = true;
       try {
-        const res = await api(`/api/accounts/${id}/use-reset`, { method: 'POST',
+        const res = await api(`/api/accounts/${encodeURIComponent(id)}/use-reset`, { method: 'POST',
           headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credit_id: creditID }) });
         stateEpoch++; // an older in-flight state response cannot undo this mutation
         if (res.account) {
@@ -1095,7 +1096,7 @@ async function runAccountAction(button) {
       const mode = button.dataset.mode;
       button.disabled = true;
       try {
-        await api(`/api/accounts/${id}`, {
+        await api(`/api/accounts/${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ auto_use_reset: mode }),
@@ -1119,7 +1120,7 @@ async function runAccountAction(button) {
         danger: true,
       });
       if (!yes) return;
-      await api(`/api/accounts/${id}`, { method: 'DELETE' });
+      await api(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
       pendingRechecks.delete(id);
       await refreshState();
     }
@@ -1254,7 +1255,7 @@ document.addEventListener('click', (event) => {
   }
   const show = event.target.closest('[data-show-provider]');
   if (show) {
-    api(`/api/providers/${show.dataset.showProvider}/show`, { method: 'POST' })
+    api(`/api/providers/${encodeURIComponent(show.dataset.showProvider)}/show`, { method: 'POST' })
       .then(async () => {
         await refreshState();
         document.getElementById(`provider-${show.dataset.showProvider}`)

@@ -98,3 +98,52 @@ func TestReloginOnlyPersistsSelectedIdentity(t *testing.T) {
 		}
 	}
 }
+
+// stateProvider proves an attempt with its state alone (Google's flow, no
+// PKCE); pkceProvider binds the code to the attempt's verifier.
+type stateProvider struct {
+	reloginProvider
+	pkce      bool
+	exchanged chan string
+}
+
+func (p *stateProvider) LoginStart(context.Context) (provider.LoginInfo, error) {
+	return provider.LoginInfo{State: "browser-state", Kind: "browser", PKCE: p.pkce}, nil
+}
+
+func (p *stateProvider) LoginExchange(_ context.Context, _, code string) (store.Account, error) {
+	p.exchanged <- code
+	return store.Account{ID: "attacker", Provider: "fake", Email: "attacker@example.com"}, nil
+}
+
+// A callback without the state may complete only a login whose code PKCE
+// binds to it. Otherwise any page could deliver its own account's code to
+// the one pending login and have this Mac save that account.
+func TestStatelessCallbackNeedsPKCE(t *testing.T) {
+	for _, pkce := range []bool{false, true} {
+		p := &stateProvider{pkce: pkce, exchanged: make(chan string, 1)}
+		saved := 0
+		m := New(func(*store.Account, string) error { saved++; return nil })
+		handle, err := m.Start(context.Background(), p, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = m.Complete(context.Background(), "", "attacker-code")
+		if !pkce {
+			if !errors.Is(err, ErrUnknown) || saved != 0 || len(p.exchanged) != 0 {
+				t.Fatalf("stateless callback completed a login without PKCE: err=%v saved=%d", err, saved)
+			}
+			if state := m.SinglePending(); state != "" {
+				t.Fatalf("login without PKCE offered to stateless callbacks: %q", state)
+			}
+			// The provider's own redirect carries the state and still works.
+			if err := m.Complete(context.Background(), handle.State, "real-code"); err != nil || <-p.exchanged != "real-code" {
+				t.Fatalf("callback with state: %v", err)
+			}
+			continue
+		}
+		if err != nil || saved != 1 || <-p.exchanged != "attacker-code" {
+			t.Fatalf("stateless PKCE callback: err=%v saved=%d", err, saved)
+		}
+	}
+}

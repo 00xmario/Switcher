@@ -34,6 +34,11 @@ func Dir() string {
 	}
 	dir := filepath.Join(home, ".switcher")
 	_ = os.MkdirAll(dir, 0o700)
+	// The menu bar app may have created it with default permissions; the
+	// accounts, caches and logs inside are this user's alone.
+	if info, err := os.Lstat(dir); err == nil && info.IsDir() && info.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(dir, 0o700)
+	}
 	return dir
 }
 

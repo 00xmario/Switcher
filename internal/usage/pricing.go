@@ -78,7 +78,7 @@ func loadRatesAt(path string, client *http.Client, now time.Time) (RateTable, st
 	}
 	out := ratesSnapshot{FetchedAtMs: now.UnixMilli(), Document: table}
 	if data, err := json.Marshal(out); err == nil {
-		_ = os.WriteFile(path, data, 0o644)
+		_ = os.WriteFile(path, data, 0o600)
 	}
 	return table, "fresh", now
 }

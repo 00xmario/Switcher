@@ -783,3 +783,39 @@ func TestLogoutEverywhereClearsAllSessions(t *testing.T) {
 		t.Fatalf("sessions remain after logout everywhere: %d", n)
 	}
 }
+
+// Concurrent guesses must not all pass the lockout check before the first
+// failure is counted: no more than five wrong passwords are ever verified.
+func TestLoginRateLimitHoldsUnderConcurrency(t *testing.T) {
+	h := newHarness(t, t.TempDir())
+	const attempts = 24
+	statuses := make(chan int, attempts)
+	start := make(chan struct{})
+	for i := 0; i < attempts; i++ {
+		go func() {
+			<-start
+			res, err := http.Post(h.server.URL+"/api/auth/login", "application/json",
+				bytes.NewBufferString(`{"password":"totallywrong"}`))
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			res.Body.Close()
+			statuses <- res.StatusCode
+		}()
+	}
+	close(start)
+	verified := 0
+	for i := 0; i < attempts; i++ {
+		switch status := <-statuses; status {
+		case http.StatusUnauthorized:
+			verified++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("status %d, want 401 or 429", status)
+		}
+	}
+	if verified > 5 {
+		t.Fatalf("%d wrong passwords were checked concurrently, want at most 5 before lockout", verified)
+	}
+}

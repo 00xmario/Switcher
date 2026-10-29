@@ -50,6 +50,7 @@ type Store struct {
 	mu                     sync.Mutex
 	settingsMu             sync.Mutex
 	tokenMu                sync.Mutex
+	attemptMu              sync.Mutex // one password check at a time
 	lastValid              Settings
 	hasValid               bool
 	readFailed             bool

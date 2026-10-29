@@ -43,6 +43,7 @@ type pending struct {
 	provider      provider.Provider
 	reloginTarget string
 	kind          string
+	pkce          bool // the code exchange proves this attempt, see LoginInfo.PKCE
 	completing    bool
 	done          chan struct{}
 	started       time.Time
@@ -81,7 +82,7 @@ func (m *Manager) Start(ctx context.Context, prov provider.Provider, reloginTarg
 	if err != nil {
 		return Handle{}, fmt.Errorf("start login: %w", err)
 	}
-	m.track(info.State, prov, reloginTarget, "browser")
+	m.track(info.State, prov, reloginTarget, "browser", info.PKCE)
 	return Handle{State: info.State, URL: info.URL, Kind: info.Kind}, nil
 }
 
@@ -93,7 +94,7 @@ func (m *Manager) StartDevice(ctx context.Context, prov provider.Provider, relog
 	if err != nil {
 		return Handle{}, fmt.Errorf("start device login: %w", err)
 	}
-	p := m.track(info.State, prov, reloginTarget, "device")
+	p := m.track(info.State, prov, reloginTarget, "device", false)
 	go func() {
 		account, err := poll(ctx)
 		if err == nil && m.persist != nil {
@@ -184,10 +185,10 @@ func (m *Manager) Outcome(state string, wait time.Duration) (account store.Accou
 }
 
 // track records a new pending flow.
-func (m *Manager) track(state string, prov provider.Provider, reloginTarget, kind string) *pending {
+func (m *Manager) track(state string, prov provider.Provider, reloginTarget, kind string, pkce bool) *pending {
 	m.mu.Lock()
 	m.gcLocked()
-	p := &pending{provider: prov, reloginTarget: reloginTarget, kind: kind, completing: kind == "device", done: make(chan struct{}), started: time.Now()}
+	p := &pending{provider: prov, reloginTarget: reloginTarget, kind: kind, pkce: pkce, completing: kind == "device", done: make(chan struct{}), started: time.Now()}
 	m.pending[state] = p
 	m.mu.Unlock()
 	return p
@@ -196,7 +197,9 @@ func (m *Manager) track(state string, prov provider.Provider, reloginTarget, kin
 // SinglePending returns the only tracked pending login state, or "" when
 // none or more than one exist. OpenAI's redirect does not echo the state
 // parameter back on the callback URL, so a single in-flight login resolves
-// by being the only one (the Codex CLI works the same way).
+// by being the only one (the Codex CLI works the same way). Only logins whose
+// code PKCE binds to them count: for the others the state is the only proof,
+// and any web page could otherwise deliver its own account's code here.
 func (m *Manager) SinglePending() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -207,7 +210,7 @@ func (m *Manager) SinglePending() string {
 func (m *Manager) singlePendingLocked() string {
 	var found string
 	for state, p := range m.pending {
-		if p.kind == "browser" && !p.completing {
+		if p.kind == "browser" && p.pkce && !p.completing {
 			if found != "" {
 				return ""
 			}

@@ -205,6 +205,18 @@ func (s *Store) CheckLockout() error {
 	return nil
 }
 
+// BeginAttempt admits one password check at a time, after CheckLockout.
+// Concurrent guesses would otherwise all pass the lockout check before the
+// first failure is counted. The caller records the outcome, then calls done.
+func (s *Store) BeginAttempt() (done func(), err error) {
+	s.attemptMu.Lock()
+	if err := s.CheckLockout(); err != nil {
+		s.attemptMu.Unlock()
+		return nil, err
+	}
+	return s.attemptMu.Unlock, nil
+}
+
 // RecordFailure counts a failed login and escalates the lockout.
 func (s *Store) RecordFailure() {
 	s.mu.Lock()

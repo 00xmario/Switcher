@@ -1073,6 +1073,13 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown provider: "+providerID)
 		return
 	}
+	// The provider's base path bounds what its token may reach, such as
+	// chatgpt.com/backend-api/codex. The mux leaves percent-encoded dot
+	// segments alone, and they would climb out of it upstream.
+	if hasDotSegment(rest) {
+		writeError(w, http.StatusBadRequest, "invalid request path")
+		return
+	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if closeErr := r.Body.Close(); closeErr != nil {
@@ -1503,6 +1510,17 @@ func (m *Manager) splitPrefix(path string) (providerID, rest string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// hasDotSegment reports a "." or ".." segment in a decoded path. Backslashes
+// count as separators too, as some servers treat them that way.
+func hasDotSegment(path string) bool {
+	for _, segment := range strings.FieldsFunc(path, func(c rune) bool { return c == '/' || c == '\\' }) {
+		if segment == "." || segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // copyResponseStatus relays an upstream error body we already buffered.

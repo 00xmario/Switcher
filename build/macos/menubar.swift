@@ -1083,7 +1083,8 @@ struct MenuRuntime {
         #else
         let server = URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/MacOS/SwitcherServer")
         let logDir = NSHomeDirectory() + "/.switcher"
-        try FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
         let logPath = logDir + "/server.log"
         if !FileManager.default.fileExists(atPath: logPath) {
             FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])

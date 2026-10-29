@@ -607,7 +607,8 @@ func callbackHandler(logins *login.Manager) http.HandlerFunc {
 		state := r.URL.Query().Get("state")
 		// OpenAI's authorize redirect does not echo the state back, and
 		// Anthropic's returns it in a fragment the browser never sends.
-		// With no state in the URL, a single in-flight login is the one.
+		// With no state in the URL, a single in-flight login is the one, but
+		// only one whose code PKCE binds to it (Google's echo the state).
 		if state == "" {
 			state = logins.SinglePending()
 		}

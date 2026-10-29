@@ -353,3 +353,26 @@ func TestLocalDayBoundaries(t *testing.T) {
 		t.Errorf("boundary records=%d tokens=%d cost=%v, want 2, 4, 4", got.Records, got.TotalTokens, got.TotalCost)
 	}
 }
+
+// The scan cache lists session files, projects and costs: this user's only.
+func TestUsageFilesArePrivate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fixture.jsonl")
+	cachePath := filepath.Join(t.TempDir(), "cache.json")
+	writeUsageFile(t, path, codexHeader+codexEvent(2, 10, 10))
+	usageSummary(Source{Provider: ProviderCodex, Dir: dir}, LoadScanCache(cachePath))
+	client := &http.Client{Transport: ratesTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"fixture-model":{"input_cost_per_token":2,"output_cost_per_token":0}}`))}, nil
+	})}
+	s := fixtureService(t, client, time.Date(2026, 10, 4, 0, 30, 0, 0, time.Local))
+	s.Scan(1)
+	for _, file := range []string{cachePath, filepath.Join(s.dataDir, "model-rates.json")} {
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s mode %o, want 600", filepath.Base(file), perm)
+		}
+	}
+}

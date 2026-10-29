@@ -144,6 +144,10 @@ type LoginInfo struct {
 	UserCode string `json:"user_code,omitempty"`
 	// State identifies the attempt for polling.
 	State string `json:"state"`
+	// PKCE reports that the code exchange proves this attempt's verifier, so
+	// a callback whose redirect drops the state may still complete it.
+	// Without PKCE the state is the only proof and the callback must carry it.
+	PKCE bool `json:"-"`
 }
 
 // ResetCredit is one banked usage-limit reset.

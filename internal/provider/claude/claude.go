@@ -102,7 +102,7 @@ func (p *Provider) LoginStart(_ context.Context) (provider.LoginInfo, error) {
 	q.Set("code_challenge", base64.RawURLEncoding.EncodeToString(sum[:]))
 	q.Set("code_challenge_method", "S256")
 	q.Set("state", verifier)
-	return provider.LoginInfo{Kind: "browser", URL: authURLPath() + "?" + q.Encode(), State: verifier}, nil
+	return provider.LoginInfo{Kind: "browser", URL: authURLPath() + "?" + q.Encode(), State: verifier, PKCE: true}, nil
 }
 
 func authURLPath() string {

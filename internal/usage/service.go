@@ -32,7 +32,7 @@ func NewService(dataDir string, client *http.Client) *Service {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		// continue: cache writes will fail but scans still work
 	}
 	s := &Service{

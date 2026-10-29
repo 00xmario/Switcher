@@ -809,10 +809,12 @@ func (a *API) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if err := a.Settings.CheckLockout(); err != nil {
+	done, err := a.Settings.BeginAttempt()
+	if err != nil {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		return
 	}
+	defer done()
 	proof, ok := a.Settings.VerifyPasswordForSession(body.Password)
 	if !ok {
 		a.Settings.RecordFailure()
@@ -877,10 +879,12 @@ func (a *API) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if err := a.Settings.CheckLockout(); err != nil {
+	done, err := a.Settings.BeginAttempt()
+	if err != nil {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		return
 	}
+	defer done()
 	if err := a.Settings.ChangePassword(body.Current, body.Next); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, settings.ErrWrongPassword) {
@@ -909,10 +913,12 @@ func (a *API) handleAuthDisable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if err := a.Settings.CheckLockout(); err != nil {
+	done, err := a.Settings.BeginAttempt()
+	if err != nil {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		return
 	}
+	defer done()
 	if err := a.Settings.DisableAuthWithPassword(body.Password); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, settings.ErrWrongPassword) {

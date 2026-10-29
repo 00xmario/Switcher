@@ -459,13 +459,16 @@ func (c *Client) localManagementKey(r *http.Request) bool {
 }
 
 func (c *Client) proxy(w http.ResponseWriter, r *http.Request) {
-	management := strings.HasPrefix(r.URL.Path, "/v0/management/")
+	// Only provider traffic keeps its Authorization. On the hub it is this
+	// Mac's management key, and on dashboard routes this Mac's device token,
+	// which also unlocks its LAN listener: neither is the host's to see.
+	local := strings.HasPrefix(r.URL.Path, "/v0/management/") || strings.HasPrefix(r.URL.Path, "/api/")
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme, pr.Out.URL.Host = "https", "switcher-host"
 			pr.Out.Header.Del("Cookie")
 			pr.Out.Header.Del("X-Switcher-CSRF")
-			if management {
+			if local {
 				pr.Out.Header.Del("Authorization")
 				pr.Out.Header.Del("X-Management-Key")
 			}
@@ -509,18 +512,7 @@ func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalS
 		}
 	}
 	if err == nil {
-		// The host's own Claude Code login does not apply here: this Mac uses
-		// the host's selected account, like any other provider. Strip it once,
-		// before the state is shared with other requests.
-		if accounts, ok := state["accounts"].([]any); ok {
-			for _, a := range accounts {
-				if account, ok := a.(map[string]any); ok {
-					delete(account, "native_switch_available")
-					delete(account, "native_active")
-				}
-			}
-		}
-		delete(state, "claude_code")
+		sanitizeHostState(state)
 	}
 	c.mu.Lock()
 	if err == nil {
@@ -551,6 +543,60 @@ func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalS
 	status := c.Status()
 	merged["remote"] = map[string]any{"role": "client", "host": status.HostName, "address": status.Address, "connected": err == nil, "error": status.Error}
 	writeJSONResponse(w, http.StatusOK, merged)
+}
+
+// sanitizeHostState runs once, before the host's state is shared with other
+// requests. The host's own Claude Code login does not apply here: this Mac
+// uses the host's selected account, like any other provider. This Mac's
+// dashboard and menu put account and provider ids into markup and request
+// paths, so only ids shaped like the ones Switcher generates are kept.
+func sanitizeHostState(state map[string]any) {
+	accounts, _ := state["accounts"].([]any)
+	kept := make([]any, 0, len(accounts))
+	for _, a := range accounts {
+		if account, ok := a.(map[string]any); ok && hostID(account["id"]) && hostID(account["provider"]) {
+			delete(account, "native_switch_available")
+			delete(account, "native_active")
+			kept = append(kept, account)
+		}
+	}
+	state["accounts"] = kept
+	for _, key := range []string{"order", "hidden"} {
+		if list, ok := state[key].([]any); ok {
+			ids := make([]any, 0, len(list))
+			for _, id := range list {
+				if hostID(id) {
+					ids = append(ids, id)
+				}
+			}
+			state[key] = ids
+		} else {
+			delete(state, key)
+		}
+	}
+	active, _ := state["active"].(map[string]any)
+	selected := map[string]any{}
+	for provider, id := range active {
+		if hostID(provider) && hostID(id) {
+			selected[provider] = id
+		}
+	}
+	state["active"] = selected
+	delete(state, "claude_code")
+}
+
+// hostID accepts only the identifiers Switcher itself generates.
+func hostID(v any) bool {
+	id, ok := v.(string)
+	if !ok || id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // HostAccount reports the provider of one of the host's accounts, from the

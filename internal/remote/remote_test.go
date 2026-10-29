@@ -21,7 +21,7 @@ func hostMux(t *testing.T) http.Handler {
 		}
 		switch {
 		case r.URL.Path == "/api/state":
-			json.NewEncoder(w).Encode(map[string]any{"accounts": []any{map[string]any{"id": "host-account"}}, "version": "host-version", "hub_management_key": "host-key"})
+			json.NewEncoder(w).Encode(map[string]any{"accounts": []any{map[string]any{"id": "host-account", "provider": "claude"}}, "version": "host-version", "hub_management_key": "host-key"})
 		default:
 			b, _ := io.ReadAll(r.Body)
 			device, _ := PairedDevice(r)
@@ -214,5 +214,80 @@ func TestPairedMacsCannotManagePhoneAccess(t *testing.T) {
 		if allowedRemotePath(path) {
 			t.Errorf("%s is open to paired devices", path)
 		}
+	}
+}
+
+// Dashboard requests forwarded to the host never carry this Mac's own
+// Authorization: for /api/ routes it is the local device token, which also
+// unlocks this Mac's LAN listener.
+func TestClientKeepsItsDeviceTokenFromTheHost(t *testing.T) {
+	_, client := pairedPair(t)
+	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	for _, path := range []string{"/api/accounts/host-account/activate", "/api/usage/refresh", "/api/providers/codex/hide"} {
+		r := httptest.NewRequest("POST", path, nil)
+		r.Header.Set("Authorization", "Bearer local-device-token")
+		r.Header.Set("X-Management-Key", "client-key")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if got := w.Body.String(); !strings.HasPrefix(got, "POST "+path) || !strings.Contains(got, " auth= ") {
+			t.Fatalf("%s reached the host as %q", path, got)
+		}
+	}
+}
+
+// The host's state is drawn by this Mac's dashboard and menu, which put ids
+// into markup and request paths. Only ids shaped like Switcher's own reach
+// them, so a hostile host cannot inject markup or a path such as ../update.
+func TestClientDropsHostIDsThatSwitcherNeverGenerates(t *testing.T) {
+	host, err := NewHost(t.TempDir(), 0, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"accounts": []any{
+				map[string]any{"id": "claude-1a2b", "provider": "claude", "email": "a@example.com"},
+				map[string]any{"id": "../claude/sync?", "provider": "claude"},
+				map[string]any{"id": "codex-9f", "provider": "x\"><meta http-equiv=refresh content=0>"},
+				map[string]any{"id": 7, "provider": "codex"},
+				"not an account",
+			},
+			"order":  []any{"claude", "x\"><style>", "codex", 3},
+			"hidden": []any{"../update?"},
+			"active": map[string]any{"claude": "claude-1a2b", "codex": "../update?", "x\"": "claude-1a2b"},
+		})
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(t.TempDir(), "client-key")
+	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Laptop"); err != nil {
+		t.Fatal(err)
+	}
+	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/state", nil))
+	var state struct {
+		Accounts []map[string]any `json:"accounts"`
+		Order    []any            `json:"order"`
+		Hidden   []any            `json:"hidden"`
+		Active   map[string]any   `json:"active"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Accounts) != 1 || state.Accounts[0]["id"] != "claude-1a2b" || state.Accounts[0]["email"] != "a@example.com" {
+		t.Fatalf("accounts: %v", state.Accounts)
+	}
+	if len(state.Order) != 2 || state.Order[0] != "claude" || state.Order[1] != "codex" || len(state.Hidden) != 0 {
+		t.Fatalf("order %v hidden %v", state.Order, state.Hidden)
+	}
+	if len(state.Active) != 1 || state.Active["claude"] != "claude-1a2b" {
+		t.Fatalf("active: %v", state.Active)
 	}
 }

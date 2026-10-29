@@ -258,3 +258,38 @@ func TestFirstAccountBecomesActiveWithoutExplicitPick(t *testing.T) {
 		t.Fatalf("active = %q, want first usable account \"a\"", m.ActiveID("fake"))
 	}
 }
+
+// A provider's base path bounds what its token may reach, such as Codex's
+// chatgpt.com/backend-api/codex. The mux cleans literal dot segments but
+// not encoded ones, so the proxy must refuse them before forwarding.
+func TestProxyRefusesPathsThatClimbOutOfTheProviderBase(t *testing.T) {
+	reached := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	m := newManager(t, upstream, account("a"))
+	mux := http.NewServeMux()
+	mux.Handle("/fake/", m)
+	for _, path := range []string{
+		"/fake/v1/%2e%2e/%2e%2e/me",
+		"/fake/v1/..%2f..%2fme",
+		"/fake/v1/%2E%2E%5c%2E%2E%5cme",
+		"/fake/v1/responses/%2e/x",
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", path, rec.Code)
+		}
+	}
+	if reached != 0 {
+		t.Fatalf("%d requests with dot segments reached the upstream with a token", reached)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/fake/v1/responses..json", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusOK || reached != 1 {
+		t.Fatalf("ordinary path: status %d, reached %d", rec.Code, reached)
+	}
+}

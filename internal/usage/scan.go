@@ -128,7 +128,7 @@ func (c *ScanCache) Save() {
 	data, err := json.Marshal(&snapshot)
 	if err == nil {
 		tmp := c.path + ".tmp"
-		err = os.WriteFile(tmp, data, 0o644)
+		err = os.WriteFile(tmp, data, 0o600)
 		if err == nil {
 			err = os.Rename(tmp, c.path)
 		}
