@@ -786,20 +786,19 @@ function render() {
   let html = '';
   order.forEach((providerID) => {
     const accounts = byProvider.get(providerID) || [];
-    const provider = escapeHTML(providerID);
     html += `
-      <section class="provider ${compact ? 'compact-provider' : ''}" data-provider="${provider}" id="provider-${provider}">
+      <section class="provider ${compact ? 'compact-provider' : ''}" data-provider="${escapeHTML(providerID)}" id="provider-${escapeHTML(providerID)}">
         <div class="provider-head" draggable="true">
           <span class="drag-grip" title="Drag to reorder">
             <svg viewBox="0 0 12 18" aria-hidden="true"><circle cx="4" cy="3" r="1.5"/><circle cx="10" cy="3" r="1.5"/><circle cx="4" cy="9" r="1.5"/><circle cx="10" cy="9" r="1.5"/><circle cx="4" cy="15" r="1.5"/><circle cx="10" cy="15" r="1.5"/></svg>
           </span>
-          <span class="logo logo-${provider}">${LOGOS[providerID] || ''}</span>
+          <span class="logo logo-${escapeHTML(providerID)}">${LOGOS[providerID] || ''}</span>
           <h2>${escapeHTML(PROVIDER_NAMES[providerID] || providerID)}</h2>
           ${providerID === 'claude' ? claudeSessionSync.html() : ''}
           <span class="count">${accounts.length}</span>
-          ${usingHost ? '' : `<button class="add-provider" data-add="${provider}">Add account</button>`}
+          ${usingHost ? '' : `<button class="add-provider" data-add="${escapeHTML(providerID)}">Add account</button>`}
           <span class="provider-tools">
-            <button data-menu="${provider}" title="Provider options">⋯</button>
+            <button data-menu="${escapeHTML(providerID)}" title="Provider options">⋯</button>
           </span>
         </div>
         ${merge && accounts.length > 1 ? `<div class="account-list merged-list">${accounts.map(mergedAccountHTML).join('')}</div>${mergedWindowsHTML(accounts, providerID)}` : `

@@ -99,8 +99,8 @@ func TestReloginOnlyPersistsSelectedIdentity(t *testing.T) {
 	}
 }
 
-// stateProvider proves an attempt with its state alone (Google's flow, no
-// PKCE); pkceProvider binds the code to the attempt's verifier.
+// stateProvider proves an attempt with its state alone, like Google's flows,
+// or, with pkce set, binds the code to the attempt's verifier.
 type stateProvider struct {
 	reloginProvider
 	pkce      bool

@@ -261,7 +261,8 @@ func TestFirstAccountBecomesActiveWithoutExplicitPick(t *testing.T) {
 
 // A provider's base path bounds what its token may reach, such as Codex's
 // chatgpt.com/backend-api/codex. The mux cleans literal dot segments but
-// not encoded ones, so the proxy must refuse them before forwarding.
+// not encoded ones, so the proxy must refuse them, however often encoded,
+// before forwarding.
 func TestProxyRefusesPathsThatClimbOutOfTheProviderBase(t *testing.T) {
 	reached := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -277,6 +278,11 @@ func TestProxyRefusesPathsThatClimbOutOfTheProviderBase(t *testing.T) {
 		"/fake/v1/..%2f..%2fme",
 		"/fake/v1/%2E%2E%5c%2E%2E%5cme",
 		"/fake/v1/responses/%2e/x",
+		// Encoded twice, the dots arrive upstream as %2e%2e, which a server
+		// normalizing the path decodes and then resolves.
+		"/fake/v1/%252e%252e/%252e%252e/me",
+		"/fake/v1/.%252e/me",
+		"/fake/v1/%252E%252E%252fme",
 	} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`)))

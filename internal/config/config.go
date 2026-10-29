@@ -24,7 +24,8 @@ const (
 	GeminiCallbackPort = 51122
 )
 
-// Dir returns the Switcher data directory, creating it if needed.
+// Dir returns the Switcher data directory, creating it if needed and keeping
+// it private to this user.
 func Dir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

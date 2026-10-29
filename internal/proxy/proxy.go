@@ -1076,7 +1076,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The provider's base path bounds what its token may reach, such as
 	// chatgpt.com/backend-api/codex. The mux leaves percent-encoded dot
 	// segments alone, and they would climb out of it upstream.
-	if hasDotSegment(rest) {
+	if climbsOutOfBase(rest) {
 		writeError(w, http.StatusBadRequest, "invalid request path")
 		return
 	}
@@ -1512,9 +1512,14 @@ func (m *Manager) splitPrefix(path string) (providerID, rest string, ok bool) {
 	return "", "", false
 }
 
-// hasDotSegment reports a "." or ".." segment in a decoded path. Backslashes
-// count as separators too, as some servers treat them that way.
-func hasDotSegment(path string) bool {
+// climbsOutOfBase reports a decoded path that could leave the provider's
+// base path upstream: a "." or ".." segment, or a "%" that a server decoding
+// the path again could turn into one; no provider path has either.
+// Backslashes count as separators too, as some servers treat them that way.
+func climbsOutOfBase(path string) bool {
+	if strings.Contains(path, "%") {
+		return true
+	}
 	for _, segment := range strings.FieldsFunc(path, func(c rune) bool { return c == '/' || c == '\\' }) {
 		if segment == "." || segment == ".." {
 			return true

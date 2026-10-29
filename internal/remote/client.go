@@ -458,19 +458,19 @@ func (c *Client) localManagementKey(r *http.Request) bool {
 	return c.managementKey != "" && subtle.ConstantTimeCompare([]byte(got), []byte(c.managementKey)) == 1
 }
 
+// ownCredentials are this Mac's, never the host's to see: the device token
+// (which also unlocks this Mac's LAN listener), the management key, the
+// browser session and the CLIs' own logins. The host answers with its own
+// accounts and never reads them.
+var ownCredentials = []string{"Authorization", "X-Api-Key", "Api-Key", "X-Goog-Api-Key", "ChatGPT-Account-Id",
+	"X-Management-Key", "Cookie", "X-Switcher-CSRF"}
+
 func (c *Client) proxy(w http.ResponseWriter, r *http.Request) {
-	// Only provider traffic keeps its Authorization. On the hub it is this
-	// Mac's management key, and on dashboard routes this Mac's device token,
-	// which also unlocks its LAN listener: neither is the host's to see.
-	local := strings.HasPrefix(r.URL.Path, "/v0/management/") || strings.HasPrefix(r.URL.Path, "/api/")
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme, pr.Out.URL.Host = "https", "switcher-host"
-			pr.Out.Header.Del("Cookie")
-			pr.Out.Header.Del("X-Switcher-CSRF")
-			if local {
-				pr.Out.Header.Del("Authorization")
-				pr.Out.Header.Del("X-Management-Key")
+			for _, name := range ownCredentials {
+				pr.Out.Header.Del(name)
 			}
 		},
 		Transport:     roundTripFunc(c.do),
@@ -554,7 +554,7 @@ func sanitizeHostState(state map[string]any) {
 	accounts, _ := state["accounts"].([]any)
 	kept := make([]any, 0, len(accounts))
 	for _, a := range accounts {
-		if account, ok := a.(map[string]any); ok && hostID(account["id"]) && hostID(account["provider"]) {
+		if account, ok := a.(map[string]any); ok && validID(account["id"]) && validID(account["provider"]) {
 			delete(account, "native_switch_available")
 			delete(account, "native_active")
 			kept = append(kept, account)
@@ -565,7 +565,7 @@ func sanitizeHostState(state map[string]any) {
 		if list, ok := state[key].([]any); ok {
 			ids := make([]any, 0, len(list))
 			for _, id := range list {
-				if hostID(id) {
+				if validID(id) {
 					ids = append(ids, id)
 				}
 			}
@@ -577,7 +577,7 @@ func sanitizeHostState(state map[string]any) {
 	active, _ := state["active"].(map[string]any)
 	selected := map[string]any{}
 	for provider, id := range active {
-		if hostID(provider) && hostID(id) {
+		if validID(provider) && validID(id) {
 			selected[provider] = id
 		}
 	}
@@ -585,8 +585,8 @@ func sanitizeHostState(state map[string]any) {
 	delete(state, "claude_code")
 }
 
-// hostID accepts only the identifiers Switcher itself generates.
-func hostID(v any) bool {
+// validID accepts only the identifiers Switcher itself generates.
+func validID(v any) bool {
 	id, ok := v.(string)
 	if !ok || id == "" || len(id) > 64 {
 		return false

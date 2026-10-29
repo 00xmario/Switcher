@@ -22,8 +22,9 @@ import (
 	"time"
 )
 
-// DeviceHeader carries a paired device's token. Provider traffic keeps its own
-// Authorization header, so the device proves itself separately.
+// DeviceHeader carries a paired device's token. The device proves itself
+// apart from Authorization, which carries its CLIs' own logins and stays on
+// the device.
 const DeviceHeader = "X-Switcher-Device"
 
 // AccountHeader names the host account for Claude inference; empty means the

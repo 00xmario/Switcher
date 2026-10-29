@@ -19,6 +19,11 @@ func hostMux(t *testing.T) http.Handler {
 		if r.Header.Get(DeviceHeader) != "" || r.Header.Get("Cookie") != "" {
 			t.Error("device token or cookie reached the host's routes")
 		}
+		for _, name := range []string{"X-Api-Key", "Api-Key", "X-Goog-Api-Key", "Chatgpt-Account-Id", "X-Management-Key"} {
+			if r.Header.Get(name) != "" {
+				t.Errorf("this Mac's %s reached the host", name)
+			}
+		}
 		switch {
 		case r.URL.Path == "/api/state":
 			json.NewEncoder(w).Encode(map[string]any{"accounts": []any{map[string]any{"id": "host-account", "provider": "claude"}}, "version": "host-version", "hub_management_key": "host-key"})
@@ -32,7 +37,13 @@ func hostMux(t *testing.T) http.Handler {
 
 func pairedPair(t *testing.T) (*Host, *Client) {
 	t.Helper()
-	host, err := NewHost(t.TempDir(), 0, hostMux(t))
+	return pairedWith(t, hostMux(t))
+}
+
+// pairedWith pairs a client with a host whose routes next serves.
+func pairedWith(t *testing.T, next http.Handler) (*Host, *Client) {
+	t.Helper()
+	host, err := NewHost(t.TempDir(), 0, next)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +86,7 @@ func TestPairedClientUsesTheHostForAccountsAndProviders(t *testing.T) {
 	if state["version"] != "client-version" || state["hub_management_key"] != "client-key" || len(state["accounts"].([]any)) != 1 || state["remote"].(map[string]any)["connected"] != true {
 		t.Fatalf("merged state: %v", state)
 	}
-	if got := get("POST", "/codex/v1/responses?x=1", `{"model":"m"}`, http.Header{"Authorization": {"Bearer cli"}, "Cookie": {"s=1"}}); got != `POST /codex/v1/responses?x=1 {"model":"m"} auth=Bearer cli account= device=Laptop` {
+	if got := get("POST", "/codex/v1/responses?x=1", `{"model":"m"}`, http.Header{"Authorization": {"Bearer cli"}, "Cookie": {"s=1"}}); got != `POST /codex/v1/responses?x=1 {"model":"m"} auth= account= device=Laptop` {
 		t.Fatalf("provider request: %q", got)
 	}
 	if got := get("GET", "/v0/management/auth-files", "", http.Header{"Authorization": {"Bearer client-key"}}); !strings.HasPrefix(got, "GET /v0/management/auth-files  auth= ") {
@@ -217,16 +228,22 @@ func TestPairedMacsCannotManagePhoneAccess(t *testing.T) {
 	}
 }
 
-// Dashboard requests forwarded to the host never carry this Mac's own
-// Authorization: for /api/ routes it is the local device token, which also
-// unlocks this Mac's LAN listener.
-func TestClientKeepsItsDeviceTokenFromTheHost(t *testing.T) {
+// Requests forwarded to the host never carry this Mac's own credentials:
+// on /api/ routes the local device token, which also unlocks this Mac's LAN
+// listener, and on provider routes the CLIs' own logins. The host answers
+// with its own accounts and never reads them.
+func TestClientKeepsItsCredentialsFromTheHost(t *testing.T) {
 	_, client := pairedPair(t)
 	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
-	for _, path := range []string{"/api/accounts/host-account/activate", "/api/usage/refresh", "/api/providers/codex/hide"} {
+	for _, path := range []string{"/api/accounts/host-account/activate", "/api/usage/refresh", "/api/providers/codex/hide",
+		"/codex/v1/responses", "/claude/v1/messages", "/gemini/v1internal:generateContent"} {
 		r := httptest.NewRequest("POST", path, nil)
 		r.Header.Set("Authorization", "Bearer local-device-token")
 		r.Header.Set("X-Management-Key", "client-key")
+		r.Header.Set("X-Api-Key", "sk-local")
+		r.Header.Set("Api-Key", "sk-local")
+		r.Header.Set("X-Goog-Api-Key", "local")
+		r.Header.Set("ChatGPT-Account-Id", "local-account")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		if got := w.Body.String(); !strings.HasPrefix(got, "POST "+path) || !strings.Contains(got, " auth= ") {
@@ -239,7 +256,7 @@ func TestClientKeepsItsDeviceTokenFromTheHost(t *testing.T) {
 // into markup and request paths. Only ids shaped like Switcher's own reach
 // them, so a hostile host cannot inject markup or a path such as ../update.
 func TestClientDropsHostIDsThatSwitcherNeverGenerates(t *testing.T) {
-	host, err := NewHost(t.TempDir(), 0, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	_, client := pairedWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"accounts": []any{
 				map[string]any{"id": "claude-1a2b", "provider": "claude", "email": "a@example.com"},
@@ -253,22 +270,6 @@ func TestClientDropsHostIDsThatSwitcherNeverGenerates(t *testing.T) {
 			"active": map[string]any{"claude": "claude-1a2b", "codex": "../update?", "x\"": "claude-1a2b"},
 		})
 	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	host.Quiet = true
-	t.Cleanup(host.Close)
-	if err := host.SetEnabled(true); err != nil {
-		t.Fatal(err)
-	}
-	code, err := host.NewPairingCode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := NewClient(t.TempDir(), "client-key")
-	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Laptop"); err != nil {
-		t.Fatal(err)
-	}
 	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/state", nil))
