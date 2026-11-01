@@ -1,7 +1,7 @@
 BINARY := switcher
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo dev)
 
-.PHONY: build test test-usage-update vet verify benchmark-menu install run dev clean
+.PHONY: build test test-usage-update vet verify verify-common verify-linux cross-build benchmark-menu install run dev clean
 
 build:
 	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o $(BINARY) .
@@ -23,10 +23,41 @@ test-usage-update:
 vet:
 	go vet ./...
 
-# Run the same checks before a tag and in both CI workflows.
-verify:
+# Run the same checks before a tag and in both CI workflows. verify runs on
+# a Mac (it also builds the Swift menu bar app); verify-linux runs the same
+# Go and web checks on Linux, where the tray and keep awake are native.
+verify: verify-common
+	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+		swiftc -parse-as-library -D SWITCHER_LAYOUT_TEST build/macos/menubar.swift \
+			build/macos/menubar_layout_test.swift -o "$$tmp/switcher-layout-test"; \
+		"$$tmp/switcher-layout-test"
+	$(MAKE) --no-print-directory cross-build
+	git diff --check HEAD^ HEAD
+	git diff --cached --check
+	git diff --check
+
+verify-linux: verify-common
+	$(MAKE) --no-print-directory cross-build
+	git diff --check HEAD^ HEAD
+	git diff --cached --check
+	git diff --check
+
+# Every released platform must build without cgo: the Mac slices and Linux,
+# and the Tailscale add-on for Linux too.
+cross-build:
+	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+		for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do \
+			CGO_ENABLED=0 GOOS="$${target%/*}" GOARCH="$${target#*/}" go build -o "$$tmp/switcher-$${target%/*}-$${target#*/}" .; \
+		done; \
+		for arch in amd64 arm64; do \
+			(cd cmd/switcher-tailnet && CGO_ENABLED=0 GOOS=linux GOARCH="$$arch" go build -o "$$tmp/tailnet-linux-$$arch" .); \
+		done
+
+verify-common:
+	test -z "$$(gofmt -l .)"
 	go test ./...
 	go vet ./...
+	GOOS=linux go vet ./...
 	go test -race ./...
 	node --check web/app.js
 	node --check web/login.js
@@ -51,17 +82,6 @@ verify:
 	node web/update-progress_test.mjs
 	node web/qr_test.mjs
 	cd cmd/switcher-tailnet && test -z "$$(gofmt -l .)" && go vet . && go test . && go build -o /dev/null .
-	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-		swiftc -parse-as-library -D SWITCHER_LAYOUT_TEST build/macos/menubar.swift \
-			build/macos/menubar_layout_test.swift -o "$$tmp/switcher-layout-test"; \
-		"$$tmp/switcher-layout-test"; \
-		GOOS=darwin GOARCH=arm64 go build -o "$$tmp/switcher-darwin-arm64" .; \
-		GOOS=darwin GOARCH=amd64 go build -o "$$tmp/switcher-darwin-amd64" .; \
-		GOOS=linux GOARCH=amd64 go build -o "$$tmp/switcher-linux-amd64" .; \
-		GOOS=linux GOARCH=arm64 go build -o "$$tmp/switcher-linux-arm64" .
-	git diff --check HEAD^ HEAD
-	git diff --cached --check
-	git diff --check
 
 install: build
 	install -m 0755 $(BINARY) "$(shell go env GOPATH)/bin"

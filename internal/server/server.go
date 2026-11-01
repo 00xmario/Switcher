@@ -74,6 +74,8 @@ type API struct {
 	RemoteHost   *remote.Host
 	RemoteClient *remote.Client
 	Tailnet      *remote.Tailnet // optional "Away from home" add-on
+	// Quit stops this server, for the tray's Quit Switcher; nil refuses.
+	Quit func()
 	// Autostart starts Switcher at login on Linux; nil or unsupported elsewhere.
 	Autostart *autostart.Manager
 	// Handback hands the tools back to their providers; nil disables it.
@@ -135,6 +137,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	a.registerAwakeRoutes(mux)
 	a.registerHandbackRoutes(mux)
 	a.registerAutostartRoutes(mux)
+	mux.HandleFunc("POST /api/quit", a.handleQuit)
 	mux.HandleFunc("PATCH /api/providers/order", a.handleProviderOrder)
 	mux.HandleFunc("POST /api/providers/{id}/hide", a.handleProviderHide)
 	mux.HandleFunc("POST /api/providers/{id}/show", a.handleProviderShow)

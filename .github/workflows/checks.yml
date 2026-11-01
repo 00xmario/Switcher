@@ -17,3 +17,16 @@ jobs:
           go-version-file: go.mod
       - name: Verify
         run: make verify
+
+  verify-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Verify on Linux
+        run: make verify-linux

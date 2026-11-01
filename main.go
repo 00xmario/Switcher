@@ -9,6 +9,7 @@
 //	switcher            serve the UI and the API proxy (default)
 //	switcher install    point the Codex CLI at Switcher (idempotent)
 //	switcher uninstall  remove Switcher from the Codex CLI config
+//	switcher tray       the Linux tray icon (the Mac has its menu bar app)
 package main
 
 import (
@@ -150,6 +151,12 @@ func main() {
 			log.Fatalf("switcher uninstall: %v", err)
 		}
 		fmt.Printf("Switcher-owned Codex settings removed from %s.\n", path)
+
+	case args[0] == "tray":
+		if len(args) > 1 {
+			log.Fatal("usage: switcher [-port N] tray")
+		}
+		os.Exit(runTray(*port))
 
 	case args[0] == "version":
 		fmt.Println("switcher " + version)
@@ -404,6 +411,9 @@ func run(port, desktopRelayPort int) {
 		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
 		Autostart: autostart.New(executablePath()),
+		// The tray's Quit Switcher: stop as on SIGTERM, which also tells
+		// the login service not to restart it.
+		Quit: func() { _ = syscall.Kill(os.Getpid(), syscall.SIGTERM) },
 	}
 
 	// Each provider with a browser redirect has its own callback listener;

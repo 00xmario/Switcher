@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"switcher/internal/autostart"
 )
@@ -46,6 +47,26 @@ func (a *API) handleAutostartSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleQuit stops Switcher, after the answer is on its way. Only this
+// computer may ask.
+func (a *API) handleQuit(w http.ResponseWriter, r *http.Request) {
+	if !loopbackOnly(w, r) {
+		return
+	}
+	if a.Quit == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "Switcher cannot be stopped from here"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		a.Quit()
+	}()
 }
 
 func orText(s, fallback string) string {
