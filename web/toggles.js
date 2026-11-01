@@ -83,7 +83,8 @@ export function createHandback({ api, confirm = async () => true, toast = () => 
       ${busy ? `<p class="settings-sub" role="status">${on ? 'Setting Switcher up again…' : 'Handing your tools back…'}</p>` : ''}
       ${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}
       ${stepsHTML(status?.steps)}
-      ${on ? '<p class="set-foot">Claude Desktop keeps running through Switcher, on its own login, until you restart it.</p>' : ''}
+      ${on && status?.steps?.some(s => s.tool === 'claude-desktop' && s.outcome === 'done')
+        ? '<p class="set-foot">Claude Desktop keeps running through Switcher, on its own login, until you restart it.</p>' : ''}
     </div>`;
   }
 

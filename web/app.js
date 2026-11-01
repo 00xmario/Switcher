@@ -115,6 +115,8 @@ const PLAN_NAMES = {
 };
 
 const CLI_INSTALL = '/Applications/Switcher.app/Contents/MacOS/SwitcherServer install-cli';
+// On Linux the install script already puts switcher on the PATH.
+const cliInstall = () => data.platform === 'linux' ? 'curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh | sh' : CLI_INSTALL;
 
 // How each provider adds an account: browser popup, device code, or key.
 const ADD_METHOD = { codex: 'browser', claude: 'browser', grok: 'device', opencode: 'key', antigravity: 'browser', gemini: 'browser', copilot: 'device' };
@@ -2362,7 +2364,7 @@ async function renderSettings() {
           <pre>${[['switcher status', ''], ['switcher use work@example.com', ''], ['switcher reset codex --yes', ''], ['switcher login claude', '# also over SSH']]
             .map(([cmd, note], i) => `<span class="t-line" style="--i:${i};--n:${cmd.length}"><b>$</b> <span class="t-type">${cmd}</span>${note ? ` <span class="t-note">${note}</span>` : ''}</span>`).join('')}<span class="t-line t-cursor-line" style="--i:4"><b>$</b> <i class="t-cursor"></i></span></pre></div>
         <label class="field-label">Run once to add the <code>switcher</code> command</label>
-        <div class="copy-row"><input readonly aria-label="Command that installs the switcher command" value="${CLI_INSTALL}"><button type="button" class="copy-btn" data-copy="${CLI_INSTALL}">Copy</button></div>
+        <div class="copy-row"><input readonly aria-label="Command that installs the switcher command" value="${cliInstall()}"><button type="button" class="copy-btn" data-copy="${cliInstall()}">Copy</button></div>
       </div>
       <details class="settings-card cli-setup-card" id="cli-setup-card">
         <summary class="cli-setup-summary">

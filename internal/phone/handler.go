@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"runtime"
 	"net/url"
 	"strings"
 	"sync"
@@ -216,7 +217,7 @@ func (h *Handler) authenticated(w http.ResponseWriter, r *http.Request, id Ident
 }
 
 func (h *Handler) session(w http.ResponseWriter, r *http.Request, id Identity) {
-	out := map[string]any{"enabled": true, "paired": false, "device": id.Device}
+	out := map[string]any{"enabled": true, "paired": false, "device": id.Device, "platform": runtime.GOOS}
 	if h.Mac != nil {
 		out["mac"] = h.Mac()
 	}

@@ -36,13 +36,17 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
 | `switcher connect <address> --code CODE` | Use the accounts of a Mac that shares them |
 | `switcher disconnect --yes` | Use this Mac's own accounts again |
+| `switcher use-host [on\|off]` | Work without the paired host and stay paired (off), or use it again (on) |
 | `switcher discover` | Find sharing Switchers on your network and tailnet |
 | `switcher away [on\|off\|remove --yes]` | The Tailscale add-on for use away from home |
 | `switcher phone [on\|off\|approve <code>\|deny <id>\|revoke <id> --yes]` | Use Switcher from your phone over Tailscale; see [phone](phone.md) |
 | `switcher desktop [connect\|disconnect\|restart --yes]` | Route Claude Desktop through Switcher |
 | `switcher setup [codex [--undo\|--test]]` | CLI setup status; point Codex at Switcher, undo it, or send one test request through Switcher's Codex route |
+| `switcher hand-back [on --yes\|off]` | Hand every tool back to its provider before removing Switcher (Codex config, Claude Desktop settings, sharing, logins), or set everything up again |
 | `switcher settings [set key=value ...]` | Display, banked-reset and automatic Claude switching (`auto_switch_claude`) settings |
 | `switcher start` | Start Switcher in the background if it is not running |
+| `switcher autostart [on\|off]` | Linux: start Switcher at login (systemd user service and the tray) |
+| `switcher tray` | Linux: the tray icon |
 | `switcher open` | Open the dashboard |
 | `switcher install-cli [--dir DIR]` | Put `switcher` on your PATH; another tool called `switcher` is left alone |
 

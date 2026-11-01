@@ -41,7 +41,8 @@ function handbackAPI(initial) {
     calls.push([path, options.method || 'GET', options.body]);
     if (options.method === 'POST') {
       const on = JSON.parse(options.body).enabled;
-      status = { handed_back: on, steps: [{ tool: 'switcher', outcome: 'done', message: on ? 'Switcher no longer uses its accounts.' : 'Switcher uses its accounts again.' }] };
+      status = { handed_back: on, steps: [{ tool: 'claude-desktop', outcome: 'done', message: 'Claude Desktop\'s settings are restored.' },
+        { tool: 'switcher', outcome: 'done', message: on ? 'Switcher no longer uses its accounts.' : 'Switcher uses its accounts again.' }] };
       return { handback: status };
     }
     return status;
@@ -88,6 +89,7 @@ test('an interrupted hand-back says how to finish it', async () => {
   const card = createHandback({ api: async () => ({ handed_back: true, incomplete: true, steps: [] }) });
   await card.load();
   assert.match(card.html(), /Stopped halfway/);
+  assert.doesNotMatch(card.html(), /until you restart it/, 'no Desktop note when Desktop was not routed');
 });
 
 test('start at login shows only where Switcher manages it', () => {

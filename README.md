@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/00xmario/switcher/releases/latest"><strong>Download for macOS</strong></a>
+  &nbsp;·&nbsp; <a href="docs/linux.md">Linux</a>
   &nbsp;·&nbsp; <a href="#command-line">Command line</a>
   &nbsp;·&nbsp; <a href="docs/phone.md">On your phone</a>
   &nbsp;·&nbsp; <a href="docs/sharing.md">Share between Macs</a>
@@ -112,6 +113,10 @@ clear the flag once with:
 xattr -dr com.apple.quarantine /Applications/Switcher.app
 ```
 
+**On Linux** the same script installs `~/.local/bin/switcher`, starts it at
+login with a systemd user service and opens its tray icon. The dashboard is
+the main UI there; see [Switcher on Linux](docs/linux.md) for what differs.
+
 Switcher runs on macOS 13 or later, on Apple silicon and Intel Macs. It
 lives in the menu bar and serves its dashboard on <http://127.0.0.1:8787>.
 Turn on **Start at login** in its menu to keep it around. To build from
@@ -155,6 +160,8 @@ switcher connect studio.local --code K7QF-M2XP
 switcher desktop connect                   # route Claude Desktop through Switcher
 switcher reset codex --yes                 # spend a banked reset
 switcher phone on                          # use Switcher from your phone
+switcher use-host off                      # host down? work on this Mac's own accounts
+switcher hand-back on --yes                # before removing Switcher: tools go direct again
 switcher status --json                     # for agents and scripts
 ```
 
@@ -201,9 +208,19 @@ The full matrix, including what is verified per native CLI, is in
 - An optional dashboard password and an opt-in TLS LAN listener are in
   Settings. The full model is in [details](docs/details.md#security-model).
 
+## Before you remove Switcher
+
+**Settings → Tools → Hand back to the providers** (or `switcher hand-back on --yes`,
+or the menu) undoes Switcher's setup: Codex gets its previous provider back,
+Claude Desktop its settings, sharing turns off, and Claude Code and Codex keep
+a login of their own, so your tools talk to Anthropic and OpenAI directly and
+keep working once Switcher is gone. Switcher then stops using its accounts
+entirely. Turning it off again sets everything back up.
+
 ## Documentation
 
 - [Switcher in detail](docs/details.md): every feature, the switching rules, security
+- [Switcher on Linux](docs/linux.md): install, the tray, what differs from a Mac
 - [Command line](docs/cli.md): commands, JSON for agents, signing in over SSH
 - [Share between Macs](docs/sharing.md): pairing, Away from home, what follows the host
 - [Switcher on your phone](docs/phone.md): setup and who can get in

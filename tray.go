@@ -39,8 +39,8 @@ func runTray(port int) int {
 			}
 		},
 		Updated: func() {
-			// An update replaced the binary: run the new one. The lock is
-			// held across exec, as the same process keeps it.
+			// An update replaced the binary: run the new one. The lock's
+			// descriptor closes on exec, and the new tray takes it again.
 			if now, err := os.Stat(exe); err == nil && launched != nil && !os.SameFile(now, launched) {
 				_ = syscall.Exec(exe, os.Args, os.Environ())
 			}

@@ -128,6 +128,28 @@ required; OpenCode Go uses its own API key.
   over Tailscale from anywhere. Accounts, tokens and every provider request stay on
   that Mac; the other Macs' account views, Codex, T3 Code hub, Claude Code and
   Claude Desktop follow it. See [sharing](sharing.md).
+- **Working without the host**: a Mac paired with a host can turn off
+  **Use the accounts of <host>** when the host stops working. It then uses
+  its own accounts, polls their usage and routes its tools itself, and stays
+  paired across restarts until the switch goes back on. See
+  [sharing](sharing.md#when-the-host-stops-working).
+- **Hand back to the providers**: before removing Switcher, one switch
+  (Settings → Tools, the menu, the tray, or `switcher hand-back on --yes`)
+  undoes its setup. Codex gets its previous provider back; Claude Desktop's
+  settings are restored, and a Desktop still running keeps working through
+  the relay on its own login until it restarts; sharing and the use of a
+  paired host turn off. Claude Code and Codex keep their own logins; one with
+  none gets the account selected in Switcher (Codex only when its login lives
+  in `auth.json`, never in the keyring). Switcher then uses none of its
+  accounts: no proxying, token refresh, usage poll, banked reset or Claude
+  Code switch, because a refresh token rotated by two owners signs one of
+  them out. If a step fails, the ones before it are put back and nothing is
+  handed back. Turning it off redoes what was undone, from a record kept in
+  `~/.switcher/handback.json`, and takes back a newer Codex login that Codex
+  refreshed meanwhile.
+- **Linux**: the same server, dashboard, sharing and command line, with a tray
+  icon instead of the menu bar app, `systemd-inhibit` for keep awake and a
+  systemd user service for Start at login. See [Linux](linux.md).
 - **Command line**: switch accounts, sign in, share between Macs, set up
   Claude Desktop and Codex, and change settings from a terminal, over SSH or
   for an agent, with `--json` output and stable exit codes. See
@@ -369,6 +391,10 @@ internal/usage/          cost and token usage from the CLIs' own session logs
 internal/mgmtapi/        CLIProxyAPI-compatible hub surface for T3 Code
 internal/update/         self-update from GitHub releases
 internal/remote/         sharing between Macs: host, pairing, client, Tailscale add-on manager
+internal/handback/       handing the tools back to their providers, and setting them up again
+internal/autostart/      Start at login on Linux (systemd user service, XDG autostart)
+internal/awake/          keep awake: caffeinate and pmset on a Mac, systemd-inhibit on Linux
+internal/tray/           the Linux tray (StatusNotifierItem), a client of the local server
 cmd/switcher-tailnet/    the optional Tailscale add-on (separate module, downloaded on demand)
 build/macos/             the menu bar app (single-file Swift) and packaging
 web/                     dependency-free frontend (served from the binary)
