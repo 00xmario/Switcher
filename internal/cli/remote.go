@@ -57,7 +57,7 @@ func runShare(c *ctx, args []string) error {
 			address = r.Host.LAN[0]
 		}
 		c.result(map[string]any{"code": code.Code, "expires_at": code.ExpiresAt, "host": r.Host},
-			fmt.Sprintf("Pairing code: %s (valid for ten minutes)\nOn the other Mac: switcher connect %s --code %s", code.Code, orDefault(address, "<this Mac's address>"), code.Code))
+			fmt.Sprintf("Pairing code: %s (valid for ten minutes)\nOn the other %s: switcher connect %s --code %s", code.Code, machine(), orDefault(address, "<this "+machine()+"'s address>"), code.Code))
 		return nil
 	case "revoke":
 		if len(pos) < 2 {
@@ -137,7 +137,7 @@ func runConnect(c *ctx, args []string) error {
 	if err := c.cl.call(http.MethodPost, "/api/remote/connect", body, &answer); err != nil {
 		return err
 	}
-	c.result(answer, fmt.Sprintf("Connected to %s. This Mac now uses its accounts.", answer.Client.HostName))
+	c.result(answer, fmt.Sprintf("Connected to %s. This %s now uses its accounts.", answer.Client.HostName, machine()))
 	return nil
 }
 
@@ -148,12 +148,12 @@ func runDisconnect(c *ctx, args []string) error {
 		return err
 	}
 	if !*yes {
-		return usagef("this Mac forgets the other Switcher and needs a new pairing code to use it again; add --yes to confirm")
+		return usagef("this %s forgets the other Switcher and needs a new pairing code to use it again; add --yes to confirm", machine())
 	}
 	if err := c.cl.call(http.MethodPost, "/api/remote/disconnect", nil, nil); err != nil {
 		return err
 	}
-	c.result(map[string]bool{"connected": false}, "Disconnected. This Mac uses its own accounts again.")
+	c.result(map[string]bool{"connected": false}, "Disconnected. This "+machine()+" uses its own accounts again.")
 	return nil
 }
 
@@ -221,14 +221,14 @@ func runDiscover(c *ctx, args []string) error {
 		return nil
 	}
 	if len(answer.Hosts) == 0 {
-		fmt.Fprintln(c.out, "No sharing Switcher found. Turn on sharing on the other Mac (switcher share on), or connect by its address.")
+		fmt.Fprintln(c.out, "No sharing Switcher found. Turn on sharing on the other "+machine()+" (switcher share on), or connect by its address.")
 		return nil
 	}
 	var rows [][]string
 	for _, h := range answer.Hosts {
 		rows = append(rows, []string{h.Name, h.Address})
 	}
-	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address> --code <code from the other Mac>")
+	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address> --code <code from the other "+machine()+">")
 	return nil
 }
 

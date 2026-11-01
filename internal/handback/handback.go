@@ -232,7 +232,7 @@ func (m *Manager) HandBack(ctx context.Context) (Status, error) {
 		loggedIn, available := c.LoggedIn()
 		switch {
 		case !available:
-			note("claude-code", "skipped", "Switcher cannot see Claude Code's login here; Claude Code keeps whatever login it has.")
+			note("claude-code", "skipped", "Switcher has not managed Claude Code's login here; Claude Code keeps whatever login it has.")
 		case loggedIn:
 			note("claude-code", "unchanged", "Claude Code keeps its current login and refreshes it itself from now on.")
 		default:

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -150,6 +151,14 @@ func Run(args []string, opt Options) int {
 		fmt.Fprintf(opt.Stderr, "Usage: switcher %s %s\n", cmd.name, cmd.args)
 	}
 	return code
+}
+
+// machine is what the command line calls the computer it runs on.
+func machine() string {
+	if runtime.GOOS == "linux" {
+		return "computer"
+	}
+	return "Mac"
 }
 
 func find(name string) *command {
