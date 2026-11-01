@@ -152,9 +152,16 @@ func (p *Provider) Refresh(ctx context.Context, a *store.Account) error {
 }
 
 // UpstreamURL maps a Switcher path (e.g. "/v1/responses") to the Codex
-// backend endpoint.
+// backend endpoint. Only a whole "/v1" segment is dropped: "/v1-x" must
+// stay under the base, not become its sibling ".../codex-x".
 func (p *Provider) UpstreamURL(path string) string {
-	return upstreamBase + strings.TrimPrefix(path, "/v1")
+	if path == "/v1" {
+		return upstreamBase
+	}
+	if strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	return upstreamBase + path
 }
 
 // ApplyAuth sets the headers Codex's backend expects for OAuth requests.

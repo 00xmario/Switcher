@@ -122,3 +122,21 @@ func TestUsageRetainsCancellationClassification(t *testing.T) {
 		t.Fatalf("usage cancellation classification: %v", err)
 	}
 }
+
+// The Codex token may reach only chatgpt.com/backend-api/codex. Dropping
+// "/v1" from "/v1-x" would hand it to a sibling such as ".../codex-x".
+func TestUpstreamURLStaysUnderTheCodexBase(t *testing.T) {
+	p := New()
+	for path, want := range map[string]string{
+		"":              upstreamBase,
+		"/v1":           upstreamBase,
+		"/v1/responses": upstreamBase + "/responses",
+		"/responses":    upstreamBase + "/responses",
+		"/v1-x/y":       upstreamBase + "/v1-x/y",
+		"/v1x":          upstreamBase + "/v1x",
+	} {
+		if got := p.UpstreamURL(path); got != want {
+			t.Errorf("UpstreamURL(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

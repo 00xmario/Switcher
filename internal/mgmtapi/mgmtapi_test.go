@@ -93,7 +93,11 @@ func managementResponse(status int, location string) *http.Response {
 }
 
 func managementCall(api *API, target string) *httptest.ResponseRecorder {
-	body, _ := json.Marshal(apiCallRequest{AuthIndex: "a", URL: target, Header: map[string]string{"Authorization": "Bearer $TOKEN$", "X-Token": "$TOKEN$"}})
+	return managementCallWith(api, "", target, nil)
+}
+
+func managementCallWith(api *API, method, target string, data json.RawMessage) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(apiCallRequest{AuthIndex: "a", Method: method, URL: target, Data: data, Header: map[string]string{"Authorization": "Bearer $TOKEN$", "X-Token": "$TOKEN$"}})
 	request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(string(body)))
 	request.Header.Set("Authorization", "Bearer fixture-key")
 	response := httptest.NewRecorder()
@@ -114,11 +118,11 @@ func TestAPICallRejectsPlaintextAndRedirectDowngrades(t *testing.T) {
 					t.Error("account token sent over plaintext HTTP")
 					return managementResponse(200, ""), nil
 				}
-				return managementResponse(302, "http://chatgpt.com/quota"), nil
+				return managementResponse(302, "http://chatgpt.com/backend-api/wham/usage"), nil
 			})
-			target, wantCode, wantCalls := "http://chatgpt.com/quota", 400, 0
+			target, wantCode, wantCalls := "http://chatgpt.com/backend-api/wham/usage", 400, 0
 			if redirect {
-				target, wantCode, wantCalls = "https://chatgpt.com/quota", 502, 1
+				target, wantCode, wantCalls = "https://chatgpt.com/backend-api/wham/usage", 502, 1
 			}
 			response := managementCall(api, target)
 			if response.Code != wantCode || calls != wantCalls {
@@ -148,7 +152,7 @@ func TestAPICallPreparesExpiredAndNativeCredentialsWithoutSwitching(t *testing.T
 				}
 				return managementResponse(200, ""), nil
 			})
-			response := managementCall(api, "https://chatgpt.com/quota")
+			response := managementCall(api, "https://chatgpt.com/backend-api/wham/usage")
 			var result struct {
 				StatusCode int `json:"status_code"`
 			}
@@ -170,9 +174,9 @@ func TestAPICallRedirectCredentialsStayOnOriginalOrigin(t *testing.T) {
 			mockManagementNetwork(t, func(r *http.Request) (*http.Response, error) {
 				calls++
 				if calls == 1 {
-					location := "https://chatgpt.com/quota-next"
+					location := "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 					if crossOrigin {
-						location = "https://api.anthropic.com/quota-next"
+						location = "https://api.anthropic.com/api/oauth/usage"
 					}
 					return managementResponse(302, location), nil
 				}
@@ -183,9 +187,100 @@ func TestAPICallRedirectCredentialsStayOnOriginalOrigin(t *testing.T) {
 				}
 				return managementResponse(200, ""), nil
 			})
-			if response := managementCall(api, "https://chatgpt.com/quota"); response.Code != 200 || calls != 2 {
+			if response := managementCall(api, "https://chatgpt.com/backend-api/wham/usage"); response.Code != 200 || calls != 2 {
 				t.Fatalf("redirect failed: status=%d calls=%d", response.Code, calls)
 			}
 		})
+	}
+}
+
+// Paired Macs reach api-call with this Mac's key, and an account's token can
+// read far more than usage, such as its ChatGPT conversations. Only the four
+// requests T3 Code makes, with their methods, may leave.
+func TestAPICallReachesOnlyTheRequestsT3CodeMakes(t *testing.T) {
+	api := managementFixture(t, &managementProvider{}, "fresh")
+	var reached []string
+	mockManagementNetwork(t, func(r *http.Request) (*http.Response, error) {
+		call := r.Method + " " + r.URL.String()
+		if r.Body != nil {
+			if body, _ := io.ReadAll(r.Body); len(body) > 0 {
+				call += " " + string(body)
+			}
+		}
+		reached = append(reached, call)
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			t.Errorf("%s %s went without the account token", r.Method, r.URL)
+		}
+		return managementResponse(200, ""), nil
+	})
+	// T3 Code sends data as CLIProxyAPI does, a string holding the JSON body.
+	for _, call := range []struct{ method, url, data, want string }{
+		{"", "https://chatgpt.com/backend-api/wham/usage", "", "GET https://chatgpt.com/backend-api/wham/usage"},
+		{"GET", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", "", "GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"},
+		{"POST", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", `"{\"credit_id\":\"c\"}"`, `POST https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume {"credit_id":"c"}`},
+		{"POST", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", `{"credit_id":"c"}`, `POST https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume {"credit_id":"c"}`},
+		{"GET", "https://api.anthropic.com/api/oauth/usage", "", "GET https://api.anthropic.com/api/oauth/usage"},
+		{"get", "https://ChatGPT.com/backend-api/wham/usage", "", "GET https://ChatGPT.com/backend-api/wham/usage"},
+	} {
+		reached = nil
+		var data json.RawMessage
+		if call.data != "" {
+			data = json.RawMessage(call.data)
+		}
+		if response := managementCallWith(api, call.method, call.url, data); response.Code != 200 || len(reached) != 1 || reached[0] != call.want {
+			t.Errorf("%s %s: status=%d reached=%v", call.method, call.url, response.Code, reached)
+		}
+	}
+	for _, call := range []struct{ method, url string }{
+		{"GET", "https://chatgpt.com/backend-api/conversations"},
+		{"POST", "https://chatgpt.com/backend-api/codex/responses"},
+		{"GET", "https://chatgpt.com/backend-api/wham/usage?limit=1"},
+		{"GET", "https://chatgpt.com/backend-api/wham/usage/"},
+		{"GET", "https://chatgpt.com/backend-api/wham/%75sage"},
+		{"GET", "https://chatgpt.com/backend-api/wham/usage/../../me"},
+		{"POST", "https://chatgpt.com/backend-api/wham/usage"},
+		{"GET", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"},
+		{"DELETE", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"},
+		{"POST", "https://api.anthropic.com/v1/messages"},
+		{"GET", "https://api.anthropic.com:8443/api/oauth/usage"},
+		{"GET", "https://example.com/api/oauth/usage"},
+		// "İ" lowercases to "i", but the transport dials its punycode,
+		// api.xn--anthropic-dkf.com, another domain.
+		{"GET", "https://api.anthropİc.com/api/oauth/usage"},
+		{"GET", "https://chatgpt.com./backend-api/wham/usage"},
+		{"GET", "https://user@chatgpt.com/backend-api/wham/usage"},
+	} {
+		reached = nil
+		if response := managementCallWith(api, call.method, call.url, nil); response.Code != 400 || len(reached) != 0 {
+			t.Errorf("%s %s was allowed: status=%d reached=%v", call.method, call.url, response.Code, reached)
+		}
+	}
+}
+
+// A redirect is held to the same endpoints and methods, so a hop cannot
+// carry the token anywhere else on an allowed host.
+func TestAPICallRedirectStaysOnT3CodesEndpoints(t *testing.T) {
+	for _, hop := range []struct {
+		method, url, data string
+		status            int
+		location          string
+	}{
+		{"GET", "https://chatgpt.com/backend-api/wham/usage", "", 302, "https://chatgpt.com/backend-api/conversations"},
+		// A 307 keeps the method: the credit POST must not reach usage.
+		{"POST", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", `"{}"`, 307, "https://chatgpt.com/backend-api/wham/usage"},
+	} {
+		api := managementFixture(t, &managementProvider{}, "fresh")
+		calls := 0
+		mockManagementNetwork(t, func(r *http.Request) (*http.Response, error) {
+			calls++
+			return managementResponse(hop.status, hop.location), nil
+		})
+		var data json.RawMessage
+		if hop.data != "" {
+			data = json.RawMessage(hop.data)
+		}
+		if response := managementCallWith(api, hop.method, hop.url, data); response.Code != 502 || calls != 1 {
+			t.Errorf("%s %s: redirect to %s was followed: status=%d calls=%d", hop.method, hop.url, hop.location, response.Code, calls)
+		}
 	}
 }

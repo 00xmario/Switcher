@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"crypto/subtle"
 	"fmt"
@@ -118,7 +119,9 @@ func (a *API) handleAuthFiles(w http.ResponseWriter, r *http.Request) {
 
 // apiCallRequest mirrors CLIProxyAPI's management api-call body. Header
 // values may contain the $TOKEN$ placeholder, which CPA swaps for the
-// account's credentials before dispatching.
+// account's credentials before dispatching. Data is CPA's string holding
+// the request body, which is how T3 Code sends it; a JSON value in its
+// place is taken as the body itself.
 type apiCallRequest struct {
 	AuthIndex string            `json:"auth_index"`
 	Method    string            `json:"method"`
@@ -127,18 +130,49 @@ type apiCallRequest struct {
 	Data      json.RawMessage   `json:"data"`
 }
 
-// allowedControlPlaneHosts limits which upstream hosts a hub-driven
-// api-call may touch. The management API is a credential-bearing
-// primitive; keeping it on the control-plane hosts known to T3 keeps a
-// leaked management key from becoming a token exfiltration tool.
-var allowedControlPlaneHosts = map[string]bool{
-	"api.anthropic.com": true,
-	"chatgpt.com":       true,
+// controlPlaneEndpoints are the only requests a hub-driven api-call may
+// make, with the method each takes: the usage and reset-credit calls T3
+// Code sends (apps/server/src/usage/cliproxyApi.ts). The management API is a
+// credential-bearing primitive, and paired Macs reach it with this Mac's
+// key, so nothing else an account's token could reach, such as its ChatGPT
+// conversations, is open to it.
+var controlPlaneEndpoints = map[string]string{
+	"chatgpt.com/backend-api/wham/usage":                            http.MethodGet,
+	"chatgpt.com/backend-api/wham/rate-limit-reset-credits":         http.MethodGet,
+	"chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume": http.MethodPost,
+	"api.anthropic.com/api/oauth/usage":                             http.MethodGet,
 }
 
-func allowedControlPlaneURL(u *url.URL) bool {
-	return u.Scheme == "https" && u.User == nil && u.Opaque == "" &&
-		(u.Port() == "" || u.Port() == "443") && allowedControlPlaneHosts[strings.ToLower(u.Hostname())]
+// controlPlaneMethod returns the method an allowed endpoint takes. Hosts
+// must be ASCII: strings.ToLower folds "İ" to "i", while the transport
+// would dial the punycode of the original, another domain.
+func controlPlaneMethod(u *url.URL) (string, bool) {
+	if u.Scheme != "https" || u.User != nil || u.Opaque != "" || u.RawQuery != "" || (u.Port() != "" && u.Port() != "443") {
+		return "", false
+	}
+	host := u.Hostname()
+	for i := 0; i < len(host); i++ {
+		if host[i] >= utf8.RuneSelf {
+			return "", false
+		}
+	}
+	method, ok := controlPlaneEndpoints[strings.ToLower(host)+u.EscapedPath()]
+	return method, ok
+}
+
+// apiCallBody returns the request body that data carries, if any.
+func apiCallBody(data json.RawMessage) ([]byte, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return nil, nil
+	}
+	if data[0] != '"' {
+		return data, nil
+	}
+	var body string
+	if err := json.Unmarshal(data, &body); err != nil || body == "" {
+		return nil, err
+	}
+	return []byte(body), nil
 }
 
 func sameControlPlaneOrigin(a, b *url.URL) bool {
@@ -160,8 +194,17 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid url"})
 		return
 	}
-	if !allowedControlPlaneURL(parsed) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "url must use an allowed HTTPS origin"})
+	method := strings.ToUpper(req.Method)
+	if method == "" {
+		method = http.MethodGet
+	}
+	if want, ok := controlPlaneMethod(parsed); !ok || method != want {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "url and method must name an allowed control-plane request"})
+		return
+	}
+	body, err := apiCallBody(req.Data)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid data"})
 		return
 	}
 
@@ -185,10 +228,6 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	method := req.Method
-	if method == "" {
-		method = http.MethodGet
-	}
 	// Redirects re-validate the allowlist, and headers that carried the
 	// account token are stripped on any cross-host hop so the token can
 	// never leak to a host the allowlist did not bless.
@@ -202,8 +241,8 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 		if len(via) > 3 {
 			return fmt.Errorf("too many redirects")
 		}
-		if !allowedControlPlaneURL(req.URL) {
-			return fmt.Errorf("redirect origin is not allowed")
+		if want, ok := controlPlaneMethod(req.URL); !ok || req.Method != want {
+			return fmt.Errorf("redirect target is not allowed")
 		}
 		for _, previous := range via {
 			if !sameControlPlaneOrigin(req.URL, previous.URL) {
@@ -217,8 +256,8 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 	}}
 	call := func(account store.Account) (*http.Response, error) {
 		var bodyReader io.Reader
-		if len(req.Data) > 0 && string(req.Data) != "null" {
-			bodyReader = bytes.NewReader(req.Data)
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, bodyReader)
 		if err != nil {
@@ -263,7 +302,7 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not read upstream response"})
 		return
 	}
-	log.Printf("mgmt: api-call %s %s -> %d", req.Method, parsed.Host, resp.StatusCode)
+	log.Printf("mgmt: api-call %s %s -> %d", method, parsed.Host, resp.StatusCode)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status_code": resp.StatusCode,
 		"body":        string(raw),
