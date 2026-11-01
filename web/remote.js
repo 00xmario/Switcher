@@ -75,6 +75,8 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
   }
 
   const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  // What this machine is called: a Linux Switcher is not on a Mac.
+  const mac = () => status?.platform === 'linux' ? 'computer' : 'Mac';
 
   function hostHTML(host) {
     const chips = [...(host.lan || []).map(a => ({ a, icon: HOME_ICON, kind: 'Home network' })), ...(host.tailscale || []).map(a => ({ a, icon: NET_ICON, kind: 'Tailscale' }))];
@@ -103,14 +105,24 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
 
   function clientHTML(client) {
     if (client.connected) {
+      const local = !!client.local_only, name = escape(client.host_name);
+      const state = local ? ['warn', 'Not in use'] : client.reachable ? ['ok', 'Connected'] : ['warn', 'Unreachable'];
       return `<div class="settings-card remote-section">
         <div class="remote-connected">
-          <span class="dr-status ${client.reachable ? 'ok' : 'warn'}">${client.reachable ? 'Connected' : 'Unreachable'}</span>
-          <div><strong>Using ${escape(client.host_name)}</strong><span class="dim">via ${escape(client.address)}</span></div>
+          <span class="dr-status ${state[0]}">${state[1]}</span>
+          <div><strong>${local ? 'Paired with' : 'Using'} ${name}</strong><span class="dim">via ${escape(client.address)}</span></div>
           <button type="button" data-remote-action="disconnect" ${busy ? 'disabled' : ''}>${busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}</button>
         </div>
-        ${!client.reachable && client.error ? `<p class="remote-error">${escape(client.error)}</p>` : ''}
-        <p class="settings-sub">Accounts, usage, Codex, the T3 Code hub, and Claude Code and Claude Desktop (once connected below) all run through ${escape(client.host_name)}. Requests leave from that Mac.</p>
+        <div class="settings-row">
+          <div><strong>Use the accounts of ${name}</strong><span class="dim">${local
+            ? `Off: this ${mac()} uses its own accounts and stays paired. Turn on to use ${name} again.`
+            : `Turn off if ${name} stops working: this ${mac()} then works on its own and stays paired.`}</span></div>
+          <label class="switch-wrap"><input type="checkbox" data-remote-action="use-host" aria-label="Use the accounts of ${name}" ${local ? '' : 'checked'} ${busy ? 'disabled' : ''}><span class="switch-visual"></span></label>
+        </div>
+        ${!local && !client.reachable && client.error ? `<p class="remote-error">${escape(client.error)}</p>` : ''}
+        <p class="settings-sub">${local
+          ? `Nothing goes to ${name} now: this ${mac()}'s own accounts, usage checks, Codex and Claude routing all run here.`
+          : `Accounts, usage, Codex, the T3 Code hub, and Claude Code and Claude Desktop (once connected below) all run through ${name}. Requests leave from that ${mac()}.`}</p>
       </div>`;
     }
     const hosts = found || [];
@@ -161,7 +173,10 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     const tailnet = status.tailnet?.state === 'Running' ? '<em class="flow-tag">Tailscale</em>' : '';
     const node = (name, sub, keeps) => `<div class="flow-node ${keeps ? 'is-host' : ''}"><span class="flow-icon">${MAC_ICON}</span><strong>${name}</strong><small>${sub}</small></div>`;
     let flow, pill;
-    if (client.connected) {
+    if (client.connected && client.local_only) {
+      flow = `<div class="flow is-off" aria-hidden="true">${node(me, 'uses its own accounts', true)}<div class="flow-wire"><span></span></div>${node(escape(client.host_name), 'paired, not in use')}</div>`;
+      pill = '<span class="dr-status warn">Not in use</span>';
+    } else if (client.connected) {
       flow = `<div class="flow ${client.reachable ? 'is-on' : 'is-warn'}" aria-hidden="true">${node(me, 'this Mac')}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(client.host_name), 'keeps the accounts', true)}</div>`;
       pill = client.reachable ? '<span class="dr-status ok">Connected</span>' : '<span class="dr-status warn">Unreachable</span>';
     } else if (host?.enabled) {
@@ -217,6 +232,10 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       if (event.target.matches('[data-remote-action="tailnet"]')) {
         const enabled = event.target.checked;
         act('tailnet', () => post('/api/remote/tailnet', { enabled }));
+      }
+      if (event.target.matches('[data-remote-action="use-host"]')) {
+        const enabled = event.target.checked;
+        act('use-host', () => post('/api/remote/use-host', { enabled })).then(ok => { if (ok) onConnectionChange(enabled); });
       }
     });
     root.addEventListener('click', async event => {

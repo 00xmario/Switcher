@@ -26,6 +26,10 @@ type Manager struct {
 	condition string
 	threads   map[string]string
 	remote    atomic.Pointer[RemoteInference]
+	// passthrough sends every request with the caller's own credential:
+	// Switcher has handed Claude back to Anthropic, and a Desktop still
+	// running with the relay keeps working on its own login.
+	passthrough atomic.Bool
 	// unselectedLogged rate-limits the note that Switcher's selection could
 	// not answer, in Unix seconds.
 	unselectedLogged atomic.Int64
@@ -152,6 +156,11 @@ func (m *Manager) SetRemote(fn RemoteInference) {
 	}
 	m.remote.Store(&fn)
 }
+
+// SetPassthrough stops (true) or resumes (false) substituting Switcher's
+// accounts. While on, Desktop's requests go to Anthropic with Desktop's own
+// login and paired Switchers are refused.
+func (m *Manager) SetPassthrough(on bool) { m.passthrough.Store(on) }
 
 func (m *Manager) remoteInference() RemoteInference {
 	if fn := m.remote.Load(); fn != nil {

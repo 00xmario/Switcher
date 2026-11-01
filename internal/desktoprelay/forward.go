@@ -57,6 +57,17 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 	view := identity(r, body)
 	task := m.route(ctx, scope, view)
 	defer m.finish(task)
+	if m.passthrough.Load() {
+		// Every conversation is on Desktop's own login now. A thread that
+		// lived on a Switcher account is resent in full, as after a switch.
+		task.AccountID = ""
+		if !m.threadOnAccount(task, view.Thread) {
+			relayError(w, http.StatusBadRequest, "invalid_request_error", "This message thread was started on another account; resend the full conversation.", "thread_unsupported_request")
+			return
+		}
+		m.send(w, r, r.URL.Path, body, "", run.transport, nil, nil)
+		return
+	}
 	// A conversation nobody picked an account for follows the account
 	// selected in Switcher. A connected host applies its own selection.
 	remote := m.remoteInference()
@@ -239,6 +250,10 @@ func (m *Manager) ServeAccountRouted(w http.ResponseWriter, r *http.Request, pat
 }
 
 func (m *Manager) serveAccount(w http.ResponseWriter, r *http.Request, path string, body []byte, account string, route func(string) string) {
+	if m.passthrough.Load() {
+		relayError(w, http.StatusServiceUnavailable, "api_error", "The Switcher host has handed its accounts back to the providers", "")
+		return
+	}
 	m.hostOnce.Do(func() { m.hostTransport = m.transport() })
 	message := path == "/v1/messages"
 	thread := ""

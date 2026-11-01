@@ -13,8 +13,9 @@ import (
 	"time"
 )
 
-// Bonjour runs through macOS's own dns-sd tool, so Switcher needs no mDNS
-// library. Other systems simply skip discovery; pairing by address works.
+// Bonjour runs through macOS's own dns-sd tool, or Avahi's tools on Linux
+// (avahi.go), so Switcher needs no mDNS library. Without them discovery is
+// skipped; pairing by address works.
 const serviceType = "_switcher._tcp"
 const dnssd = "/usr/bin/dns-sd"
 
@@ -29,6 +30,9 @@ type Found struct {
 
 // advertise registers this host until the returned stop function runs.
 func advertise(name string, port int, fp string) func() {
+	if runtime.GOOS == "linux" {
+		return advertiseAvahi(name, port, fp)
+	}
 	if runtime.GOOS != "darwin" {
 		return func() {}
 	}
@@ -49,6 +53,9 @@ var (
 // Discover lists Switcher hosts on the local network within about two seconds.
 // selfFP marks this Mac's own advertisement.
 func Discover(ctx context.Context, selfFP string) []Found {
+	if runtime.GOOS == "linux" {
+		return discoverAvahi(ctx, selfFP)
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}

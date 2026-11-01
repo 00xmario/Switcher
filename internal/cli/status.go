@@ -29,6 +29,7 @@ type remoteStatus struct {
 	} `json:"host,omitempty"`
 	Client struct {
 		Connected bool   `json:"connected"`
+		LocalOnly bool   `json:"local_only,omitempty"`
 		HostName  string `json:"host_name,omitempty"`
 		Address   string `json:"address,omitempty"`
 		Reachable bool   `json:"reachable"`
@@ -55,6 +56,8 @@ func (c *ctx) remote() (remoteStatus, error) {
 
 func sharingText(r remoteStatus) string {
 	switch {
+	case r.Client.Connected && r.Client.LocalOnly:
+		return fmt.Sprintf("paired with %s, but using this Switcher's own accounts (switcher use-host on to use it again)", r.Client.HostName)
 	case r.Client.Connected && r.Client.Reachable:
 		return fmt.Sprintf("using the accounts of %s (%s)", r.Client.HostName, r.Client.Address)
 	case r.Client.Connected:
@@ -106,7 +109,7 @@ func runStatus(c *ctx, args []string) error {
 	}
 	remote, remoteErr := c.remote()
 	desktop, desktopErr := c.desktopStatus()
-	out := map[string]any{"version": st.Version, "url": c.url, "accounts": accounts}
+	out := map[string]any{"version": st.Version, "url": c.url, "accounts": accounts, "handed_back": st.HandedBack}
 	if st.Update != nil && st.Update.Available {
 		out["update"] = st.Update.Latest
 	}
@@ -125,6 +128,9 @@ func runStatus(c *ctx, args []string) error {
 		head += fmt.Sprintf(" · update %s available", st.Update.Latest)
 	}
 	lines := []string{head, "", accountTable(accounts), ""}
+	if st.HandedBack {
+		lines = append(lines, "Handed back     your tools use their providers directly; Switcher uses no account (switcher hand-back off)")
+	}
 	if remoteErr == nil {
 		lines = append(lines, "Sharing         "+sharingText(remote))
 	}

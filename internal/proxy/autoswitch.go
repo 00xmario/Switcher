@@ -179,7 +179,7 @@ func (m *Manager) ClaudeRoute(account string) string {
 // from an account at most once per cooldown. It only acts while Claude Code
 // is signed in with an account Switcher manages.
 func (m *Manager) AutoSwitchNative() {
-	if !m.claudeAutoOn() || !m.autoSwitching.CompareAndSwap(false, true) {
+	if m.HandedBack() || !m.claudeAutoOn() || !m.autoSwitching.CompareAndSwap(false, true) {
 		return
 	}
 	defer m.autoSwitching.Store(false)

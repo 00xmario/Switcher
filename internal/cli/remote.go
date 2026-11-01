@@ -57,7 +57,7 @@ func runShare(c *ctx, args []string) error {
 			address = r.Host.LAN[0]
 		}
 		c.result(map[string]any{"code": code.Code, "expires_at": code.ExpiresAt, "host": r.Host},
-			fmt.Sprintf("Pairing code: %s (valid for ten minutes)\nOn the other Mac: switcher connect %s --code %s", code.Code, orDefault(address, "<this Mac's address>"), code.Code))
+			fmt.Sprintf("Pairing code: %s (valid for ten minutes)\nOn the other %s: switcher connect %s --code %s", code.Code, machine(), orDefault(address, "<this "+machine()+"'s address>"), code.Code))
 		return nil
 	case "revoke":
 		if len(pos) < 2 {
@@ -137,7 +137,7 @@ func runConnect(c *ctx, args []string) error {
 	if err := c.cl.call(http.MethodPost, "/api/remote/connect", body, &answer); err != nil {
 		return err
 	}
-	c.result(answer, fmt.Sprintf("Connected to %s. This Mac now uses its accounts.", answer.Client.HostName))
+	c.result(answer, fmt.Sprintf("Connected to %s. This %s now uses its accounts.", answer.Client.HostName, machine()))
 	return nil
 }
 
@@ -148,12 +148,57 @@ func runDisconnect(c *ctx, args []string) error {
 		return err
 	}
 	if !*yes {
-		return usagef("this Mac forgets the other Switcher and needs a new pairing code to use it again; add --yes to confirm")
+		return usagef("this %s forgets the other Switcher and needs a new pairing code to use it again; add --yes to confirm", machine())
 	}
 	if err := c.cl.call(http.MethodPost, "/api/remote/disconnect", nil, nil); err != nil {
 		return err
 	}
-	c.result(map[string]bool{"connected": false}, "Disconnected. This Mac uses its own accounts again.")
+	c.result(map[string]bool{"connected": false}, "Disconnected. This "+machine()+" uses its own accounts again.")
+	return nil
+}
+
+const useHostHelp = `A Switcher paired with a host uses the host's accounts. If the host stops
+working, turn that off: this Switcher then uses its own accounts, refreshes
+them and routes its tools itself, and stays paired.
+
+  switcher use-host        show whether the host is in use
+  switcher use-host off    work without the host, keeping the pairing
+  switcher use-host on     use the host again
+`
+
+func runUseHost(c *ctx, args []string) error {
+	pos, err := c.parse(c.flags("use-host"), args, 0, 1)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 1 {
+		if pos[0] != "on" && pos[0] != "off" {
+			return usagef("use on or off, not %q", pos[0])
+		}
+		r, err := c.remote()
+		if err != nil {
+			return err
+		}
+		if !r.Client.Connected {
+			return errors.New("this Switcher is not paired with another one; pair with: switcher connect <address> --code CODE")
+		}
+		if err := c.cl.call(http.MethodPost, "/api/remote/use-host", map[string]bool{"enabled": pos[0] == "on"}, nil); err != nil {
+			return err
+		}
+	}
+	r, err := c.remote()
+	if err != nil {
+		return err
+	}
+	answer := map[string]any{"paired": r.Client.Connected, "use_host": r.Client.Connected && !r.Client.LocalOnly, "host": r.Client.HostName}
+	human := "This Switcher is not paired with another one."
+	switch {
+	case r.Client.Connected && r.Client.LocalOnly:
+		human = fmt.Sprintf("Not using %s: this Switcher uses its own accounts and stays paired.", r.Client.HostName)
+	case r.Client.Connected:
+		human = fmt.Sprintf("Using the accounts of %s.", r.Client.HostName)
+	}
+	c.result(answer, human)
 	return nil
 }
 
@@ -176,14 +221,14 @@ func runDiscover(c *ctx, args []string) error {
 		return nil
 	}
 	if len(answer.Hosts) == 0 {
-		fmt.Fprintln(c.out, "No sharing Switcher found. Turn on sharing on the other Mac (switcher share on), or connect by its address.")
+		fmt.Fprintln(c.out, "No sharing Switcher found. Turn on sharing on the other "+machine()+" (switcher share on), or connect by its address.")
 		return nil
 	}
 	var rows [][]string
 	for _, h := range answer.Hosts {
 		rows = append(rows, []string{h.Name, h.Address})
 	}
-	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address> --code <code from the other Mac>")
+	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address> --code <code from the other "+machine()+">")
 	return nil
 }
 

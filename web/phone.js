@@ -87,7 +87,7 @@ export function accountHTML(a, now = Date.now() / 1000) {
     </span>`;
   const notes = [
     out ? `<span class="note is-out">Out of usage · back in ${duration(a.exhausted_until - now)}</span>` : '',
-    a.native_switch_available && !a.active ? '<span class="note">Use also switches Claude Code on your Mac.</span>' : '',
+    a.native_switch_available && !a.active ? `<span class="note">Use also switches Claude Code on ${yourMac()}.</span>` : '',
   ].join('');
   const usage = windows.length
     ? `<span class="lines">${windows.map(w => windowHTML(w, now)).join('')}</span>`
@@ -118,7 +118,7 @@ export function stateHTML(state, now = Date.now() / 1000) {
     if (!accounts.length) return '';
     return `<section class="provider" data-provider="${esc(p)}">${providerHeadHTML(p)}<div class="card">${accounts.map(a => accountHTML(a, now)).join('')}</div></section>`;
   }).join('');
-  return groups || '<div class="panel"><p>No accounts yet. Add them in Switcher on your Mac.</p></div>';
+  return groups || `<div class="panel"><p>No accounts yet. Add them in Switcher on ${yourMac()}.</p></div>`;
 }
 
 export function footerHTML(device) {
@@ -142,7 +142,7 @@ export function pairHTML(pairing, now = Date.now() / 1000) {
     return `<section class="panel">
       ${tile}
       <h1>Use Switcher on this phone</h1>
-      <p>Your Mac approves each phone once. This phone will show a code; you type it into Switcher on your Mac.</p>
+      <p>${yourMac().replace('your', 'Your')} approves each phone once. This phone will show a code; you type it into Switcher on ${yourMac()}.</p>
       <button type="button" class="button primary wide" id="pair-start">Pair this phone</button>
     </section>`;
   }
@@ -151,11 +151,11 @@ export function pairHTML(pairing, now = Date.now() / 1000) {
   return `<section class="panel">
     ${tile}
     <h1>Approve this phone</h1>
-    <p>On your Mac, open Switcher, go to <strong>Settings → Phone</strong> and enter this code.</p>
+    <p>On ${yourMac()}, open Switcher, go to <strong>Settings → Phone</strong> and enter this code.</p>
     ${codeHTML(code)}
-    <p class="small">Expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}. Or in a terminal on the Mac:</p>
+    <p class="small">Expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}. Or in a terminal on ${theMac()}:</p>
     <code class="command">switcher phone approve ${esc(code)}</code>
-    <div class="waiting"><span class="spinner" aria-hidden="true"></span>Waiting for your Mac</div>
+    <div class="waiting"><span class="spinner" aria-hidden="true"></span>Waiting for ${yourMac()}</div>
   </section>`;
 }
 
@@ -169,7 +169,10 @@ export function messageHTML(title, text) {
 
 /* ---------- the page ---------- */
 
-const app = { csrf: '', state: null, pairing: null, timer: 0, mac: '', device: '', busy: false };
+const app = { csrf: '', state: null, pairing: null, timer: 0, mac: '', device: '', busy: false, platform: '' };
+// What the computer running Switcher is called: a Linux one is no Mac.
+const yourMac = () => app.platform === 'linux' ? 'your computer' : 'your Mac';
+const theMac = () => app.platform === 'linux' ? 'the computer' : 'the Mac';
 
 class HttpError extends Error {
   constructor(status, body) { super(body?.error || `HTTP ${status}`); this.status = status; this.body = body; }
@@ -233,14 +236,14 @@ function handleError(error) {
   }
   if (error.status === 503 && error.body?.enabled === false) {
     $('refresh').hidden = true;
-    show(messageHTML('Phone access is off', 'Turn it on in Switcher on your Mac, under Settings → Phone.'));
+    show(messageHTML('Phone access is off', `Turn it on in Switcher on ${yourMac()}, under Settings → Phone.`));
     return;
   }
   if (app.state) {
     toast(error.message || 'Switcher did not answer');
     return;
   }
-  show(messageHTML('Switcher did not answer', error.message || 'Check that your Mac is awake and Tailscale is connected.'));
+  show(messageHTML('Switcher did not answer', error.message || `Check that ${yourMac()} is awake and Tailscale is connected.`));
 }
 
 async function loadState() {
@@ -295,8 +298,9 @@ async function boot() {
   try {
     const session = await api('/api/session');
     app.mac = session.mac || '';
+    app.platform = session.platform || '';
     app.device = session.device || '';
-    $('top-mac').textContent = app.mac ? `on ${app.mac}` : 'on your Mac';
+    $('top-mac').textContent = app.mac ? `on ${app.mac}` : `on ${yourMac()}`;
     if (session.paired) {
       app.csrf = session.csrf;
       await loadState();
@@ -335,7 +339,7 @@ if (typeof document !== 'undefined') {
     if (target.id === 'pair-start') startPairing();
     else if (target.id === 'retry') boot();
     else if (target.id === 'sign-out') {
-      confirmSheet('Sign this phone out?', 'To use Switcher here again, you approve this phone on your Mac once more.', 'Sign out', { danger: true }).then(async ok => {
+      confirmSheet('Sign this phone out?', `To use Switcher here again, you approve this phone on ${yourMac()} once more.`, 'Sign out', { danger: true }).then(async ok => {
         if (!ok) return;
         try {
           await api('/api/logout', { method: 'POST' });

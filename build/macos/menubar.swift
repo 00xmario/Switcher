@@ -120,6 +120,14 @@ struct AwakeState: Codable, Equatable {
     var error: String? = nil
 }
 
+// RemoteInfo mirrors /api/state's remote: role "client" while this Mac uses
+// its paired host, "local" while it is paired but works on its own.
+struct RemoteInfo: Codable, Equatable {
+    let role: String?
+    var host: String? = nil
+    var connected: Bool? = nil
+}
+
 struct AppState: Codable, Equatable {
     let accounts: [Account]
     let order: [String]?
@@ -129,15 +137,25 @@ struct AppState: Codable, Equatable {
     let menu_usage_bars: Bool?
     let reset_notifications: Bool?
     var awake: AwakeState? = nil
+    var remote: RemoteInfo? = nil
+    var handed_back: Bool? = nil
 
     func withUpdate(_ info: UpdateInfo) -> AppState {
         AppState(accounts: accounts, order: order, hidden: hidden, version: version,
-            update: info, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications, awake: awake)
+            update: info, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications, awake: awake,
+            remote: remote, handed_back: handed_back)
     }
 
     func withAwake(_ state: AwakeState) -> AppState {
         AppState(accounts: accounts, order: order, hidden: hidden, version: version,
-            update: update, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications, awake: state)
+            update: update, menu_usage_bars: menu_usage_bars, reset_notifications: reset_notifications, awake: state,
+            remote: remote, handed_back: handed_back)
+    }
+
+    // The paired host this Mac can use or work without, if any.
+    var pairedHost: String? {
+        guard let remote = remote, remote.role == "client" || remote.role == "local" else { return nil }
+        return remote.host
     }
 }
 
@@ -499,6 +517,17 @@ struct AccountActivationResponse: Decodable {
     let backup: String?
     let native: NativeResult?
     struct NativeResult: Decodable { let message: String? }
+}
+
+func handBackConfirmation() -> NSAlert {
+    let alert = NSAlert()
+    alert.messageText = "Hand your tools back to their providers?"
+    alert.informativeText = "Codex gets its previous provider back, Claude Desktop its settings, and sharing turns off. Claude Code and Codex keep a login of their own. Switcher then stops using its accounts until you turn this off, which sets everything up again."
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Hand back")
+    alert.buttons[0].keyEquivalent = "\r"
+    alert.buttons[1].keyEquivalent = ""
+    return alert
 }
 
 func claudeSyncConfirmation() -> NSAlert {
@@ -1112,6 +1141,14 @@ struct MenuRuntime {
         alert.runModal()
         #endif
     }
+    var confirmHandBack: () -> Bool = {
+        #if SWITCHER_LAYOUT_TEST
+        return true
+        #else
+        NSApp.activate(ignoringOtherApps: true)
+        return handBackConfirmation().runModal() == .alertSecondButtonReturn
+        #endif
+    }
     var terminateApplication: () -> Void = {
         #if !SWITCHER_LAYOUT_TEST
         NSApp.terminate(nil)
@@ -1426,6 +1463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
               previous.menu_usage_bars == state.menu_usage_bars,
               previous.reset_notifications == state.reset_notifications,
               previous.awake == state.awake,
+              previous.remote == state.remote, previous.handed_back == state.handed_back,
               palette.dark == Palette.current().dark else { rebuildMenu(); return }
         let oldProviders = Set(previous.accounts.map(\.provider))
         let newProviders = Set(state.accounts.map(\.provider))
@@ -2063,20 +2101,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         return rowTopPad + titleHeight + selectionBlock + usageBlock + rowBottomPad
     }
 
-    // Start at login and, while they are on, reset alerts: one card with a
-    // compact row each. The alerts row says in a few words what macOS
-    // allows; the full sentence is its tooltip.
+    // Start at login, using the paired host, handing the tools back and,
+    // while they are on, reset alerts: one card with a compact row each. The
+    // alerts row says in a few words what macOS allows; the full sentence is
+    // its tooltip.
     func settingsCard(contentWidth: CGFloat, alerts: Bool) -> NSView {
         let row: CGFloat = 34, inner = contentWidth - 2 * cardInset
-        let card = cardView(width: contentWidth, height: alerts ? 2 * row + 1 : row)
-        let top = card.frame.height - row
-        let login = label("Start at login", font: NSFont.systemFont(ofSize: 13), color: inkColor)
-        login.frame = NSRect(x: cardInset, y: top + 9, width: inner - 48, height: 16)
-        card.addSubview(login)
-        let toggle = ToggleSwitch(isOn: startAtLoginEnabled())
-        toggle.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: top + 5)
-        toggle.onChanged = { [weak self] _ in self?.toggleStartAtLogin() }
-        card.addSubview(toggle)
+        var toggles: [(title: String, tip: String, isOn: Bool, changed: () -> Void)] = [
+            ("Start at login", "", startAtLoginEnabled(), { [weak self] in self?.toggleStartAtLogin() })]
+        if let host = cachedState?.pairedHost {
+            toggles.append(("Use \(host)'s accounts", "Off: this Mac uses its own accounts and stays paired",
+                cachedState?.remote?.role == "client", { [weak self] in self?.toggleUseHost() }))
+        }
+        if cachedState != nil {
+            toggles.append(("Hand back to providers", "Undo Switcher's setup so your tools use their providers directly, for example before removing Switcher",
+                cachedState?.handed_back == true, { [weak self] in self?.toggleHandBack() }))
+        }
+        let rows = CGFloat(toggles.count + (alerts ? 1 : 0))
+        let card = cardView(width: contentWidth, height: rows * row + rows - 1)
+        for (index, item) in toggles.enumerated() {
+            let top = card.frame.height - CGFloat(index + 1) * row - CGFloat(index)
+            if index > 0 {
+                let divider = NSView(frame: NSRect(x: cardInset, y: top + row, width: inner, height: 1))
+                divider.wantsLayer = true
+                divider.layer?.backgroundColor = cardBorderColor.cgColor
+                card.addSubview(divider)
+            }
+            let title = label(item.title, font: NSFont.systemFont(ofSize: 13), color: inkColor)
+            title.frame = NSRect(x: cardInset, y: top + 9, width: inner - 48, height: 16)
+            if !item.tip.isEmpty { title.toolTip = item.tip }
+            card.addSubview(title)
+            let toggle = ToggleSwitch(isOn: item.isOn)
+            toggle.frame.origin = NSPoint(x: contentWidth - cardInset - 40, y: top + 5)
+            let changed = item.changed
+            toggle.onChanged = { _ in changed() }
+            toggle.setAccessibilityLabel(item.title)
+            card.addSubview(toggle)
+        }
         guard alerts else { return card }
 
         let divider = NSView(frame: NSRect(x: cardInset, y: row, width: inner, height: 1))
@@ -2614,6 +2675,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             }
         }
         #endif
+    }
+
+    // Stop relying on the paired host, keeping the pairing, or use it again.
+    func toggleUseHost() {
+        guard let state = cachedState, let host = state.pairedHost else { return }
+        let enabled = state.remote?.role != "client"
+        post(path: "api/remote/use-host", body: ["enabled": enabled]) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success:
+                self.menuNote = enabled ? "Using \(host)'s accounts" : "Using this Mac's own accounts"
+            case .failure(let error):
+                self.menuActionMessage = "The host setting did not change"
+                self.runtime.showError("Could not change the host setting", error.localizedDescription)
+            }
+            self.fetchStateAsync()
+            self.rebuildMenu()
+        }
+    }
+
+    // Hand every tool back to its provider, after asking, or set Switcher up
+    // again.
+    func toggleHandBack() {
+        let on = cachedState?.handed_back != true
+        if on {
+            menu.cancelTracking()
+            guard runtime.confirmHandBack() else { rebuildMenu(); return }
+        }
+        menuActionMessage = on ? "Handing your tools back…" : "Setting Switcher up again…"
+        rebuildMenu()
+        post(path: "api/handback", body: ["enabled": on]) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success:
+                self.menuActionMessage = ""
+                self.menuNote = on ? "Handed back. Restart Claude Desktop when you can" : "Switcher is set up again"
+            case .failure(let error):
+                self.menuActionMessage = on ? "Nothing was handed back" : "Set up again, with problems"
+                self.runtime.showError(on ? "Could not hand the tools back" : "Switcher set itself up again, except", error.localizedDescription)
+            }
+            self.fetchStateAsync()
+            self.rebuildMenu()
+        }
     }
 
     @objc func testResetAlert() {

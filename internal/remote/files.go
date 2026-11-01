@@ -124,6 +124,13 @@ func MachineName() string {
 			}
 		}
 	}
+	if runtime.GOOS == "linux" {
+		if raw, err := os.ReadFile("/etc/machine-info"); err == nil {
+			if name := prettyHostname(raw); name != "" {
+				return name
+			}
+		}
+	}
 	name, _ := os.Hostname()
 	return strings.TrimSuffix(name, ".local")
 }
@@ -135,6 +142,12 @@ func localHostName() string {
 			if name := strings.TrimSpace(string(out)); name != "" {
 				return name + ".local"
 			}
+		}
+	}
+	// Avahi answers for the host name in the .local domain.
+	if runtime.GOOS == "linux" && avahiRunning() {
+		if name, err := os.Hostname(); err == nil && name != "" && !strings.Contains(name, ".") {
+			return name + ".local"
 		}
 	}
 	return ""

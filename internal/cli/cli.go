@@ -12,10 +12,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"switcher/internal/autostart"
 )
 
 // Options connect the command line to its process.
@@ -38,6 +41,8 @@ type Options struct {
 	CallbackPorts []int
 	// Executable is this binary, for install-cli.
 	Executable string
+	// Autostart replaces this computer's login items in tests.
+	Autostart *autostart.Manager
 }
 
 const (
@@ -76,13 +81,16 @@ func init() {
 		{name: "share", args: "[on|off|code|devices|revoke <id> --yes]", summary: "Share this Mac's accounts with your other Macs", help: shareHelp, run: runShare},
 		{name: "connect", args: "<address> --code CODE", summary: "Use the accounts of a Switcher that shares them", run: runConnect},
 		{name: "disconnect", args: "--yes", summary: "Stop using another Switcher", run: runDisconnect},
+		{name: "use-host", args: "[on|off]", summary: "Use the paired host, or work without it and stay paired", help: useHostHelp, run: runUseHost},
 		{name: "discover", summary: "Find Switchers that share on your network or tailnet", run: runDiscover},
 		{name: "away", args: "[on|off|remove --yes]", summary: "Reach your Macs from anywhere with the Tailscale add-on", run: runAway},
 		{name: "phone", args: "[on|off|approve <code>|deny <id>|revoke <id> --yes]", summary: "Use Switcher from your phone over Tailscale", help: phoneHelp, run: runPhone},
 		{name: "desktop", args: "[connect|disconnect|restart --yes]", summary: "Route Claude Desktop through Switcher", run: runDesktop},
 		{name: "setup", args: "[codex [--undo|--test]]", summary: "Point CLI tools at Switcher", run: runSetup},
+		{name: "hand-back", args: "[on --yes|off]", summary: "Hand every tool back to its provider, or set Switcher up again", help: handBackHelp, run: runHandBack},
 		{name: "settings", args: "[set key=value ...]", summary: "Show or change settings", run: runSettings},
 		{name: "start", summary: "Start Switcher in the background if it is not running", run: runStart},
+		{name: "autostart", args: "[on|off]", summary: "Start Switcher when you log in (Linux)", help: autostartHelp, run: runAutostart},
 		{name: "open", summary: "Open the dashboard in a browser", run: runOpen},
 		{name: "install-cli", args: "[--dir DIR]", summary: "Put the switcher command on your PATH", run: runInstallCLI},
 	}
@@ -143,6 +151,14 @@ func Run(args []string, opt Options) int {
 		fmt.Fprintf(opt.Stderr, "Usage: switcher %s %s\n", cmd.name, cmd.args)
 	}
 	return code
+}
+
+// machine is what the command line calls the computer it runs on.
+func machine() string {
+	if runtime.GOOS == "linux" {
+		return "computer"
+	}
+	return "Mac"
 }
 
 func find(name string) *command {

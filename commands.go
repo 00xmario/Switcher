@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"switcher/internal/autostart"
 	"switcher/internal/cli"
 	"switcher/internal/config"
 	"switcher/internal/settings"
@@ -37,9 +38,9 @@ func isTerminal(f *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-// startInBackground opens the Switcher app, or runs this binary as a
-// detached server when there is no app or no desktop session (plain SSH).
-// Proxy variables are dropped so Switcher's own requests never go through
+// startInBackground opens the Switcher app on a Mac, starts the login
+// service on Linux, or runs this binary as a detached server when there is
+// neither (or no desktop session, over SSH). Proxy variables are dropped so Switcher's own requests never go through
 // its Desktop relay.
 func startInBackground(port int) error {
 	env := []string{}
@@ -70,6 +71,14 @@ func startInBackground(port int) error {
 			if open.Run() == nil {
 				return nil
 			}
+		}
+	}
+	// On Linux the login service runs the server, when it is set up.
+	if runtime.GOOS == "linux" && port == config.DefaultPort && autostart.New(exe).Status().Service {
+		start := exec.Command("systemctl", "--user", "start", autostart.Unit)
+		start.Env = env
+		if start.Run() == nil {
+			return nil
 		}
 	}
 	if err := os.MkdirAll(config.Dir(), 0o700); err != nil {

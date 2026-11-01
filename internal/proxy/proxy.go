@@ -98,6 +98,7 @@ type Manager struct {
 	exhaustionRevision map[string]uint64 // explicit quota restoration, retained across deletion
 	syncing            atomic.Bool
 	probeBusy          atomic.Bool
+	handedBack         atomic.Bool // handback.go
 	probeBootID        string
 	// Claude's automatic switching (autoswitch.go).
 	claudeAuto         func() bool
@@ -644,7 +645,7 @@ func (m *Manager) QueueRecheck(id string) error {
 func (m *Manager) RefreshUsageAll(ctx context.Context) {
 	// In-flight guard: overlapping cycles (slow upstream, overlapping
 	// callers) would duplicate every upstream call.
-	if !m.syncing.CompareAndSwap(false, true) {
+	if m.HandedBack() || !m.syncing.CompareAndSwap(false, true) {
 		return
 	}
 	defer m.syncing.Store(false)
@@ -687,6 +688,13 @@ func (m *Manager) RefreshUsageAll(ctx context.Context) {
 // 401 path, and a manual refresh can otherwise interleave and persist a
 // stale rotating refresh token, bricking the account.
 func (m *Manager) refreshAccount(ctx context.Context, id string, gen uint64, force bool) provider.Usage {
+	if m.HandedBack() {
+		// The tools own their logins now: no refresh, no usage poll.
+		m.mu.Lock()
+		cached, _ := m.cachedUsageLocked(id)
+		m.mu.Unlock()
+		return cached
+	}
 	lock := m.refreshLock(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -1066,6 +1074,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	providerID, rest, ok := m.splitPrefix(r.URL.Path)
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown provider prefix")
+		return
+	}
+	if m.HandedBack() {
+		writeHandedBack(w)
 		return
 	}
 	prov, ok := m.providers[providerID]

@@ -61,6 +61,17 @@ The client's own settings, CLI setup and usage history stay local. While
 connected, the client does not refresh or poll its own accounts. **Disconnect**
 returns the client to its own accounts.
 
+## When the host stops working
+
+If the host is down or unreachable, the client does not have to unpair. Turn
+off **Use the accounts of <host>** (Settings → Share between Macs, the
+**Work without it** button on the Accounts tab, the menu bar or tray, or
+`switcher use-host off`). The client then does everything itself: its own
+accounts and usage checks, and Codex, Claude Code and Claude Desktop routed
+with its own accounts. Nothing is sent to the host. The pairing stays, also
+across restarts; turn the switch back on (or `switcher use-host on`) to use
+the host again. While paired, sharing onward stays off either way.
+
 ## Network and security
 
 - The host listens on port 8788 with its own certificate. The client pins that

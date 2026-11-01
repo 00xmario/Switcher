@@ -3,6 +3,7 @@ import { patchProviderList, createResetFeedback, mergeAccountMutation } from './
 import { createAppearance } from './themes.js';
 import { createDesktopRelay, desktopRelayLoopback } from './desktop-relay.js';
 import { createRemote } from './remote.js';
+import { createHandback, remoteBannerHTML as hostBannerHTML, handbackBannerHTML, autostartHTML, machineWord } from './toggles.js';
 import { createPhoneSettings } from './phone-settings.js';
 import { switcherMark, playMark } from './brand.js';
 import { mergeInstallProgress, installProgressHTML, paintInstallProgress } from './update-progress.js';
@@ -114,6 +115,8 @@ const PLAN_NAMES = {
 };
 
 const CLI_INSTALL = '/Applications/Switcher.app/Contents/MacOS/SwitcherServer install-cli';
+// On Linux the install script already puts switcher on the PATH.
+const cliInstall = () => data.platform === 'linux' ? 'curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh | sh' : CLI_INSTALL;
 
 // How each provider adds an account: browser popup, device code, or key.
 const ADD_METHOD = { codex: 'browser', claude: 'browser', grok: 'device', opencode: 'key', antigravity: 'browser', gemini: 'browser', copilot: 'device' };
@@ -731,18 +734,10 @@ function accountMenuHTML(account) {
     <button type="button" role="menuitem" data-act="delete" data-account-id="${escapeHTML(account.id)}">Remove</button>`;
 }
 
-// Shown while this Mac uses another Mac's Switcher.
+// Shown while this Switcher is paired with another one, and while its tools
+// are handed back to their providers.
 function remoteBannerHTML() {
-  const remote = data.remote;
-  if (remote?.role !== 'client') return '';
-  return `
-    <div class="remote-banner ${remote.connected ? '' : 'offline'}">
-      <span class="remote-banner-dot" aria-hidden="true"></span>
-      <span>${remote.connected
-        ? `Using the accounts on <strong>${escapeHTML(remote.host)}</strong>`
-        : `Can't reach <strong>${escapeHTML(remote.host)}</strong>. Showing its last known accounts; requests fail until it is back.`}</span>
-      <button type="button" data-open-settings>Settings</button>
-    </div>`;
+  return handbackBannerHTML(data.handed_back) + hostBannerHTML(data.remote, data.platform);
 }
 
 // Update banner: shown above the provider sections when a release is
@@ -982,10 +977,29 @@ function renderAddProviderMenu() {
 
 /* ---------- actions ---------- */
 
-document.getElementById('update-slot').addEventListener('click', (event) => {
+document.getElementById('update-slot').addEventListener('click', async (event) => {
   const updateBtn = event.target.closest('button[data-act="install-update"]');
   if (updateBtn && !updateBtn.disabled) runUpdateFlow(updateBtn);
   if (event.target.closest('[data-open-settings]')) setPage('settings');
+  const useHost = event.target.closest('button[data-use-host]');
+  if (useHost && !useHost.disabled) {
+    useHost.disabled = true;
+    const enabled = useHost.dataset.useHost === 'on';
+    try {
+      await api('/api/remote/use-host', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      toast(enabled ? 'Using the other Switcher\'s accounts again' : `Working on this ${machineWord(data.platform)}'s own accounts`);
+      await refreshState();
+    } catch (err) {
+      toast(err.message);
+      useHost.disabled = false;
+    }
+  }
+  const setUp = event.target.closest('button[data-handback="off"]');
+  if (setUp && !setUp.disabled) {
+    setUp.disabled = true;
+    await handback.set(false);
+    setUp.disabled = false;
+  }
 });
 
 providersEl.addEventListener('click', async (event) => {
@@ -2089,6 +2103,13 @@ const remoteSettings = createRemote({
   },
 });
 
+const handback = createHandback({
+  api,
+  toast,
+  confirm: options => confirmDialog({ initialFocus: 'cancel', ...options }),
+  onChange: () => refreshState(),
+});
+
 const phoneSettings = createPhoneSettings({
   api,
   toast,
@@ -2290,8 +2311,11 @@ async function renderSettings() {
         <div class="set-card-head"><h3>Account layout</h3><p class="settings-sub">How the Accounts tab shows a provider with several accounts.</p></div>
         ${layoutChooserHTML(layout)}
       </div>
+      ${autostartHTML(data.autostart)}
       <div class="settings-card">
-        <div class="set-card-head"><h3>Menu bar</h3><p class="settings-sub">Needs the Switcher menu bar app; reset alerts also need notification permission.</p></div>
+        <div class="set-card-head"><h3>${data.platform === 'linux' ? 'Tray' : 'Menu bar'}</h3><p class="settings-sub">${data.platform === 'linux'
+          ? 'Reset alerts appear while the Switcher tray runs (switcher tray); usage bars are for the Mac menu bar.'
+          : 'Needs the Switcher menu bar app; reset alerts also need notification permission.'}</p></div>
         <div class="set-split">
           ${menuPreviewHTML(status.menu_usage_bars !== false)}
           <div class="set-rows">
@@ -2340,7 +2364,7 @@ async function renderSettings() {
           <pre>${[['switcher status', ''], ['switcher use work@example.com', ''], ['switcher reset codex --yes', ''], ['switcher login claude', '# also over SSH']]
             .map(([cmd, note], i) => `<span class="t-line" style="--i:${i};--n:${cmd.length}"><b>$</b> <span class="t-type">${cmd}</span>${note ? ` <span class="t-note">${note}</span>` : ''}</span>`).join('')}<span class="t-line t-cursor-line" style="--i:4"><b>$</b> <i class="t-cursor"></i></span></pre></div>
         <label class="field-label">Run once to add the <code>switcher</code> command</label>
-        <div class="copy-row"><input readonly aria-label="Command that installs the switcher command" value="${CLI_INSTALL}"><button type="button" class="copy-btn" data-copy="${CLI_INSTALL}">Copy</button></div>
+        <div class="copy-row"><input readonly aria-label="Command that installs the switcher command" value="${cliInstall()}"><button type="button" class="copy-btn" data-copy="${cliInstall()}">Copy</button></div>
       </div>
       <details class="settings-card cli-setup-card" id="cli-setup-card">
         <summary class="cli-setup-summary">
@@ -2358,6 +2382,7 @@ async function renderSettings() {
           <button id="codex-setup-check" type="button">Check again</button>
         </div>
       </details>
+      <div class="set-module" id="handback-settings" aria-label="Hand back to the providers"></div>
       ${data.hub_management_key ? `<div class="settings-card">
         <div class="set-card-head"><h3>T3 Code hub</h3><p class="settings-sub">In T3 Code: Settings → Providers → Add a CLIProxyAPI hub. T3 Code then shows the quota of every account here.</p></div>
         <label class="field-label">Hub URL</label>
@@ -2464,6 +2489,8 @@ async function renderSettings() {
   appearance.mount(settingsPage.querySelector('#appearance-settings'));
   settingsPage.desktopRelay.mountSettings(settingsPage.querySelector('#desktop-relay-settings'));
   remoteSettings.mount(settingsPage.querySelector('#remote-settings'));
+  const handbackRoot = settingsPage.querySelector('#handback-settings');
+  if (handbackRoot) handback.mount(handbackRoot);
   phoneSettings.mount(settingsPage.querySelector('#phone-settings'));
   const setupList = settingsPage.querySelector('#cli-setup-list');
   const setupAnnouncer = settingsPage.querySelector('#cli-setup-announcer');
@@ -2600,6 +2627,22 @@ async function renderSettings() {
       toast(err.message);
     } finally {
       autoUseReset.disabled = false;
+    }
+  });
+
+  const autostart = settingsPage.querySelector('#autostart');
+  autostart?.addEventListener('change', async () => {
+    const enabled = autostart.checked;
+    autostart.disabled = true;
+    try {
+      await api('/api/autostart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      toast(enabled ? 'Switcher starts when you log in' : 'Switcher no longer starts at login');
+      await refreshState();
+    } catch (err) {
+      autostart.checked = !enabled;
+      toast(err.message);
+    } finally {
+      autostart.disabled = false;
     }
   });
 

@@ -1130,6 +1130,14 @@ button.quiet.danger { color: var(--danger); }
 .remote-banner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 .remote-banner.offline { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
 .remote-banner.offline .remote-banner-dot { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); }
+.remote-banner.local, .remote-banner.handback { border-color: var(--border); background: var(--surface); }
+.remote-banner.local .remote-banner-dot, .remote-banner.handback .remote-banner-dot { background: var(--dim); box-shadow: none; }
+.remote-banner + .remote-banner { margin-top: 8px; }
+.handback-steps { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 7px; font-size: 13px; }
+.handback-steps li { display: flex; gap: 9px; align-items: baseline; }
+.handback-mark { width: 1.1em; flex: none; text-align: center; font-weight: 600; }
+.handback-steps .is-done .handback-mark { color: var(--accent); }
+.handback-steps .is-failed .handback-mark { color: var(--warn); }
 .provider-head .count + .provider-tools { margin-left: auto; }
 .settings-card .remote-connect input[name="code"]::placeholder { font-family: inherit; letter-spacing: 0; text-transform: none; }
 .remote-tailnet { border-top: 1px solid var(--border); padding-top: 4px; }

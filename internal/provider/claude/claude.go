@@ -16,7 +16,10 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -640,10 +643,9 @@ func (p *Provider) ImportFromKeychain(ctx context.Context) (store.Account, error
 	if p.Native != nil {
 		return p.importNative(ctx)
 	}
-	out, err := exec.CommandContext(ctx, "security", "find-generic-password",
-		"-s", "Claude Code-credentials", "-w").Output()
+	out, err := storedCLICredentials(ctx)
 	if err != nil {
-		return store.Account{}, fmt.Errorf("no Claude Code CLI credentials in the keychain")
+		return store.Account{}, err
 	}
 	var creds keychainCreds
 	if err := json.Unmarshal(bytes.TrimSpace(out), &creds); err != nil {
@@ -684,6 +686,33 @@ func (p *Provider) ImportFromKeychain(ctx context.Context) (store.Account, error
 	sum := sha256.Sum256([]byte(acc.Provider + "|" + acc.Email + "|" + profile.Account.UUID))
 	acc.ID = fmt.Sprintf("%s-%x", acc.Provider, sum[:4])
 	return acc, nil
+}
+
+// storedCLICredentials reads Claude Code's login where it keeps it: the
+// Keychain on a Mac, ~/.claude/.credentials.json (or CLAUDE_CONFIG_DIR's)
+// elsewhere, as Claude Code does on Linux.
+func storedCLICredentials(ctx context.Context) ([]byte, error) {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.CommandContext(ctx, "security", "find-generic-password",
+			"-s", "Claude Code-credentials", "-w").Output()
+		if err != nil {
+			return nil, fmt.Errorf("no Claude Code CLI credentials in the keychain")
+		}
+		return out, nil
+	}
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if !filepath.IsAbs(dir) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		dir = filepath.Join(home, ".claude")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	if err != nil {
+		return nil, fmt.Errorf("no Claude Code CLI credentials in %s", filepath.Join(dir, ".credentials.json"))
+	}
+	return raw, nil
 }
 
 // ResolvePlan reads the provider's tier, not an assumption based on a
