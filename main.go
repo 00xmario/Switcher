@@ -40,6 +40,7 @@ import (
 	"switcher/internal/codexcfg"
 	"switcher/internal/config"
 	"switcher/internal/desktoprelay"
+	"switcher/internal/handback"
 	"switcher/internal/login"
 	"switcher/internal/mgmtapi"
 	"switcher/internal/phone"
@@ -330,6 +331,27 @@ func run(port, desktopRelayPort int) {
 	// A Mac that uses another Switcher's accounts leaves token refreshes and
 	// usage polling to that host, so the same account is never refreshed twice.
 	remoteClient := remote.NewClient(filepath.Join(config.Dir(), "remote"), managementKey)
+	// Handing the tools back to their providers, before Switcher is removed.
+	// A Switcher that was handed back stays off its accounts from here on,
+	// before the first usage poll could refresh a token the tools now own.
+	var sharing *remote.Host
+	handBack := handback.New(config.Dir(), handback.Deps{
+		Codex:      handback.CodexFiles(config.CodexConfigPath(), port),
+		Desktop:    handback.DesktopRelay(desktopRelay, desktopSettingsPath()),
+		ClaudeCode: handback.ClaudeNative(proxyManager, st, claudeProvider),
+		Accounts:   handback.ProxyAccounts(proxyManager, st),
+		Sharing: handback.Funcs{
+			OnFunc:  func() bool { return sharing != nil && sharing.Status().Enabled },
+			SetFunc: func(on bool) error { return sharing.SetEnabled(on) },
+		},
+		UseHost: handback.Funcs{
+			OnFunc: remoteClient.Connected,
+			SetFunc: func(on bool) error {
+				_, err := remoteClient.SetLocalOnly(!on)
+				return err
+			},
+		},
+	})
 	go func() {
 		if !remoteClient.Connected() {
 			proxyManager.RefreshUsageAll(context.Background())
@@ -361,7 +383,7 @@ func run(port, desktopRelayPort int) {
 		DesktopRelay: desktopRelay, DesktopSettingsPath: desktopSettingsPath(),
 		DesktopSessionMetadata: metadataIndex,
 		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Usage: usageService,
-		Settings: settingsStore, Port: port, RemoteClient: remoteClient,
+		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
 	}
 
 	// Each provider with a browser redirect has its own callback listener;
@@ -442,6 +464,7 @@ func run(port, desktopRelayPort int) {
 		log.Printf("sharing unavailable: %v", err)
 	} else {
 		api.RemoteHost = remoteHost
+		sharing = remoteHost
 		// The optional Tailscale add-on is downloaded only when turned on.
 		tailnet := remote.NewTailnet(filepath.Join(config.Dir(), "remote"), version, remote.DefaultPort)
 		api.Tailnet = tailnet

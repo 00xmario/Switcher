@@ -15,12 +15,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"switcher/internal/awake"
 	"switcher/internal/claudesync"
 	"switcher/internal/codexcfg"
 	"switcher/internal/config"
 	"switcher/internal/desktoprelay"
+	"switcher/internal/handback"
 	"switcher/internal/login"
 	"switcher/internal/phone"
 	"switcher/internal/provider"
@@ -68,11 +70,13 @@ type API struct {
 	Port     int
 	// RemoteHost shares this Switcher's accounts with paired devices;
 	// RemoteClient uses another Switcher's. Either may be nil.
-	RemoteHost        *remote.Host
-	RemoteClient      *remote.Client
-	Tailnet           *remote.Tailnet // optional "Away from home" add-on
-	Phone             *phone.Access   // optional phone dashboard over the add-on
-	CodexConfigPath   string          // optional test override
+	RemoteHost   *remote.Host
+	RemoteClient *remote.Client
+	Tailnet      *remote.Tailnet // optional "Away from home" add-on
+	// Handback hands the tools back to their providers; nil disables it.
+	Handback          *handback.Manager
+	Phone             *phone.Access // optional phone dashboard over the add-on
+	CodexConfigPath   string        // optional test override
 	probeCodexForTest func(context.Context) proxy.ProbeCodexResult
 	syncClaudeForTest func(context.Context, map[string]string) (claudesync.Result, error)
 
@@ -126,6 +130,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/update", a.handleUpdate)
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
 	a.registerAwakeRoutes(mux)
+	a.registerHandbackRoutes(mux)
 	mux.HandleFunc("PATCH /api/providers/order", a.handleProviderOrder)
 	mux.HandleFunc("POST /api/providers/{id}/hide", a.handleProviderHide)
 	mux.HandleFunc("POST /api/providers/{id}/show", a.handleProviderShow)
@@ -541,7 +546,8 @@ func (a *API) cachedResetCredits(rc provider.ResetCreditProvider, acc store.Acco
 		entry.ok = true
 	}
 	fresh := ok && time.Since(entry.at) < resetCreditsTTL
-	if fresh || entry.loading {
+	// Handed back, the account's token is the tool's: only the last count.
+	if fresh || entry.loading || a.handedBack() {
 		a.creditsCache[acc.ID] = entry
 		a.creditsMu.Unlock()
 		return entry.credits, entry.ok
@@ -622,9 +628,18 @@ func (a *API) LocalStateFields(r *http.Request) map[string]any {
 		"compact_accounts":    preferences.CompactAccounts,
 		"merge_accounts":      preferences.MergeAccounts,
 		"desktop_relay":       a.desktopRelayStatus(),
+		"platform":            runtime.GOOS,
+		"handed_back":         a.handedBack(),
 	}
 	if state, ok := a.awakeState(); ok {
 		fields["awake"] = state
+	}
+	// A paired Switcher working on its own says so; while it uses the host,
+	// the remote client's state merge replaces this with the host's view.
+	if a.RemoteClient != nil {
+		if status := a.RemoteClient.Status(); status.Connected && status.LocalOnly {
+			fields["remote"] = map[string]any{"role": "local", "host": status.HostName}
+		}
 	}
 	// Only local browsers receive the independent management key. Devices
 	// and LAN sessions receive public state without another control authority.
@@ -1198,6 +1213,10 @@ func (a *API) handleActivate(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.Proxy.ActivateForClient(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, proxy.ErrHandedBack) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such account"})
 			return
@@ -1476,6 +1495,10 @@ func (a *API) handleUseReset(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validID(id) {
 		http.Error(w, "invalid account id", http.StatusBadRequest)
+		return
+	}
+	if a.handedBack() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": proxy.ErrHandedBack.Error()})
 		return
 	}
 	var body struct {

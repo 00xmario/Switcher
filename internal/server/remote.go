@@ -17,6 +17,7 @@ func (a *API) registerRemoteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/remote/discover", a.handleRemoteDiscover)
 	mux.HandleFunc("POST /api/remote/connect", a.handleRemoteConnect)
 	mux.HandleFunc("POST /api/remote/disconnect", a.handleRemoteDisconnect)
+	mux.HandleFunc("POST /api/remote/use-host", a.handleRemoteUseHost)
 	mux.HandleFunc("POST /api/remote/tailnet", a.handleTailnet)
 	mux.HandleFunc("POST /api/remote/tailnet/remove", a.handleTailnetRemove)
 }
@@ -70,7 +71,8 @@ func (a *API) handleRemoteHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A Mac that uses another Switcher cannot share onward; that would loop.
-	if body.Enabled && a.RemoteClient.Connected() {
+	// A pairing set to work locally counts too: turning it back on would loop.
+	if body.Enabled && a.RemoteClient.Paired() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "disconnect from the other Switcher before sharing this one"})
 		return
 	}
@@ -154,7 +156,7 @@ func (a *API) handleRemoteConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn off sharing on this Mac before using another Switcher"})
 		return
 	}
-	if a.RemoteClient.Connected() {
+	if a.RemoteClient.Paired() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "disconnect from the other Switcher first"})
 		return
 	}
@@ -218,4 +220,29 @@ func (a *API) handleRemoteDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"client": a.RemoteClient.Status()})
+}
+
+// handleRemoteUseHost switches a paired Switcher between using its host and
+// working on its own (accounts, refreshes and routing), keeping the pairing.
+func (a *API) handleRemoteUseHost(w http.ResponseWriter, r *http.Request) {
+	if !a.remoteControl(w, r) {
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body) != nil || body.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if !a.RemoteClient.Paired() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "this Switcher is not paired with another Switcher"})
+		return
+	}
+	status, err := a.RemoteClient.SetLocalOnly(!*body.Enabled)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not save the choice"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"client": status})
 }

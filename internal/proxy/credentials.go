@@ -25,6 +25,9 @@ func (m *Manager) RefreshAccountAfter401(ctx context.Context, id, rejectedAccess
 }
 
 func (m *Manager) prepareAccount(ctx context.Context, id string, rejected *string, forProxy bool) (store.Account, requestEpoch, error) {
+	if m.HandedBack() {
+		return store.Account{}, requestEpoch{}, ErrHandedBack
+	}
 	// A valid stored token needs no lock, native sync or refresh, including for
 	// the account Claude Code is logged into: if Claude Code rotated it, the
 	// 401 path below adopts Claude Code's token without a new grant. Expiry, a

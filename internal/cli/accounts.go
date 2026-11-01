@@ -31,8 +31,9 @@ type Window struct {
 }
 
 type serverState struct {
-	Version string `json:"version"`
-	Update  *struct {
+	Version    string `json:"version"`
+	HandedBack bool   `json:"handed_back,omitempty"`
+	Update     *struct {
 		Latest    string `json:"latest"`
 		Available bool   `json:"update_available"`
 	} `json:"update"`

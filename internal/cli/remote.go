@@ -157,6 +157,51 @@ func runDisconnect(c *ctx, args []string) error {
 	return nil
 }
 
+const useHostHelp = `A Switcher paired with a host uses the host's accounts. If the host stops
+working, turn that off: this Switcher then uses its own accounts, refreshes
+them and routes its tools itself, and stays paired.
+
+  switcher use-host        show whether the host is in use
+  switcher use-host off    work without the host, keeping the pairing
+  switcher use-host on     use the host again
+`
+
+func runUseHost(c *ctx, args []string) error {
+	pos, err := c.parse(c.flags("use-host"), args, 0, 1)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 1 {
+		if pos[0] != "on" && pos[0] != "off" {
+			return usagef("use on or off, not %q", pos[0])
+		}
+		r, err := c.remote()
+		if err != nil {
+			return err
+		}
+		if !r.Client.Connected {
+			return errors.New("this Switcher is not paired with another one; pair with: switcher connect <address> --code CODE")
+		}
+		if err := c.cl.call(http.MethodPost, "/api/remote/use-host", map[string]bool{"enabled": pos[0] == "on"}, nil); err != nil {
+			return err
+		}
+	}
+	r, err := c.remote()
+	if err != nil {
+		return err
+	}
+	answer := map[string]any{"paired": r.Client.Connected, "use_host": r.Client.Connected && !r.Client.LocalOnly, "host": r.Client.HostName}
+	human := "This Switcher is not paired with another one."
+	switch {
+	case r.Client.Connected && r.Client.LocalOnly:
+		human = fmt.Sprintf("Not using %s: this Switcher uses its own accounts and stays paired.", r.Client.HostName)
+	case r.Client.Connected:
+		human = fmt.Sprintf("Using the accounts of %s.", r.Client.HostName)
+	}
+	c.result(answer, human)
+	return nil
+}
+
 func runDiscover(c *ctx, args []string) error {
 	if _, err := c.parse(c.flags("discover"), args, 0, 0); err != nil {
 		return err

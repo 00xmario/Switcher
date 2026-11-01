@@ -16,6 +16,9 @@ import (
 // account runs out of usage (AutoSwitchNative) both come here; proxy failover
 // on a refused request still selects only its route.
 func (m *Manager) ActivateForClient(ctx context.Context, id string) (*claudecode.SwitchResult, error) {
+	if m.HandedBack() {
+		return nil, ErrHandedBack
+	}
 	// The user is in charge: an account they pick while it is at its limit
 	// stays picked for a while.
 	m.mu.Lock()

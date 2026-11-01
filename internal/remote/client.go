@@ -30,11 +30,16 @@ type clientFile struct {
 	DeviceID    string    `json:"device_id"`
 	Token       string    `json:"token"`
 	PairedAt    time.Time `json:"paired_at"`
+	// LocalOnly keeps the pairing but stops relying on the host: this
+	// Switcher uses its own accounts and routing until it is turned off.
+	LocalOnly bool `json:"local_only,omitempty"`
 }
 
-// ClientStatus describes the host this Switcher uses, if any.
+// ClientStatus describes the host this Switcher is paired with, if any.
+// Connected means paired; LocalOnly means paired but not relying on the host.
 type ClientStatus struct {
 	Connected bool      `json:"connected"`
+	LocalOnly bool      `json:"local_only,omitempty"`
 	HostName  string    `json:"host_name,omitempty"`
 	Address   string    `json:"address,omitempty"`
 	Reachable bool      `json:"reachable"`
@@ -79,15 +84,18 @@ func NewClient(dir, managementKey string) *Client {
 
 func (c *Client) path() string { return filepath.Join(c.dir, "client.json") }
 
-// OnChange is called with true when a host is connected and false when it is
-// disconnected, including once now for the saved state.
+// OnChange is called with true when this Switcher starts using a host and
+// false when it stops (disconnected, or local only), including once now for
+// the saved state.
 func (c *Client) OnChange(fn func(connected bool)) {
 	c.mu.Lock()
 	c.onChange = fn
-	connected := c.cfg != nil
+	connected := c.usingHostLocked()
 	c.mu.Unlock()
 	fn(connected)
 }
+
+func (c *Client) usingHostLocked() bool { return c.cfg != nil && !c.cfg.LocalOnly }
 
 func (c *Client) setLocked(cfg *clientFile) {
 	c.cfg = cfg
@@ -201,11 +209,54 @@ func (c *Client) dial(ctx context.Context, network, _ string) (net.Conn, error) 
 	return nil, fmt.Errorf("the Switcher host is unreachable: %w", lastErr)
 }
 
-// Connected reports whether this Switcher uses a host.
+// Connected reports whether this Switcher uses a host right now: paired, and
+// not set to work locally.
 func (c *Client) Connected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.usingHostLocked()
+}
+
+// Paired reports whether a host is paired, whether or not it is in use.
+func (c *Client) Paired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.cfg != nil
+}
+
+// SetLocalOnly stops relying on the paired host (true) or uses it again
+// (false), without unpairing. The choice survives restarts. While local
+// only, nothing is forwarded and this Switcher refreshes its own accounts.
+func (c *Client) SetLocalOnly(on bool) (ClientStatus, error) {
+	c.mu.Lock()
+	if c.cfg == nil {
+		c.mu.Unlock()
+		return ClientStatus{}, errors.New("this Switcher is not paired with a host")
+	}
+	if c.cfg.LocalOnly == on {
+		c.mu.Unlock()
+		return c.Status(), nil
+	}
+	updated := *c.cfg
+	updated.LocalOnly = on
+	if err := writeJSON(c.path(), &updated); err != nil {
+		c.mu.Unlock()
+		return ClientStatus{}, err
+	}
+	c.cfg = &updated
+	if on && c.transport != nil {
+		// Requests already on their way finish; nothing new goes out.
+		c.transport.CloseIdleConnections()
+	}
+	if !on {
+		c.reachable, c.lastErr = false, ""
+	}
+	onChange := c.onChange
+	c.mu.Unlock()
+	if onChange != nil {
+		onChange(!on)
+	}
+	return c.Status(), nil
 }
 
 // Status reports the connected host and whether it answered recently.
@@ -219,7 +270,7 @@ func (c *Client) Status() ClientStatus {
 	if address == "" {
 		address = c.cfg.Addresses[0]
 	}
-	return ClientStatus{Connected: true, HostName: c.cfg.HostName, Address: address, Reachable: c.reachable, Error: c.lastErr, CheckedAt: c.checkedAt}
+	return ClientStatus{Connected: true, LocalOnly: c.cfg.LocalOnly, HostName: c.cfg.HostName, Address: address, Reachable: c.reachable, Error: c.lastErr, CheckedAt: c.checkedAt}
 }
 
 // Connect pairs with the host at address using the code it shows.
@@ -366,6 +417,9 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	if cfg == nil {
 		return nil, errors.New("no Switcher host connected")
 	}
+	if cfg.LocalOnly {
+		return nil, errors.New("this Switcher is set to work without its host")
+	}
 	req.URL.Scheme, req.URL.Host, req.Host = "https", "switcher-host", "switcher-host"
 	req.Header.Set(DeviceHeader, cfg.Token)
 	resp, err := transport.RoundTrip(req)
@@ -424,7 +478,8 @@ type LocalState func(r *http.Request) map[string]any
 
 // localStateKeys stay this Mac's own in the merged /api/state.
 var localStateKeys = []string{"version", "update", "desktop_relay", "hub_url", "hub_management_key",
-	"menu_usage_bars", "reset_notifications", "compact_accounts", "merge_accounts", "auto_switch", "awake"}
+	"menu_usage_bars", "reset_notifications", "compact_accounts", "merge_accounts", "auto_switch", "awake",
+	"platform", "handed_back", "autostart"}
 
 // Middleware sends account and provider traffic to the host while connected.
 func (c *Client) Middleware(local LocalState, next http.Handler) http.Handler {
@@ -619,7 +674,7 @@ func (c *Client) HostAccount(id string) (string, bool) {
 // stays reachable without pairing again.
 func (c *Client) refreshAddresses() {
 	c.mu.Lock()
-	if c.cfg == nil || time.Since(c.refreshedAt) < 2*time.Minute {
+	if !c.usingHostLocked() || time.Since(c.refreshedAt) < 2*time.Minute {
 		c.mu.Unlock()
 		return
 	}
