@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"runtime"
 	"time"
 
 	"switcher/internal/remote"
@@ -49,7 +50,7 @@ func (a *API) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.remoteControl(w, r) {
 		return
 	}
-	status := map[string]any{"client": a.RemoteClient.Status(), "device_name": remote.MachineName()}
+	status := map[string]any{"client": a.RemoteClient.Status(), "device_name": remote.MachineName(), "platform": runtime.GOOS}
 	if a.RemoteHost != nil {
 		status["host"] = a.RemoteHost.Status()
 	}

@@ -461,6 +461,79 @@ func runKeepAwakeFixtures() {
     print("Keep awake chips, closed lid, and relaunch after update: OK")
 }
 
+// The settings card offers working without the paired host and handing the
+// tools back; each switch sends its request, and handing back asks first.
+func runHostAndHandBackFixtures() {
+    var requests: [URLRequest] = []
+    var completions: [(Data?, URLResponse?, Error?) -> Void] = []
+    func views<T: NSView>(_ type: T.Type, in menu: NSMenu) -> [T] {
+        func walk(_ view: NSView) -> [T] { ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap(walk) }
+        return menu.items.compactMap(\.view).flatMap(walk)
+    }
+    func toggle(_ title: String, in menu: NSMenu) -> ToggleSwitch {
+        guard let row = views(NSTextField.self, in: menu).first(where: { $0.stringValue == title }),
+              let toggle = row.superview?.subviews.compactMap({ $0 as? ToggleSwitch })
+                .first(where: { abs($0.frame.midY - row.frame.midY) < 4 }) else {
+            fail("Settings row \(title) missing")
+        }
+        return toggle
+    }
+    func json(_ request: URLRequest) -> [String: Any] {
+        guard let body = request.httpBody,
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return [:] }
+        return object
+    }
+    func state(_ remote: RemoteInfo?, handedBack: Bool) -> AppState {
+        AppState(accounts: [], order: [], hidden: [], version: "fixture-1", update: nil, menu_usage_bars: true,
+            reset_notifications: true, remote: remote, handed_back: handedBack)
+    }
+    var confirmations = 0
+    var runtime = MenuRuntime()
+    runtime.request = { request, completion in requests.append(request); completions.append(completion) }
+    runtime.deviceToken = { "fixture-device-token" }
+    runtime.confirmHandBack = { confirmations += 1; return confirmations > 1 }
+    let delegate = AppDelegate(runtime: runtime)
+
+    delegate.applyMenuState(state(nil, handedBack: false))
+    let unpaired = views(NSTextField.self, in: delegate.menu).map(\.stringValue)
+    guard !unpaired.contains(where: { $0.hasPrefix("Use ") && $0.hasSuffix("'s accounts") }),
+          unpaired.contains("Hand back to providers"), unpaired.contains("Start at login"), unpaired.contains("Reset alerts") else {
+        fail("An unpaired Mac offers handing back, not a host: \(unpaired)")
+    }
+
+    delegate.applyMenuState(state(RemoteInfo(role: "client", host: "Studio", connected: false), handedBack: false))
+    let useHost = toggle("Use Studio's accounts", in: delegate.menu)
+    guard useHost.isOn, !toggle("Hand back to providers", in: delegate.menu).isOn else {
+        fail("A Mac using its host shows the host switch on and hand-back off")
+    }
+    useHost.onChanged?(false)
+    guard let last = requests.last, last.url?.path == "/api/remote/use-host", last.httpMethod == "POST",
+          json(last)["enabled"] as? Bool == false else {
+        fail("Turning the host off must ask the server to work locally")
+    }
+
+    delegate.applyMenuState(state(RemoteInfo(role: "local", host: "Studio"), handedBack: false))
+    guard !toggle("Use Studio's accounts", in: delegate.menu).isOn else { fail("A host not in use shows its switch off") }
+    requests.removeAll(); completions.removeAll()
+    toggle("Hand back to providers", in: delegate.menu).onChanged?(true)
+    guard confirmations == 1, requests.isEmpty else { fail("Declining the question must hand nothing back") }
+    toggle("Hand back to providers", in: delegate.menu).onChanged?(true)
+    guard confirmations == 2, let handBack = requests.first(where: { $0.url?.path == "/api/handback" }),
+          json(handBack)["enabled"] as? Bool == true else {
+        fail("Handing back must ask, then post the hand-back")
+    }
+
+    delegate.applyMenuState(state(nil, handedBack: true))
+    requests.removeAll(); completions.removeAll()
+    guard toggle("Hand back to providers", in: delegate.menu).isOn else { fail("A handed-back Mac shows hand-back on") }
+    toggle("Hand back to providers", in: delegate.menu).onChanged?(false)
+    guard confirmations == 2, let setUp = requests.first(where: { $0.url?.path == "/api/handback" }),
+          json(setUp)["enabled"] as? Bool == false else {
+        fail("Setting up again must not ask, and must post the setup")
+    }
+    print("Paired host and hand-back switches: OK")
+}
+
 @main
 struct MenuBarLayoutTest {
     static func main() {
@@ -468,6 +541,7 @@ struct MenuBarLayoutTest {
         runMenuActionRegressionFixtures()
         runUpdateBadgeAndProgressFixtures()
         runKeepAwakeFixtures()
+        runHostAndHandBackFixtures()
         guard planNames["free"] == "Free" else { fail("Free accounts must not display a paid tier") }
         guard planLabel("go") == "Go", planLabel("plus") == "Plus", planLabel("team") == "Team",
               planLabel("business") == "Business", planLabel("self_serve_business") == "Self Serve Business",

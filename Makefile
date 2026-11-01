@@ -81,6 +81,8 @@ verify-common:
 	node --check web/update-progress.js
 	node web/update-progress_test.mjs
 	node web/qr_test.mjs
+	node --check web/toggles.js
+	node web/toggles_test.mjs
 	cd cmd/switcher-tailnet && test -z "$$(gofmt -l .)" && go vet . && go test . && go build -o /dev/null .
 
 install: build

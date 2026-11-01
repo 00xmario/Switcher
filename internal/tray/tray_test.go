@@ -2,8 +2,8 @@ package tray
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +20,11 @@ type recordingUI struct {
 	quit     bool
 }
 
-func (u *recordingUI) Render(items []Item) { u.mu.Lock(); u.renders = append(u.renders, items); u.mu.Unlock() }
+func (u *recordingUI) Render(items []Item) {
+	u.mu.Lock()
+	u.renders = append(u.renders, items)
+	u.mu.Unlock()
+}
 func (u *recordingUI) Notify(title, body string) {
 	u.mu.Lock()
 	u.notified = append(u.notified, title+": "+body)

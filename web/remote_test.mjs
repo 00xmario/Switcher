@@ -62,3 +62,23 @@ test('an action error stays visible after the status reloads', async () => {
   await remote.act('scan', async () => {});
   assert.doesNotMatch(remote.html(), /pairing failed/, 'the next action clears it');
 });
+
+test('a paired Mac can stop relying on its host and stay paired', async () => {
+  const paired = { connected: true, host_name: 'Studio Mac', address: 'studio.local', reachable: true };
+  let { html } = await render({ host: host(), client: paired });
+  assert.match(html, /<input type="checkbox" data-remote-action="use-host" aria-label="Use the accounts of Studio Mac" checked/);
+  assert.match(html, /Turn off if Studio Mac stops working/);
+  ({ html } = await render({ host: host(), client: { ...paired, local_only: true, reachable: false, error: 'the Switcher host is unreachable' } }));
+  assert.match(html, /Not in use/);
+  assert.match(html, /Paired with Studio Mac/);
+  assert.match(html, /data-remote-action="use-host" aria-label="Use the accounts of Studio Mac" (?!checked)/);
+  assert.match(html, /uses its own accounts/);
+  assert.doesNotMatch(html, /remote-error/, 'an unreachable host is no error while it is not in use');
+  assert.match(html, /data-remote-action="disconnect"/, 'unpairing stays possible');
+});
+
+test('a Linux Switcher calls itself a computer', async () => {
+  const { html } = await render({ platform: 'linux', host: host(), client: { connected: true, host_name: 'Studio Mac', address: 'studio.local', reachable: true, local_only: true } });
+  assert.match(html, /this computer uses its own accounts/);
+  assert.doesNotMatch(html, /this Mac uses its own accounts/);
+});
