@@ -36,7 +36,9 @@ import (
 	"syscall"
 	"time"
 
+	"switcher/internal/autostart"
 	"switcher/internal/awake"
+	"switcher/internal/claudesync"
 	"switcher/internal/codexcfg"
 	"switcher/internal/config"
 	"switcher/internal/desktoprelay"
@@ -186,6 +188,19 @@ func resumeDesktopRelay(ctx context.Context, cfg desktoprelay.Config) (*desktopr
 	return m, m.Resume(ctx)
 }
 
+// executablePath is this binary with links resolved, for login items: the
+// updater replaces the binary at this path.
+func executablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		return real
+	}
+	return exe
+}
+
 // Resolve only in main. The API and manager have no implicit HOME fallback.
 // Relative overrides fail closed instead of targeting the working directory.
 func desktopSettingsPath() string {
@@ -204,13 +219,15 @@ func desktopSettingsPath() string {
 
 // Resolve metadata roots only at the production composition point. This helper
 // is pure; the shared index scans lazily for trusted resolution or a local GET.
-func sessionMetadataRoots(goos, home, configDir string) sessionmeta.Config {
+func sessionMetadataRoots(goos, home, configDir, xdgConfig string) sessionmeta.Config {
 	valid := func(path string) bool {
 		return filepath.IsAbs(path) && !strings.ContainsAny(path, "\x00\r\n")
 	}
 	var cfg sessionmeta.Config
-	if goos == "darwin" && valid(home) {
-		cfg.DesktopRoot = filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions")
+	if valid(home) {
+		if dir := claudesync.DesktopDataDir(goos, home, xdgConfig); dir != "" {
+			cfg.DesktopRoot = filepath.Join(dir, "claude-code-sessions")
+		}
 	}
 	if configDir != "" {
 		if valid(configDir) {
@@ -227,7 +244,9 @@ func run(port, desktopRelayPort int) {
 	// A second Switcher on this Mac stops here, before it refreshes accounts,
 	// resumes the Desktop relay or starts the Tailscale add-on.
 	if probe, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
-		log.Fatalf("Switcher is already running here, or port %d is in use: %v", port, err)
+		// A distinct status, so the login service does not keep retrying.
+		log.Printf("Switcher is already running here, or port %d is in use: %v", port, err)
+		os.Exit(autostart.AlreadyRunningExit)
 	} else {
 		probe.Close()
 	}
@@ -256,7 +275,7 @@ func run(port, desktopRelayPort int) {
 		log.Fatalf("load state: %v", err)
 	}
 	home, _ := os.UserHomeDir()
-	metadataIndex := sessionmeta.New(sessionMetadataRoots(runtime.GOOS, home, os.Getenv("CLAUDE_CONFIG_DIR")))
+	metadataIndex := sessionmeta.New(sessionMetadataRoots(runtime.GOOS, home, os.Getenv("CLAUDE_CONFIG_DIR"), os.Getenv("XDG_CONFIG_HOME")))
 	relayCtx, relayCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	desktopRelay, relayErr := resumeDesktopRelay(relayCtx, desktoprelay.Config{
 		DataRoot: filepath.Join(config.Dir(), "desktop-relay"), Port: desktopRelayPort,
@@ -384,6 +403,7 @@ func run(port, desktopRelayPort int) {
 		DesktopSessionMetadata: metadataIndex,
 		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
+		Autostart: autostart.New(executablePath()),
 	}
 
 	// Each provider with a browser redirect has its own callback listener;

@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -46,7 +47,27 @@ func SessionIndexRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions"), nil
+	dir := DesktopDataDir(runtime.GOOS, home, os.Getenv("XDG_CONFIG_HOME"))
+	if dir == "" {
+		return "", errors.New("Claude Desktop keeps no data on this system")
+	}
+	return filepath.Join(dir, "claude-code-sessions"), nil
+}
+
+// DesktopDataDir is Claude Desktop's data folder: Application Support on a
+// Mac, and on Linux the XDG config folder that Electron builds of Desktop
+// use. Anthropic ships no Linux Desktop; community builds keep it there.
+func DesktopDataDir(goos, home, xdgConfig string) string {
+	switch goos {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Claude")
+	case "linux":
+		if !filepath.IsAbs(xdgConfig) {
+			xdgConfig = filepath.Join(home, ".config")
+		}
+		return filepath.Join(xdgConfig, "Claude")
+	}
+	return ""
 }
 
 func DefaultBackupDir() (string, error) {

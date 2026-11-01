@@ -160,6 +160,7 @@ func TestDesktopSettingsPathResolution(t *testing.T) {
 func TestSessionMetadataRootResolution(t *testing.T) {
 	home, override := t.TempDir(), t.TempDir()
 	desktop := filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions")
+	linuxDesktop := filepath.Join(home, ".config", "Claude", "claude-code-sessions")
 	projects := filepath.Join(home, ".claude", "projects")
 	for _, tc := range []struct {
 		name, goos, home, override string
@@ -167,8 +168,8 @@ func TestSessionMetadataRootResolution(t *testing.T) {
 	}{
 		{"mac defaults", "darwin", home, "", sessionmeta.Config{DesktopRoot: desktop, ProjectsRoot: projects}},
 		{"mac config override", "darwin", home, override, sessionmeta.Config{DesktopRoot: desktop, ProjectsRoot: filepath.Join(override, "projects")}},
-		{"linux projects only", "linux", home, "", sessionmeta.Config{ProjectsRoot: projects}},
-		{"linux override", "linux", home, override, sessionmeta.Config{ProjectsRoot: filepath.Join(override, "projects")}},
+		{"linux defaults", "linux", home, "", sessionmeta.Config{DesktopRoot: linuxDesktop, ProjectsRoot: projects}},
+		{"linux override", "linux", home, override, sessionmeta.Config{DesktopRoot: linuxDesktop, ProjectsRoot: filepath.Join(override, "projects")}},
 		{"other platform explicit projects", "windows", home, override, sessionmeta.Config{ProjectsRoot: filepath.Join(override, "projects")}},
 		{"override without HOME", "darwin", "", override, sessionmeta.Config{ProjectsRoot: filepath.Join(override, "projects")}},
 		{"relative override", "darwin", home, "relative", sessionmeta.Config{DesktopRoot: desktop}},
@@ -181,10 +182,14 @@ func TestSessionMetadataRootResolution(t *testing.T) {
 		{"missing HOME", "darwin", "", "", sessionmeta.Config{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionMetadataRoots(tc.goos, tc.home, tc.override); got != tc.want {
+			if got := sessionMetadataRoots(tc.goos, tc.home, tc.override, ""); got != tc.want {
 				t.Fatalf("metadata roots = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+	xdg := t.TempDir()
+	if got := sessionMetadataRoots("linux", home, "", xdg); got.DesktopRoot != filepath.Join(xdg, "Claude", "claude-code-sessions") {
+		t.Fatalf("XDG_CONFIG_HOME: %#v", got)
 	}
 	for _, path := range []string{home, override} {
 		entries, err := os.ReadDir(path)
@@ -203,7 +208,7 @@ func TestDesktopRelayStartupSharesLazyExplicitMetadataIndex(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, ".claude"))
 	const conversation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const session = "11111111-1111-4111-8111-111111111111"
-	roots := sessionMetadataRoots("darwin", root, filepath.Join(root, ".claude"))
+	roots := sessionMetadataRoots("darwin", root, filepath.Join(root, ".claude"), "")
 	path := filepath.Join(roots.DesktopRoot, "account", "workspace", "local_"+conversation+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)

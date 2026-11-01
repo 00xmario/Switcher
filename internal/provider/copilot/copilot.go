@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -58,14 +59,23 @@ var (
 )
 
 // appsJSONPath returns the path of the GitHub Copilot CLI's stored app
-// tokens (a package var so tests can point it at a fixture).
-var appsJSONPath = func() string {
+// tokens (a package var so tests can point it at a fixture): Application
+// Support on a Mac, the XDG config directory elsewhere.
+var appsJSONPath = copilotAppsPath(runtime.GOOS, os.Getenv("XDG_CONFIG_HOME"))
+
+func copilotAppsPath(goos, xdgConfig string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Library", "Application Support", "github-copilot", "apps.json")
-}()
+	if goos == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "github-copilot", "apps.json")
+	}
+	if !filepath.IsAbs(xdgConfig) {
+		xdgConfig = filepath.Join(home, ".config")
+	}
+	return filepath.Join(xdgConfig, "github-copilot", "apps.json")
+}
 
 // Provider implements provider.Provider for GitHub Copilot.
 type Provider struct{}
@@ -568,8 +578,8 @@ func (p *Provider) ParseRateLimit(ctx context.Context, a store.Account, status i
 
 // ImportFromKeychain implements the optional importer interface: it lifts
 // the GitHub OAuth token the GitHub Copilot CLI already stores in
-// ~/Library/Application Support/github-copilot/apps.json, so a machine
-// signed in to the CLI gets a Switcher account with no device flow.
+// github-copilot/apps.json (see appsJSONPath), so a machine signed in to the
+// CLI gets a Switcher account with no device flow.
 func (p *Provider) ImportFromKeychain(ctx context.Context) (store.Account, error) {
 	raw, err := os.ReadFile(appsJSONPath)
 	if err != nil {

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"switcher/internal/autostart"
 )
 
 // Options connect the command line to its process.
@@ -38,6 +40,8 @@ type Options struct {
 	CallbackPorts []int
 	// Executable is this binary, for install-cli.
 	Executable string
+	// Autostart replaces this computer's login items in tests.
+	Autostart *autostart.Manager
 }
 
 const (
@@ -85,6 +89,7 @@ func init() {
 		{name: "hand-back", args: "[on --yes|off]", summary: "Hand every tool back to its provider, or set Switcher up again", help: handBackHelp, run: runHandBack},
 		{name: "settings", args: "[set key=value ...]", summary: "Show or change settings", run: runSettings},
 		{name: "start", summary: "Start Switcher in the background if it is not running", run: runStart},
+		{name: "autostart", args: "[on|off]", summary: "Start Switcher when you log in (Linux)", help: autostartHelp, run: runAutostart},
 		{name: "open", summary: "Open the dashboard in a browser", run: runOpen},
 		{name: "install-cli", args: "[--dir DIR]", summary: "Put the switcher command on your PATH", run: runInstallCLI},
 	}

@@ -10,6 +10,9 @@
 // turns sleep back on whenever keep awake stops, and on its next start if it
 // stopped without cleaning up. A sleep setting Switcher did not change, such
 // as one from another app, is left alone.
+//
+// On Linux, systemd-logind inhibitor locks do the same without any setup
+// (linux.go).
 package awake
 
 import (
@@ -58,8 +61,9 @@ type State struct {
 	Error string `json:"error,omitempty"`
 }
 
-// ErrUnsupported is returned off macOS.
-var ErrUnsupported = errors.New("keep awake is available on macOS only")
+// ErrUnsupported is returned where neither macOS nor systemd-logind can keep
+// the computer awake.
+var ErrUnsupported = errors.New("keep awake needs macOS, or Linux with systemd-inhibit")
 
 // system is every operating-system effect, so tests run none of them.
 type system interface {
@@ -456,8 +460,11 @@ func (m *Manager) saveLockedWith(rec record) {
 }
 
 func newSystem() system {
-	if runtime.GOOS != "darwin" {
-		return nil
+	switch runtime.GOOS {
+	case "darwin":
+		return darwinSystem{}
+	case "linux":
+		return newLinuxSystem()
 	}
-	return darwinSystem{}
+	return nil
 }

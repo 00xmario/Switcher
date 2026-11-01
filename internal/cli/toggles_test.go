@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"switcher/internal/autostart"
 )
 
 // pairedFake is a Switcher paired with "Studio" that records use-host calls.
@@ -113,6 +116,35 @@ func TestHandBackNeedsYesAndReportsEachTool(t *testing.T) {
 	}
 	if len(f.posts) != 2 || !f.posts[0] || f.posts[1] {
 		t.Fatalf("requests: %v", f.posts)
+	}
+}
+
+// Starting at login is this computer's own setting: it works whether or not
+// Switcher runs, so the Linux install can turn it on first.
+func TestAutostartWorksWithoutARunningSwitcher(t *testing.T) {
+	dir := t.TempDir()
+	var calls []string
+	m := autostart.NewAt("linux", dir, "/home/u/.local/bin/switcher", func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	})
+	var out, errOut bytes.Buffer
+	code := Run([]string{"autostart", "on"}, Options{Port: 1, Stdout: &out, Stderr: &errOut, Autostart: m,
+		Getenv: func(string) string { return "http://127.0.0.1:1" }})
+	if code != 0 || !strings.Contains(out.String(), "switcher.service") {
+		t.Fatalf("autostart on: %d %q %q", code, out.String(), errOut.String())
+	}
+	if !m.Status().Service || len(calls) != 2 {
+		t.Fatalf("status %+v calls %v", m.Status(), calls)
+	}
+	out.Reset()
+	if code := Run([]string{"autostart", "off", "--json"}, Options{Port: 1, Stdout: &out, Stderr: &errOut, Autostart: m}); code != 0 || !strings.Contains(out.String(), `"enabled":false`) {
+		t.Fatalf("autostart off: %d %q", code, out.String())
+	}
+	mac := autostart.NewAt("darwin", dir, "/x", nil)
+	out.Reset()
+	if code := Run([]string{"autostart"}, Options{Port: 1, Stdout: &out, Stderr: &errOut, Autostart: mac}); code != 0 || !strings.Contains(out.String(), "menu") {
+		t.Fatalf("autostart on a Mac: %d %q", code, out.String())
 	}
 }
 

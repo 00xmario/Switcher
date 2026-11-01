@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"switcher/internal/autostart"
 	"switcher/internal/awake"
 	"switcher/internal/claudesync"
 	"switcher/internal/codexcfg"
@@ -73,6 +74,8 @@ type API struct {
 	RemoteHost   *remote.Host
 	RemoteClient *remote.Client
 	Tailnet      *remote.Tailnet // optional "Away from home" add-on
+	// Autostart starts Switcher at login on Linux; nil or unsupported elsewhere.
+	Autostart *autostart.Manager
 	// Handback hands the tools back to their providers; nil disables it.
 	Handback          *handback.Manager
 	Phone             *phone.Access // optional phone dashboard over the add-on
@@ -131,6 +134,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
 	a.registerAwakeRoutes(mux)
 	a.registerHandbackRoutes(mux)
+	a.registerAutostartRoutes(mux)
 	mux.HandleFunc("PATCH /api/providers/order", a.handleProviderOrder)
 	mux.HandleFunc("POST /api/providers/{id}/hide", a.handleProviderHide)
 	mux.HandleFunc("POST /api/providers/{id}/show", a.handleProviderShow)
@@ -633,6 +637,9 @@ func (a *API) LocalStateFields(r *http.Request) map[string]any {
 	}
 	if state, ok := a.awakeState(); ok {
 		fields["awake"] = state
+	}
+	if st := a.autostartStatus(); st.Supported {
+		fields["autostart"] = st
 	}
 	// A paired Switcher working on its own says so; while it uses the host,
 	// the remote client's state merge replaces this with the host's view.

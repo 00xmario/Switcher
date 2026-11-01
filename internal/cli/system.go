@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,7 +175,7 @@ func runOpen(c *ctx, args []string) error {
 		return err
 	}
 	if c.opt.Getenv("SSH_CONNECTION") != "" {
-		c.result(map[string]string{"url": c.url}, "The dashboard only opens on this Mac; from here, forward it with ssh -L 8787:127.0.0.1:8787 and open "+c.url)
+		c.result(map[string]string{"url": c.url}, "The dashboard only opens on the computer that runs Switcher; from here, forward it with ssh -L 8787:127.0.0.1:8787 and open "+c.url)
 		return nil
 	}
 	openURL(c.url)
@@ -197,6 +198,11 @@ func runInstallCLI(c *ctx, args []string) error {
 	candidates := []string{*dir}
 	if *dir == "" {
 		candidates = []string{"/usr/local/bin", "/opt/homebrew/bin", filepath.Join(home, ".local", "bin")}
+		if runtime.GOOS == "linux" {
+			// The Linux install keeps Switcher in the user's own bin, which
+			// most distributions put on the PATH.
+			candidates = []string{filepath.Join(home, ".local", "bin")}
+		}
 	}
 	for i, d := range candidates {
 		last := i == len(candidates)-1
@@ -206,6 +212,12 @@ func runInstallCLI(c *ctx, args []string) error {
 			}
 		}
 		link := filepath.Join(d, "switcher")
+		if link == target {
+			// The binary itself lives here, as the Linux install puts it.
+			onPath := slices.Contains(filepath.SplitList(c.opt.Getenv("PATH")), d)
+			c.result(map[string]any{"path": link, "target": target, "on_path": onPath}, "switcher is already installed at "+link)
+			return nil
+		}
 		if info, err := os.Lstat(link); err == nil {
 			// Only a link to a Switcher binary is ours to replace; another
 			// tool called switcher stays.
@@ -230,7 +242,11 @@ func runInstallCLI(c *ctx, args []string) error {
 		onPath := slices.Contains(filepath.SplitList(c.opt.Getenv("PATH")), d)
 		human := "Installed " + link
 		if !onPath {
-			human += fmt.Sprintf("\nAdd it to your PATH: echo 'export PATH=\"%s:$PATH\"' >> ~/.zshrc", d)
+			rc := "~/.zshrc"
+			if runtime.GOOS == "linux" {
+				rc = "~/.bashrc"
+			}
+			human += fmt.Sprintf("\nAdd it to your PATH: echo 'export PATH=\"%s:$PATH\"' >> %s", d, rc)
 		}
 		c.result(map[string]any{"path": link, "target": target, "on_path": onPath}, human)
 		return nil

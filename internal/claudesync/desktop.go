@@ -16,6 +16,8 @@ var desktopSync sync.Mutex
 // Run is the single machine-level entry point used by both UIs. It does not
 // accept paths or shell commands from the browser.
 func Run(ctx context.Context, labels map[string]string) (Result, error) {
+	// Syncing quits and reopens Desktop, which Switcher can do safely only
+	// on a Mac: on Linux, "claude" is also Claude Code's own process name.
 	if runtime.GOOS != "darwin" {
 		return Result{}, errors.New("Claude Desktop session sync requires macOS")
 	}
