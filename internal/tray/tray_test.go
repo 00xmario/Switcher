@@ -144,7 +144,7 @@ func TestMenuShowsAccountsUsageAndTheSwitches(t *testing.T) {
 	if find(items, "Use the accounts of") != nil {
 		t.Fatal("use-host offered without a pairing")
 	}
-	for _, want := range []string{"Hand back to the providers", "Start at login", "Install update 1.21.0", "Keep awake", "Quit Switcher"} {
+	for _, want := range []string{"Hand back to the providers on this computer", "Only this computer's Switcher changes", "Start at login", "Install update 1.21.0", "Keep awake", "Quit Switcher"} {
 		if find(items, want) == nil {
 			t.Errorf("menu lacks %q:\n%s", want, text)
 		}
@@ -172,8 +172,11 @@ func TestMenuFollowsTheHostAndTheHandBack(t *testing.T) {
 	if use := find(items, "Use the accounts of Studio"); use == nil || use.Checked {
 		t.Fatalf("use-host while local: %+v", use)
 	}
-	if hb := find(items, "Hand back"); !hb.Checked || hb.Action != "hand-back:off" {
-		t.Fatalf("hand-back: %+v", hb)
+	if hb := find(items, "✓ Hand back"); hb == nil || hb.Action != "" || find(hb.Children, "Set up again now").Action != "hand-back:off" {
+		t.Fatalf("setting up again must ask first: %+v", hb)
+	}
+	if find(items, "Only this computer's Switcher changes; Studio's stays as it is") == nil {
+		t.Fatalf("the paired host is not named:\n%s", titles(items))
 	}
 	if work := find(items, "work@example.com · Max 20x"); !work.Disabled {
 		t.Fatal("accounts switchable while handed back")
@@ -279,5 +282,36 @@ func TestKeepAwakeTitleSaysUntilWhen(t *testing.T) {
 	}
 	if got := awakeMenu(Awake{Supported: true, Active: true}, now).Title; got != "Keep awake: until turned off" {
 		t.Fatalf("open-ended: %q", got)
+	}
+}
+
+// A computer using its host offers to update the host's Switcher, after a
+// second click, and asks its own server to have the host install it.
+func TestTheHostIsUpdatedFromHere(t *testing.T) {
+	f, ui, c, _ := newFixture(t)
+	f.set("remote", map[string]any{"role": "client", "host": "Studio", "connected": true,
+		"host_update": map[string]any{"current": "1.21.0", "latest": "v1.21.0", "update_available": true, "remote_update": true}})
+	ctx := context.Background()
+	c.Refresh(ctx)
+	item := find(ui.last(), "Update Studio to 1.21.0")
+	if item == nil || item.Action != "" || find(item.Children, "Update now").Action != "host-update" {
+		t.Fatalf("host update: %+v\n%s", item, titles(ui.last()))
+	}
+	c.Click(ctx, "host-update")
+	if got := f.posted(); len(got) == 0 || got[len(got)-1] != `POST /api/remote/host-update {"action":"install"}` {
+		t.Fatalf("requests: %v", got)
+	}
+	f.set("remote", map[string]any{"role": "client", "host": "Studio", "connected": true,
+		"host_update": map[string]any{"current": "1.21.0", "latest": "v1.21.0", "update_available": true, "remote_update": true, "install": map[string]any{"step": "updating"}}})
+	c.Refresh(ctx)
+	if find(ui.last(), "Updating Studio to 1.21.0") == nil || find(ui.last(), "Update now") != nil {
+		t.Fatalf("while updating:\n%s", titles(ui.last()))
+	}
+	// A host too old to take updates from here is not offered one.
+	f.set("remote", map[string]any{"role": "client", "host": "Studio", "connected": true,
+		"host_update": map[string]any{"current": "1.19.0", "latest": "v1.21.0", "update_available": true, "remote_update": false}})
+	c.Refresh(ctx)
+	if find(ui.last(), "Update Studio") != nil {
+		t.Fatalf("older host:\n%s", titles(ui.last()))
 	}
 }

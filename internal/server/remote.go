@@ -19,6 +19,8 @@ func (a *API) registerRemoteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/remote/connect", a.handleRemoteConnect)
 	mux.HandleFunc("POST /api/remote/disconnect", a.handleRemoteDisconnect)
 	mux.HandleFunc("POST /api/remote/use-host", a.handleRemoteUseHost)
+	mux.HandleFunc("GET /api/remote/host-update", a.handleRemoteHostUpdate)
+	mux.HandleFunc("POST /api/remote/host-update", a.handleRemoteHostUpdate)
 	mux.HandleFunc("POST /api/remote/tailnet", a.handleTailnet)
 	mux.HandleFunc("POST /api/remote/tailnet/remove", a.handleTailnetRemove)
 }
@@ -221,6 +223,41 @@ func (a *API) handleRemoteDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"client": a.RemoteClient.Status()})
+}
+
+// handleRemoteHostUpdate shows the paired host's Switcher version and, with
+// action "check" or "install", has the host check for or install the newest
+// release, so a host is updated without going to it.
+func (a *API) handleRemoteHostUpdate(w http.ResponseWriter, r *http.Request) {
+	if !a.remoteControl(w, r) {
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+	}
+	if r.Method == http.MethodPost {
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body) != nil || body.Action != "check" && body.Action != "install" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action must be check or install"})
+			return
+		}
+	}
+	if !a.RemoteClient.Paired() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "this Switcher is not paired with another Switcher"})
+		return
+	}
+	// The host downloads the release before it answers an install.
+	timeout := 25 * time.Second
+	if body.Action == "install" {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), timeout)
+	defer cancel()
+	state, err := a.RemoteClient.HostUpdate(ctx, body.Action)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "host_update": state})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"host_update": state})
 }
 
 // handleRemoteUseHost switches a paired Switcher between using its host and

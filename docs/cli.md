@@ -37,6 +37,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher connect <address> --code CODE` | Use the accounts of a Mac that shares them |
 | `switcher disconnect --yes` | Use this Mac's own accounts again |
 | `switcher use-host [on\|off]` | Work without the paired host and stay paired (off), or use it again (on) |
+| `switcher update-host [--yes]` | Show the paired host's Switcher version; with `--yes` the host installs the newest release |
 | `switcher discover` | Find sharing Switchers on your network and tailnet |
 | `switcher away [on\|off\|remove --yes]` | The Tailscale add-on for use away from home |
 | `switcher phone [on\|off\|approve <code>\|deny <id>\|revoke <id> --yes]` | Use Switcher from your phone over Tailscale; see [phone](phone.md) |

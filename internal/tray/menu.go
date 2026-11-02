@@ -112,15 +112,33 @@ func Build(st State, status Status, now time.Time) []Item {
 		items = append(items, Item{Action: "use-host", Title: "Use the accounts of " + r.Host, Checkable: true, Checked: r.Role == "client",
 			Tooltip: "Off: this computer uses its own accounts and stays paired"})
 	}
+	if r := st.Remote; r != nil && r.Role == "client" && r.HostUpdate != nil && r.HostUpdate.Remote && r.HostUpdate.Latest != "" {
+		u, release := r.HostUpdate, strings.TrimPrefix(r.HostUpdate.Latest, "v")
+		switch {
+		case u.Install != nil:
+			items = append(items, label("Updating "+r.Host+" to "+release+"…"))
+		case u.Available:
+			// Updating the host restarts it for every computer that uses
+			// it, so it takes a second click.
+			items = append(items, Item{Title: "Update " + r.Host + " to " + release, Tooltip: r.Host + " runs Switcher " + u.Current,
+				Children: []Item{label(r.Host + " restarts; nothing changes on this computer"), {Action: "host-update", Title: "Update now"}}})
+		}
+	}
+	// Either way the hand-back changes how this computer's tools are routed,
+	// so it takes a second click, as the Mac menu and the dashboard ask
+	// first. Only this computer's Switcher changes, never a paired host's.
+	only := "Only this computer's Switcher changes"
+	if r := st.Remote; r != nil && r.Host != "" && (r.Role == "client" || r.Role == "local") {
+		only += "; " + r.Host + "'s stays as it is"
+	}
+	title := "Hand back to the providers on this computer"
 	if st.HandedBack {
-		items = append(items, Item{Action: "hand-back:off", Title: "Hand back to the providers", Checkable: true, Checked: true,
-			Tooltip: "Turn off to set Switcher up again"})
+		items = append(items, Item{Title: "✓ " + title, Tooltip: "Set Switcher up again on this computer",
+			Children: []Item{label(only), label("Your tools go through Switcher again"), {Action: "hand-back:off", Title: "Set up again now"}}})
 	} else {
-		// Handing back rewrites the tools' settings, so it takes a second
-		// click, as the Mac menu and the dashboard ask first.
-		items = append(items, Item{Title: "Hand back to the providers",
-			Tooltip:  "Undo Switcher's setup so your tools talk to their providers directly, for example before removing Switcher",
-			Children: []Item{label("Your tools will use their providers directly"), {Action: "hand-back:on", Title: "Hand back now"}}})
+		items = append(items, Item{Title: title,
+			Tooltip:  "Undo Switcher's setup so this computer's tools talk to their providers directly, for example before removing Switcher",
+			Children: []Item{label(only), label("Your tools will use their providers directly"), {Action: "hand-back:on", Title: "Hand back now"}}})
 	}
 	if a := st.Autostart; a != nil && a.Supported {
 		items = append(items, Item{Action: "autostart", Title: "Start at login", Checkable: true, Checked: a.Enabled})

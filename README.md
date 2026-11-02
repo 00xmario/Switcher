@@ -63,7 +63,8 @@ with the most usage left. Errors and limits are the provider's own.
 - **Keep awake for long runs.** From the menu bar, keep the Mac awake for
   15 minutes up to 8 hours, until a set time or until you turn it off, even
   with the lid closed. Sleep comes back by itself when time is up, when the
-  battery runs low or when Switcher quits.
+  battery runs low or when Switcher quits; an update's restart keeps it
+  going.
 - **Costs and tokens.** A Usage tab reads your CLIs' own session logs and
   prices them, per day, provider and model.
 - **Claude Desktop per conversation.** Optional: pick an account for
@@ -126,7 +127,9 @@ source (Go 1.27+): `make install`.
 arrow badge. *Install update* in the menu or the dashboard downloads the new
 release straight from GitHub, checks it and replaces the whole app, then
 Switcher restarts by itself; the menu and the dashboard show a progress
-bar meanwhile. No GitHub account or command-line tools are needed. If
+bar meanwhile. It always installs the newest release, skipping any in
+between. A Mac that uses another Mac's accounts can update that host from
+its own menu or dashboard (see [sharing](docs/sharing.md#updating-the-host)). No GitHub account or command-line tools are needed. If
 Switcher sits in a folder you cannot change, such as Applications
 on a standard account, macOS asks for an administrator password. Versions
 up to 1.11 updated through the GitHub CLI and fail on Macs without it;

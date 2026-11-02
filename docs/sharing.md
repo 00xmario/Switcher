@@ -47,9 +47,12 @@ without the add-on.
 ## What follows the host
 
 - Account cards, usage and the menu bar show the host's accounts. Switching an
-  account on the client switches it on the host, for Switcher's proxies; the
-  host's own Claude Code login stays as it is. Accounts are added and signed
-  in again on the host.
+  account on the client switches it on the host, exactly as switching on the
+  host would: the account every Mac uses, and the host's own Claude Code
+  login. If the host's Claude Code cannot switch (for example while its
+  Keychain is locked), the account still switches and the client says why
+  Claude Code did not follow. Accounts are added and signed in again on the
+  host.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the
@@ -72,6 +75,18 @@ with its own accounts. Nothing is sent to the host. The pairing stays, also
 across restarts; turn the switch back on (or `switcher use-host on`) to use
 the host again. While paired, sharing onward stays off either way.
 
+## Updating the host
+
+A client shows which Switcher its host runs. When an update is out, **Update
+&lt;host&gt;** (Settings → Share between Macs, the menu bar or tray, or
+`switcher update-host --yes`) has the host install the newest release and
+restart, without going to it. The host's tools, and every Mac that uses it,
+pause for a moment; nothing changes on the client. It works while the client
+works without its host too. A host whose Switcher.app sits in a folder only
+an administrator can change refuses, since nobody is at it to enter the
+password; update that one on the host. A host before Switcher 1.21.0 does
+not take updates from its clients yet: update it on the host once.
+
 ## Network and security
 
 - The host listens on port 8788 with its own certificate. The client pins that
@@ -88,8 +103,11 @@ the host again. While paired, sharing onward stays off either way.
   trust it. Five wrong codes invalidate a code, and a network address that
   keeps guessing is refused for ten minutes.
 - Only paired Macs are served, with their own revocable token, and only for
-  account views and actions, provider proxies, the hub and Claude inference.
-  Tokens are never sent to clients.
+  account views and actions, provider proxies, the hub, Claude inference and
+  updating the host. An update installs only the newest official release,
+  checked against its published SHA-256 (and its signature on a Mac), and a
+  host never waits on a password prompt for it. Tokens are never sent to
+  clients.
 - A Mac cannot share and use another Switcher at the same time.
 - Over the internet, use Away from home (or the Tailscale app); opening port
   8788 on your router would not work and is not needed.

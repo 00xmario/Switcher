@@ -82,6 +82,7 @@ func init() {
 		{name: "connect", args: "<address> --code CODE", summary: "Use the accounts of a Switcher that shares them", run: runConnect},
 		{name: "disconnect", args: "--yes", summary: "Stop using another Switcher", run: runDisconnect},
 		{name: "use-host", args: "[on|off]", summary: "Use the paired host, or work without it and stay paired", help: useHostHelp, run: runUseHost},
+		{name: "update-host", args: "[--yes]", summary: "Show the paired host's Switcher version; update it with --yes", help: updateHostHelp, run: runUpdateHost},
 		{name: "discover", summary: "Find Switchers that share on your network or tailnet", run: runDiscover},
 		{name: "away", args: "[on|off|remove --yes]", summary: "Reach your Macs from anywhere with the Tailscale add-on", run: runAway},
 		{name: "phone", args: "[on|off|approve <code>|deny <id>|revoke <id> --yes]", summary: "Use Switcher from your phone over Tailscale", help: phoneHelp, run: runPhone},

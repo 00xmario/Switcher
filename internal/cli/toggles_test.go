@@ -18,6 +18,8 @@ type pairedFake struct {
 	mu        sync.Mutex
 	localOnly bool
 	posts     []map[string]bool
+	actions   []string // host-update actions
+	olderHost bool     // a host before 1.21.0
 }
 
 func (f *pairedFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +35,15 @@ func (f *pairedFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.posts = append(f.posts, body)
 		f.localOnly = !body["enabled"]
 		io.WriteString(w, `{"client":{"connected":true}}`)
+	case "POST /api/remote/host-update":
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.actions = append(f.actions, body["action"])
+		if f.olderHost {
+			io.WriteString(w, `{"host_update":{"host":"Studio","current":"1.20.0","latest":"v1.21.0","update_available":true,"remote_update":false}}`)
+			return
+		}
+		io.WriteString(w, `{"host_update":{"host":"Studio","current":"1.21.0","latest":"v1.22.0","update_available":true,"remote_update":true}}`)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		io.WriteString(w, `{"error":"no such route"}`)
@@ -152,5 +163,27 @@ func TestUseHostNeedsAPairing(t *testing.T) {
 	_, url := fake(t) // its client is not connected
 	if code, _, errOut := run(t, url, "", "use-host", "off"); code != exitFail || !strings.Contains(errOut, "not paired") {
 		t.Fatalf("unpaired: %d %q", code, errOut)
+	}
+}
+
+func TestUpdateHostAsksForYesBeforeInstalling(t *testing.T) {
+	f := &pairedFake{}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	code, out, errOut := run(t, srv.URL, "", "update-host")
+	if code != 0 || !strings.Contains(out, "Studio runs Switcher 1.21.0; 1.22.0 is out") || !strings.Contains(out, "--yes") {
+		t.Fatalf("update-host: %d %q %q", code, out, errOut)
+	}
+	if strings.Join(f.actions, ",") != "check" {
+		t.Fatalf("installed without --yes: %v", f.actions)
+	}
+	code, out, errOut = run(t, srv.URL, "", "update-host", "--yes")
+	if code != 0 || !strings.Contains(out, "Studio is installing Switcher 1.22.0") || strings.Join(f.actions, ",") != "check,check,install" {
+		t.Fatalf("update-host --yes: %d %q %q %v", code, out, errOut, f.actions)
+	}
+	f.olderHost, f.actions = true, nil
+	code, out, _ = run(t, srv.URL, "", "update-host", "--yes")
+	if code != 0 || !strings.Contains(out, "Update it on Studio once") || strings.Join(f.actions, ",") != "check" {
+		t.Fatalf("older host: %d %q %v", code, out, f.actions)
 	}
 }

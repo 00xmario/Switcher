@@ -237,8 +237,10 @@ func runUse(c *ctx, args []string) error {
 		return err
 	}
 	var answer struct {
+		Host   string `json:"host"` // the host whose Claude Code a switch from here changes
 		Native *struct {
-			Changed bool `json:"changed"`
+			Changed bool   `json:"changed"`
+			Message string `json:"message"`
 		} `json:"native"`
 	}
 	if err := c.cl.call(http.MethodPost, "/api/accounts/"+url.PathEscape(account.ID)+"/activate", nil, &answer); err != nil {
@@ -247,9 +249,12 @@ func runUse(c *ctx, args []string) error {
 	account.Active = true
 	switched := answer.Native != nil && answer.Native.Changed
 	human := fmt.Sprintf("%s now uses %s.", providerName(account.Provider), account.Email)
-	if switched {
+	switch {
+	case answer.Host != "" && answer.Native != nil:
+		human += " " + answer.Native.Message // about the host's Claude Code
+	case switched:
 		human += " Claude Code switched too."
-	} else if answer.Native != nil {
+	case answer.Native != nil:
 		human += " Claude Code already used it."
 	}
 	c.result(map[string]any{"account": account, "claude_code_switched": switched}, human)

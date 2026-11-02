@@ -119,7 +119,8 @@ required; OpenCode Go uses its own API key.
   immediate application. This changes Claude Code, not Claude Desktop's
   signed-in account. Do not `/logout` first because it can revoke the old
   saved refresh token. Machine-level switching and import require a local
-  connection. Same-store `CLAUDE_CONFIG_DIR` profiles are supported; split secure
+  connection; switching also works from an approved phone and from a Mac
+  paired with this one, which uses its accounts. Same-store `CLAUDE_CONFIG_DIR` profiles are supported; split secure
   storage and credential-overriding environment variables block the operation
   with an explanation. See [the source analysis and comparison](claude-swap-analysis.md).
 - **Share between Macs**: let your other Macs use one Mac's accounts. Pair once
@@ -135,7 +136,8 @@ required; OpenCode Go uses its own API key.
   [sharing](sharing.md#when-the-host-stops-working).
 - **Hand back to the providers**: before removing Switcher, one switch
   (Settings → Tools, the menu, the tray, or `switcher hand-back on --yes`)
-  undoes its setup. Codex gets its previous provider back; Claude Desktop's
+  undoes its setup. It changes only this computer's Switcher, never a paired
+  host's, and both directions ask first. Codex gets its previous provider back; Claude Desktop's
   settings are restored, and a Desktop still running keeps working through
   the relay on its own login until it restarts; sharing and the use of a
   paired host turn off. Claude Code and Codex keep their own logins; one with
@@ -245,7 +247,14 @@ required; OpenCode Go uses its own API key.
   (downloading, checking, installing, restarting), the downloaded bytes and a
   0–1 fraction. `/api/state` leaves the progress out, so the dashboard does
   not repaint on every report. A finished app install keeps reporting its
-  restart and refuses another install until Switcher has restarted.
+  restart and refuses another install until Switcher has restarted. An
+  install checks for the newest release first, so releases out since the
+  last check (at most an hour old) are skipped over rather than installed
+  one at a time. A keep awake that runs when an update restarts Switcher
+  resumes in the new one, with its end time; a quit or crash ends it as
+  before. A paired client can have its host update itself
+  (`POST /api/remote/host-update`); the host then installs unattended and
+  refuses an install that would need an administrator password.
 - **CLI setup status**: Settings checks the inspected Codex user config for
   Switcher's URL and lists stored Switcher accounts separately from native
   CLI configuration. Configure Codex can update that file; no native CLI

@@ -202,6 +202,62 @@ func runUseHost(c *ctx, args []string) error {
 	return nil
 }
 
+const updateHostHelp = `Shows which Switcher the paired host runs and whether an update is out.
+With --yes the host installs the newest release and restarts, so it is
+updated without going to it. The host's tools, and every computer that uses
+it, pause for a moment; nothing changes on this computer. It also works
+while this Switcher works without its host.`
+
+func runUpdateHost(c *ctx, args []string) error {
+	fs := c.flags("update-host")
+	yes := fs.Bool("yes", false, "")
+	if _, err := c.parse(fs, args, 0, 0); err != nil {
+		return err
+	}
+	type hostUpdate struct {
+		Host      string `json:"host"`
+		Current   string `json:"current"`
+		Latest    string `json:"latest"`
+		Available bool   `json:"update_available"`
+		Remote    bool   `json:"remote_update"`
+	}
+	var answer struct {
+		HostUpdate hostUpdate `json:"host_update"`
+	}
+	if err := c.cl.call(http.MethodPost, "/api/remote/host-update", map[string]string{"action": "check"}, &answer); err != nil {
+		return err
+	}
+	u := answer.HostUpdate
+	latest := strings.TrimPrefix(u.Latest, "v")
+	runs := "an older Switcher"
+	if u.Current != "" {
+		runs = "Switcher " + u.Current
+	}
+	if !u.Remote {
+		c.result(u, fmt.Sprintf("%s runs %s, which takes updates only on itself. Update it on %s once; after that, update it from here.", u.Host, runs, u.Host))
+		return nil
+	}
+	if !u.Available {
+		c.result(u, fmt.Sprintf("%s runs Switcher %s, the newest release.", u.Host, u.Current))
+		return nil
+	}
+	if !*yes {
+		c.result(u, fmt.Sprintf("%s runs Switcher %s; %s is out. Update it with: switcher update-host --yes", u.Host, u.Current, latest))
+		return nil
+	}
+	err := c.cl.call(http.MethodPost, "/api/remote/host-update", map[string]string{"action": "install"}, nil)
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		// The host downloads before it answers; the update goes on.
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	c.result(map[string]any{"host": u.Host, "installing": latest}, fmt.Sprintf("%s is installing Switcher %s and restarts when done. Check with: switcher update-host", u.Host, latest))
+	return nil
+}
+
 func runDiscover(c *ctx, args []string) error {
 	if _, err := c.parse(c.flags("discover"), args, 0, 0); err != nil {
 		return err

@@ -2097,7 +2097,6 @@ settingsPage.desktopRelay = createDesktopRelay({
 const remoteSettings = createRemote({
   api,
   confirm: options => confirmDialog({ initialFocus: 'cancel', ...options }),
-  machine: () => machineWord(data.platform),
   onConnectionChange: async connected => {
     toast(connected ? 'Now using the other Switcher\'s accounts' : `Back to this ${machineWord(data.platform)}'s own accounts`);
     await refreshState();
@@ -2108,6 +2107,7 @@ const handback = createHandback({
   api,
   toast,
   confirm: options => confirmDialog({ initialFocus: 'cancel', ...options }),
+  scope: () => ({ machine: machineWord(data.platform), host: data.remote?.host || '' }),
   onChange: () => refreshState(),
 });
 

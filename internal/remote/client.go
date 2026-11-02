@@ -16,9 +16,11 @@ import (
 	"net/http/httputil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,6 +64,8 @@ type Client struct {
 	onChange      func(bool)
 	refreshedAt   time.Time
 	tailnet       func(ctx context.Context, address string) (net.Conn, bool, error)
+	// hostInstalling is set while this Mac waits on the host's install.
+	hostInstalling atomic.Bool
 }
 
 // UseTailnet reaches tailnet addresses through the Tailscale add-on.
@@ -410,25 +414,222 @@ func (c *Client) note(err error) {
 }
 
 // do sends one request to the host as this paired device.
-func (c *Client) do(req *http.Request) (*http.Response, error) {
+func (c *Client) do(req *http.Request) (*http.Response, error) { return c.send(req, false) }
+
+// send is do; explicit requests, such as updating the host, reach it also
+// while this Mac works without it, since they are not routing.
+func (c *Client) send(req *http.Request, explicit bool) (*http.Response, error) {
 	c.mu.Lock()
 	cfg, transport := c.cfg, c.transport
 	c.mu.Unlock()
 	if cfg == nil {
 		return nil, errors.New("no Switcher host connected")
 	}
-	if cfg.LocalOnly {
+	if cfg.LocalOnly && !explicit {
 		return nil, errors.New("this Switcher is set to work without its host")
 	}
 	req.URL.Scheme, req.URL.Host, req.Host = "https", "switcher-host", "switcher-host"
 	req.Header.Set(DeviceHeader, cfg.Token)
 	resp, err := transport.RoundTrip(req)
+	if explicit {
+		return resp, err // says nothing about routing to the host
+	}
 	c.note(err)
 	if err == nil && resp.Header.Get(rejectedHeader) != "" {
 		c.note(errors.New("the host no longer accepts this Mac; pair again"))
 	}
 	return resp, err
 }
+
+// HostUpdate is the paired host's Switcher version and update state.
+// Remote says the host takes updates from here: Switcher 1.21.0 and later.
+type HostUpdate struct {
+	Host      string           `json:"host"`
+	Current   string           `json:"current,omitempty"`
+	Latest    string           `json:"latest,omitempty"`
+	Available bool             `json:"update_available"`
+	Remote    bool             `json:"remote_update"`
+	Install   *HostUpdateSteps `json:"install,omitempty"`
+}
+
+// remoteUpdateSince is the first release a paired Mac can update.
+const remoteUpdateSince = "1.21.0"
+
+// atLeast compares release versions such as "1.21.0" or "v1.21.0".
+func atLeast(version, min string) bool {
+	parse := func(v string) (out [3]int, ok bool) {
+		parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
+		if len(parts) != 3 {
+			return out, false
+		}
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil {
+				return out, false
+			}
+			out[i] = n
+		}
+		return out, true
+	}
+	a, okA := parse(version)
+	b, okB := parse(min)
+	if !okA || !okB {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return true
+}
+
+// plainText keeps what a host says printable, for this Mac's terminal and
+// dialogs.
+func plainText(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > 300 {
+		s = s[:300]
+	}
+	return s
+}
+
+// HostUpdateSteps is the host's install in flight.
+type HostUpdateSteps struct {
+	Step     string  `json:"step"`
+	Fraction float64 `json:"fraction"`
+}
+
+// hostVersion accepts only version strings, so a host's answer never puts
+// markup into this Mac's menu or dashboard.
+var hostVersion = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// installSteps are the steps a host's install reports, and "updating" while
+// this Mac waits on an install it asked for.
+var installSteps = map[string]bool{"downloading": true, "checking": true, "installing": true, "restarting": true, "updating": true}
+
+func (u *HostUpdate) sanitize() {
+	if !hostVersion.MatchString(u.Current) {
+		u.Current = ""
+	}
+	u.Remote = u.Remote && u.Current != ""
+	if !hostVersion.MatchString(u.Latest) {
+		u.Latest, u.Available = "", false
+	}
+	if u.Install != nil && !installSteps[u.Install.Step] {
+		u.Install = nil
+	}
+	if u.Install != nil {
+		u.Install.Fraction = min(max(u.Install.Fraction, 0), 1)
+	}
+}
+
+// HostUpdate asks the paired host which Switcher it runs and whether an
+// update is out. Action "check" has it check for one first; "install" has
+// it install the newest release and restart, which ends with the host
+// unreachable for a moment. It works while this Mac works without the host
+// too: an update may be what the host needs.
+func (c *Client) HostUpdate(ctx context.Context, action string) (HostUpdate, error) {
+	host := c.Status().HostName
+	call := func(method, path string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, method, "https://switcher-host"+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.send(req, true)
+		if err == nil && resp.StatusCode != http.StatusOK {
+			var answer struct {
+				Error string `json:"error"`
+			}
+			_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&answer)
+			resp.Body.Close()
+			if answer.Error = plainText(answer.Error); answer.Error == "" {
+				answer.Error = fmt.Sprintf("the host answered %d", resp.StatusCode)
+			}
+			return nil, &hostError{resp.StatusCode, answer.Error}
+		}
+		return resp, err
+	}
+	// A host older than remoteUpdateSince keeps its update routes from
+	// paired devices: it shows its version, to be updated on it once.
+	older := func(err error) (HostUpdate, error) {
+		var he *hostError
+		if errors.As(err, &he) && he.status == http.StatusNotFound {
+			u := HostUpdate{Host: host}
+			c.mu.Lock()
+			u.Current, _ = c.hostState["version"].(string)
+			if update, ok := c.hostState["update"].(map[string]any); ok {
+				u.Latest, _ = update["latest"].(string)
+				u.Available, _ = update["update_available"].(bool)
+			}
+			c.mu.Unlock()
+			u.sanitize()
+			return u, nil
+		}
+		return HostUpdate{Host: host}, err
+	}
+	switch action {
+	case "check":
+		resp, err := call(http.MethodPost, "/api/update/check")
+		if err != nil {
+			return older(err)
+		}
+		resp.Body.Close()
+	case "install":
+		if !c.hostInstalling.CompareAndSwap(false, true) {
+			return HostUpdate{Host: host}, errors.New(host + " is already updating")
+		}
+		defer c.hostInstalling.Store(false)
+		resp, err := call(http.MethodPost, "/api/update")
+		if err != nil {
+			// The host restarts into the new release, which may cut this
+			// request off; anything else is a real failure.
+			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !strings.Contains(err.Error(), "connection reset") {
+				return HostUpdate{Host: host}, err
+			}
+		} else {
+			resp.Body.Close()
+		}
+		return HostUpdate{Host: host, Install: &HostUpdateSteps{Step: "restarting", Fraction: 1}}, nil
+	case "":
+	default:
+		return HostUpdate{Host: host}, fmt.Errorf("unknown host update action %q", action)
+	}
+	resp, err := call(http.MethodGet, "/api/update")
+	if err != nil {
+		return older(err)
+	}
+	defer resp.Body.Close()
+	var u HostUpdate
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&u); err != nil {
+		return HostUpdate{Host: host}, fmt.Errorf("read the host's update state: %w", err)
+	}
+	u.Host, u.Remote = host, true
+	c.markInstalling(&u)
+	u.sanitize()
+	return u, nil
+}
+
+// markInstalling shows an install this Mac is waiting on, which the host's
+// own state reports only on its update route.
+func (c *Client) markInstalling(u *HostUpdate) {
+	if u.Install == nil && c.hostInstalling.Load() {
+		u.Install = &HostUpdateSteps{Step: "updating"}
+	}
+}
+
+// hostError is the host's answer to a request it refused.
+type hostError struct {
+	status  int
+	message string
+}
+
+func (e *hostError) Error() string { return e.message }
 
 // Inference sends a Claude request to the host. It implements the Desktop
 // relay's remote hook.
@@ -586,6 +787,22 @@ func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalS
 	for k, v := range state {
 		merged[k] = v
 	}
+	// The host's own version and update, before this Mac's replace them,
+	// so the menus can offer to update the host.
+	hostUpdate := HostUpdate{Host: c.Status().HostName}
+	hostUpdate.Current, _ = state["version"].(string)
+	if u, ok := state["update"].(map[string]any); ok {
+		hostUpdate.Latest, _ = u["latest"].(string)
+		hostUpdate.Available, _ = u["update_available"].(bool)
+		if p, ok := u["install"].(map[string]any); ok {
+			step, _ := p["step"].(string)
+			fraction, _ := p["fraction"].(float64)
+			hostUpdate.Install = &HostUpdateSteps{Step: step, Fraction: fraction}
+		}
+	}
+	hostUpdate.Remote = atLeast(hostUpdate.Current, remoteUpdateSince)
+	c.markInstalling(&hostUpdate)
+	hostUpdate.sanitize()
 
 	mine := local(r)
 	for _, k := range localStateKeys {
@@ -596,7 +813,8 @@ func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalS
 		}
 	}
 	status := c.Status()
-	merged["remote"] = map[string]any{"role": "client", "host": status.HostName, "address": status.Address, "connected": err == nil, "error": status.Error}
+	merged["remote"] = map[string]any{"role": "client", "host": status.HostName, "address": status.Address, "connected": err == nil, "error": status.Error,
+		"host_update": hostUpdate}
 	writeJSONResponse(w, http.StatusOK, merged)
 }
 

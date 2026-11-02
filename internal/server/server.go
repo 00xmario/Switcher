@@ -44,6 +44,7 @@ type UpdateChecker interface {
 	State() update.State
 	Check(context.Context) (update.State, error)
 	InstallAndRestart() error
+	InstallAndRestartUnattended() error
 }
 
 // API wraps the JSON API the web UI talks to.
@@ -1204,24 +1205,38 @@ func (a *API) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such account"})
 		return
 	}
-	// A paired Mac picks which account the host uses for its requests; the
-	// host's own Claude Code login stays as it is.
-	if _, paired := remote.PairedDevice(r); paired {
-		if err := a.Proxy.Activate(id); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not activate account"})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id})
-		return
-	}
-	// Switching Claude Code's own login stays on this Mac, or on a phone
-	// approved on it.
+	// Switching Claude Code's own login stays on this Mac, a phone approved
+	// on it, or a Mac paired with it: a paired Mac uses this one's accounts,
+	// so its switch is this Mac's switch, Claude Code's login included.
+	_, paired := remote.PairedDevice(r)
 	if native, ok := a.Providers[account.Provider].(provider.NativeLoginProvider); ok && native.NativeEnabled() {
-		if _, approved := phone.ApprovedPhone(r.Context()); !approved && !loopbackOnly(w, r) {
+		if _, approved := phone.ApprovedPhone(r.Context()); !approved && !paired && !loopbackOnly(w, r) {
 			return
 		}
 	}
 	result, err := a.Proxy.ActivateForClient(r.Context(), id)
+	if paired && result != nil {
+		// The paired Mac shows this message; it is about this Mac.
+		host := remote.MachineName()
+		if err != nil && !errors.Is(err, proxy.ErrHandedBack) {
+			// Claude Code's login did not switch, for example while this
+			// Mac's Keychain is locked. The account the paired Macs use
+			// still switches.
+			if aerr := a.Proxy.Activate(id); aerr == nil {
+				writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "host": host,
+					"native": map[string]any{"changed": false, "message": "Claude Code on " + host + " still uses its previous login: " + err.Error()}})
+				return
+			}
+		}
+		if err == nil {
+			result.Message = "Claude Code on " + host + " switched too."
+			if !result.Changed {
+				result.Message = "Claude Code on " + host + " already used this login."
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "host": host, "native": result})
+			return
+		}
+	}
 	if err != nil {
 		if errors.Is(err, proxy.ErrHandedBack) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
@@ -1364,7 +1379,10 @@ func (a *API) updateWithProgress() update.State {
 // handleUpdateState answers the cached check and any install in flight. The
 // menu and the dashboard poll it while an install runs.
 func (a *API) handleUpdateState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.updateWithProgress())
+	writeJSON(w, http.StatusOK, struct {
+		update.State
+		Current string `json:"current,omitempty"`
+	}{a.updateWithProgress(), a.Version})
 }
 
 // handleUpdate installs the latest release and restarts. A plain binary
@@ -1376,7 +1394,13 @@ func (a *API) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "updates unavailable"})
 		return
 	}
-	if err := a.Updater.InstallAndRestart(); err != nil {
+	// A paired Mac updating this one: nobody may be here to answer a
+	// password prompt.
+	install := a.Updater.InstallAndRestart
+	if _, paired := remote.PairedDevice(r); paired {
+		install = a.Updater.InstallAndRestartUnattended
+	}
+	if err := install(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

@@ -491,19 +491,22 @@ func runHostAndHandBackFixtures() {
     var runtime = MenuRuntime()
     runtime.request = { request, completion in requests.append(request); completions.append(completion) }
     runtime.deviceToken = { "fixture-device-token" }
-    runtime.confirmHandBack = { confirmations += 1; return confirmations > 1 }
+    var askedHosts: [String?] = []
+    runtime.confirmHandBack = { _, host in confirmations += 1; askedHosts.append(host); return confirmations > 1 }
+    var hostAsks = 0
+    runtime.confirmHostUpdate = { host, release in hostAsks += 1; return host == "Studio" && release == "1.22.0" }
     let delegate = AppDelegate(runtime: runtime)
 
     delegate.applyMenuState(state(nil, handedBack: false))
     let unpaired = views(NSTextField.self, in: delegate.menu).map(\.stringValue)
     guard !unpaired.contains(where: { $0.hasPrefix("Use ") && $0.hasSuffix("'s accounts") }),
-          unpaired.contains("Hand back to providers"), unpaired.contains("Start at login"), unpaired.contains("Reset alerts") else {
+          unpaired.contains("Hand back to providers on this Mac"), unpaired.contains("Start at login"), unpaired.contains("Reset alerts") else {
         fail("An unpaired Mac offers handing back, not a host: \(unpaired)")
     }
 
     delegate.applyMenuState(state(RemoteInfo(role: "client", host: "Studio", connected: false), handedBack: false))
     let useHost = toggle("Use Studio's accounts", in: delegate.menu)
-    guard useHost.isOn, !toggle("Hand back to providers", in: delegate.menu).isOn else {
+    guard useHost.isOn, !toggle("Hand back to providers on this Mac", in: delegate.menu).isOn else {
         fail("A Mac using its host shows the host switch on and hand-back off")
     }
     useHost.onChanged?(false)
@@ -515,9 +518,9 @@ func runHostAndHandBackFixtures() {
     delegate.applyMenuState(state(RemoteInfo(role: "local", host: "Studio"), handedBack: false))
     guard !toggle("Use Studio's accounts", in: delegate.menu).isOn else { fail("A host not in use shows its switch off") }
     requests.removeAll(); completions.removeAll()
-    toggle("Hand back to providers", in: delegate.menu).onChanged?(true)
+    toggle("Hand back to providers on this Mac", in: delegate.menu).onChanged?(true)
     guard confirmations == 1, requests.isEmpty else { fail("Declining the question must hand nothing back") }
-    toggle("Hand back to providers", in: delegate.menu).onChanged?(true)
+    toggle("Hand back to providers on this Mac", in: delegate.menu).onChanged?(true)
     guard confirmations == 2, let handBack = requests.first(where: { $0.url?.path == "/api/handback" }),
           json(handBack)["enabled"] as? Bool == true else {
         fail("Handing back must ask, then post the hand-back")
@@ -525,11 +528,39 @@ func runHostAndHandBackFixtures() {
 
     delegate.applyMenuState(state(nil, handedBack: true))
     requests.removeAll(); completions.removeAll()
-    guard toggle("Hand back to providers", in: delegate.menu).isOn else { fail("A handed-back Mac shows hand-back on") }
-    toggle("Hand back to providers", in: delegate.menu).onChanged?(false)
-    guard confirmations == 2, let setUp = requests.first(where: { $0.url?.path == "/api/handback" }),
+    guard toggle("Hand back to providers on this Mac", in: delegate.menu).isOn else { fail("A handed-back Mac shows hand-back on") }
+    toggle("Hand back to providers on this Mac", in: delegate.menu).onChanged?(false)
+    guard confirmations == 3, let setUp = requests.first(where: { $0.url?.path == "/api/handback" }),
           json(setUp)["enabled"] as? Bool == false else {
-        fail("Setting up again must not ask, and must post the setup")
+        fail("Setting up again must ask too, then post the setup")
+    }
+    guard askedHosts.first == "Studio" else { fail("The question must name the paired host it leaves alone") }
+    let question = handBackConfirmation(on: true, host: "Studio")
+    guard question.informativeText.hasPrefix("Only this Mac's Switcher changes; Studio's Switcher stays as it is."),
+          handBackConfirmation(on: false, host: nil).messageText == "Set Switcher up again on this Mac?" else {
+        fail("Both questions must say only this Mac changes: \(question.informativeText)")
+    }
+    // A Mac using its host offers to update the host's Switcher, after asking.
+    delegate.applyMenuState(state(RemoteInfo(role: "client", host: "Studio", connected: true,
+        host_update: HostUpdateInfo(current: "1.21.0", latest: "v1.22.0", update_available: true, remote_update: true)), handedBack: false))
+    requests.removeAll(); completions.removeAll()
+    guard let hostButton = views(NSButton.self, in: delegate.menu).first(where: { $0.title == "Update Studio to 1.22.0" }) else {
+        fail("A Mac using its host must offer to update it")
+    }
+    hostButton.performClick(nil)
+    guard hostAsks == 1, let hostUpdate = requests.first(where: { $0.url?.path == "/api/remote/host-update" }),
+          json(hostUpdate)["action"] as? String == "install", hostUpdate.timeoutInterval >= 600 else {
+        fail("Updating the host must ask, then ask this Mac's server to have the host install")
+    }
+    delegate.applyMenuState(state(RemoteInfo(role: "local", host: "Studio",
+        host_update: HostUpdateInfo(latest: "v1.22.0", update_available: true, remote_update: true)), handedBack: false))
+    guard !views(NSButton.self, in: delegate.menu).contains(where: { $0.title.hasPrefix("Update Studio") }) else {
+        fail("Only a Mac using its host offers the host's update in the menu")
+    }
+    delegate.applyMenuState(state(RemoteInfo(role: "client", host: "Studio", connected: true,
+        host_update: HostUpdateInfo(current: "1.19.0", latest: "v1.22.0", update_available: true, remote_update: false)), handedBack: false))
+    guard !views(NSButton.self, in: delegate.menu).contains(where: { $0.title.hasPrefix("Update Studio") }) else {
+        fail("A host too old to take updates from here must not be offered one")
     }
     print("Paired host and hand-back switches: OK")
 }

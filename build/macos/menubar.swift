@@ -90,6 +90,7 @@ struct InstallProgress: Codable, Equatable {
 }
 
 struct UpdateProgressResponse: Decodable {
+    var latest: String? = nil   // the release being installed, after the fresh check
     let install: InstallProgress?
 }
 
@@ -126,6 +127,32 @@ struct RemoteInfo: Codable, Equatable {
     let role: String?
     var host: String? = nil
     var connected: Bool? = nil
+    var host_update: HostUpdateInfo? = nil
+}
+
+// HostUpdateInfo is the paired host's Switcher version and update, so this
+// Mac can update the host without going to it.
+struct HostUpdateInfo: Codable, Equatable {
+    var current: String? = nil
+    var latest: String? = nil
+    var update_available: Bool? = nil
+    var remote_update: Bool? = nil   // the host takes updates from here
+    var install: HostInstall? = nil
+    struct HostInstall: Codable, Equatable {
+        let step: String?
+        let fraction: Double?
+    }
+}
+
+func hostUpdateConfirmation(host: String, release: String) -> NSAlert {
+    let alert = NSAlert()
+    alert.messageText = "Update \(host) to Switcher \(release)?"
+    alert.informativeText = "\(host) downloads the release, installs it and restarts. Its tools, and every Mac that uses it, pause for a moment. Nothing changes on this Mac."
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Update")
+    alert.buttons[0].keyEquivalent = "\r"
+    alert.buttons[1].keyEquivalent = ""
+    return alert
 }
 
 struct AppState: Codable, Equatable {
@@ -519,12 +546,23 @@ struct AccountActivationResponse: Decodable {
     struct NativeResult: Decodable { let message: String? }
 }
 
-func handBackConfirmation() -> NSAlert {
+// handBackConfirmation asks before the hand-back switch changes how this
+// Mac's tools are routed, either way. Only this Mac's Switcher changes; a
+// paired host is named so nobody takes it for the host's switch.
+func handBackConfirmation(on: Bool, host: String?) -> NSAlert {
     let alert = NSAlert()
-    alert.messageText = "Hand your tools back to their providers?"
-    alert.informativeText = "Codex gets its previous provider back, Claude Desktop its settings, and sharing turns off. Claude Code and Codex keep a login of their own. Switcher then stops using its accounts until you turn this off, which sets everything up again."
+    let only = "Only this Mac's Switcher changes" + (host.map { "; \($0)'s Switcher stays as it is" } ?? "") + "."
+    if on {
+        alert.messageText = "Hand this Mac's tools back to their providers?"
+        alert.informativeText = only + " Codex gets its previous provider back, Claude Desktop its settings, and this Mac stops sharing"
+            + (host.map { " and stops using \($0)'s accounts" } ?? "")
+            + ". Claude Code and Codex keep a login of their own. Switcher then routes nothing and uses none of its accounts until you set it up again."
+    } else {
+        alert.messageText = "Set Switcher up again on this Mac?"
+        alert.informativeText = only + " Codex and Claude Desktop go through Switcher again and it uses its accounts again, as before the hand-back. Restart Claude Desktop afterwards."
+    }
     alert.addButton(withTitle: "Cancel")
-    alert.addButton(withTitle: "Hand back")
+    alert.addButton(withTitle: on ? "Hand back" : "Set up again")
     alert.buttons[0].keyEquivalent = "\r"
     alert.buttons[1].keyEquivalent = ""
     return alert
@@ -1141,12 +1179,20 @@ struct MenuRuntime {
         alert.runModal()
         #endif
     }
-    var confirmHandBack: () -> Bool = {
+    var confirmHostUpdate: (_ host: String, _ release: String) -> Bool = { host, release in
         #if SWITCHER_LAYOUT_TEST
         return true
         #else
         NSApp.activate(ignoringOtherApps: true)
-        return handBackConfirmation().runModal() == .alertSecondButtonReturn
+        return hostUpdateConfirmation(host: host, release: release).runModal() == .alertSecondButtonReturn
+        #endif
+    }
+    var confirmHandBack: (_ on: Bool, _ host: String?) -> Bool = { on, host in
+        #if SWITCHER_LAYOUT_TEST
+        return true
+        #else
+        NSApp.activate(ignoringOtherApps: true)
+        return handBackConfirmation(on: on, host: host).runModal() == .alertSecondButtonReturn
         #endif
     }
     var terminateApplication: () -> Void = {
@@ -1299,6 +1345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var usageRefreshRunning = false
     private var refreshButton: SpinnerButton?
     private var updateActionRunning = false
+    private var hostUpdateRunning = false   // this Mac asked its host to update
     private var updateGeneration = 0
     private(set) var installProgress: InstallProgress?   // set while an install runs
     private var installRelease: String?
@@ -1926,6 +1973,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             menu.addItem(menuItemWithView(feedback))
         }
 
+        if let row = hostUpdateRow(contentWidth: contentWidth) {
+            menu.addItem(menuItemWithView(centered(row, verticalPadding: 4)))
+        }
+
         menu.addItem(menuItemWithView(centered(settingsCard(contentWidth: contentWidth,
             alerts: state?.reset_notifications == true), verticalPadding: 4)))
 
@@ -2114,7 +2165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 cachedState?.remote?.role == "client", { [weak self] in self?.toggleUseHost() }))
         }
         if cachedState != nil {
-            toggles.append(("Hand back to providers", "Undo Switcher's setup so your tools use their providers directly, for example before removing Switcher",
+            toggles.append(("Hand back to providers on this Mac", "Undo this Mac's Switcher setup so its tools use their providers directly, for example before removing Switcher. A paired host is not changed",
                 cachedState?.handed_back == true, { [weak self] in self?.toggleHandBack() }))
         }
         let rows = CGFloat(toggles.count + (alerts ? 1 : 0))
@@ -2606,7 +2657,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self.performRequest(self.makeRequest(path: "api/update", timeout: 2)) { [weak self] data, response, _ in
                 guard let self = self, !self.quitting, self.updateGeneration == generation else { return }
                 if (response as? HTTPURLResponse)?.statusCode == 200, let data = data,
-                   let progress = (try? JSONDecoder().decode(UpdateProgressResponse.self, from: data))?.install {
+                   let answer = try? JSONDecoder().decode(UpdateProgressResponse.self, from: data),
+                   let progress = answer.install {
+                    // The install checks for the newest release first, which
+                    // may be newer than the one the menu knew.
+                    if let latest = answer.latest, latest != self.installRelease {
+                        self.installRelease = latest
+                        self.rebuildMenu()
+                    }
                     self.showInstallProgress(progress)
                 }
                 self.pollInstallProgress(generation: generation)
@@ -2695,14 +2753,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
-    // Hand every tool back to its provider, after asking, or set Switcher up
-    // again.
+    // hostUpdateRow offers to update the paired host's Switcher while this
+    // Mac uses it, and follows the host's install once it runs.
+    func hostUpdateRow(contentWidth: CGFloat) -> NSView? {
+        guard let remote = cachedState?.remote, remote.role == "client", let host = remote.host,
+              let update = remote.host_update, update.remote_update == true, let latest = update.latest,
+              update.update_available == true || update.install != nil || hostUpdateRunning else { return nil }
+        let release = latest.hasPrefix("v") ? String(latest.dropFirst()) : latest
+        var title = "Update \(host) to \(release)"
+        if let install = update.install, install.step != "updating" {
+            let steps = ["downloading": "Downloading", "checking": "Checking", "installing": "Installing", "restarting": "Restarting"]
+            title = "Updating \(host): \(steps[install.step ?? ""] ?? "working")"
+            if install.step == "downloading", let fraction = install.fraction { title += " \(Int(fraction * 100))%" }
+        } else if hostUpdateRunning || update.install != nil {
+            title = "Updating \(host)…"
+        }
+        let card = cardView(width: contentWidth, height: 38)
+        let button = NSButton(title: title, target: self, action: #selector(updateHost))
+        button.isEnabled = !hostUpdateRunning && update.install == nil
+        button.isBordered = false
+        button.frame = NSRect(x: 0, y: 9, width: contentWidth, height: 20)
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: accentColor,
+            .paragraphStyle: centeredParagraph])
+        button.toolTip = update.current.map { "\(host) runs Switcher \($0)" }
+        card.addSubview(button)
+        return card
+    }
+
+    // updateHost has the paired host install the newest Switcher, after
+    // asking. The host downloads before it answers, so the request may take
+    // minutes; the state poll follows its progress meanwhile.
+    @objc func updateHost() {
+        guard let remote = cachedState?.remote, let host = remote.host, let latest = remote.host_update?.latest,
+              !hostUpdateRunning else { return }
+        let release = latest.hasPrefix("v") ? String(latest.dropFirst()) : latest
+        menu.cancelTracking()
+        guard runtime.confirmHostUpdate(host, release) else { rebuildMenu(); return }
+        hostUpdateRunning = true
+        menuActionMessage = ""
+        rebuildMenu()
+        post(path: "api/remote/host-update", body: ["action": "install"], timeout: 600) { [weak self] result in
+            guard let self = self else { return }
+            self.hostUpdateRunning = false
+            switch result {
+            case .success:
+                self.menuNote = "\(host) is restarting into Switcher \(release)"
+            case .failure(let error):
+                self.menuActionMessage = "\(host) was not updated"
+                self.runtime.showError("Could not update \(host)", error.localizedDescription)
+            }
+            self.fetchStateAsync()
+            self.rebuildMenu()
+        }
+    }
+
+    // Hand every tool back to its provider, or set Switcher up again; both
+    // change how this Mac's tools are routed, so both ask first.
     func toggleHandBack() {
         let on = cachedState?.handed_back != true
-        if on {
-            menu.cancelTracking()
-            guard runtime.confirmHandBack() else { rebuildMenu(); return }
-        }
+        menu.cancelTracking()
+        guard runtime.confirmHandBack(on, cachedState?.pairedHost) else { rebuildMenu(); return }
         menuActionMessage = on ? "Handing your tools back…" : "Setting Switcher up again…"
         rebuildMenu()
         post(path: "api/handback", body: ["enabled": on]) { [weak self] result in

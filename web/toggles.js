@@ -55,8 +55,21 @@ export function stepsHTML(steps) {
     </li>`).join('')}</ul>`;
 }
 
-// createHandback is the Settings card for handing the tools back.
-export function createHandback({ api, confirm = async () => true, toast = () => {}, onChange = () => {} }) {
+// handbackQuestion is what each direction of the switch asks. Either way it
+// changes how this computer's tools are routed, and only this computer's:
+// a paired host's Switcher stays as it is. The dialog escapes the text.
+export function handbackQuestion(on, { machine = 'Mac', host = '' } = {}) {
+  const only = `Only this ${machine}'s Switcher changes${host ? `; ${host}'s Switcher stays as it is` : ''}.`;
+  return on
+    ? { title: `Hand this ${machine}'s tools back to their providers?`, confirmLabel: 'Hand back', danger: true,
+      message: `${only} Codex gets its previous provider back, Claude Desktop its settings, and this ${machine} stops sharing${host ? ` and stops using ${host}'s accounts` : ''}. Switcher then routes nothing and uses none of its accounts until you set it up again.` }
+    : { title: `Set Switcher up again on this ${machine}?`, confirmLabel: 'Set up again',
+      message: `${only} Codex and Claude Desktop go through Switcher again and it uses its accounts again, as before the hand-back. Restart Claude Desktop afterwards.` };
+}
+
+// createHandback is the Settings card for handing the tools back. scope
+// names this computer and its paired host, if any.
+export function createHandback({ api, confirm = async () => true, toast = () => {}, onChange = () => {}, scope = () => ({ machine: 'Mac', host: '' }) }) {
   let view = null, status = null, busy = false, error = '';
   const post = body => api('/api/handback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -71,13 +84,15 @@ export function createHandback({ api, confirm = async () => true, toast = () => 
 
   function html() {
     const on = !!status?.handed_back;
+    const { machine, host } = scope();
     const sub = on
       ? 'Codex, Claude Code and Claude Desktop use their providers directly, with their own logins. Switcher uses none of its accounts: nothing is routed, refreshed or switched. You can remove Switcher now, or set it up again.'
       : 'Before you remove Switcher: undo its setup so Codex, Claude Code and Claude Desktop talk to OpenAI and Anthropic directly and keep working without it. Turning this off sets everything up again.';
+    const only = `Only this ${machine}'s Switcher changes${host ? `; ${escape(host)}'s Switcher stays as it is` : ''}.`;
     return `<div class="settings-card handback-card">
-      <div class="set-card-head"><h3>Hand back to the providers</h3><p class="settings-sub">${sub}</p></div>
+      <div class="set-card-head"><h3>Hand back to the providers</h3><p class="settings-sub">${sub} ${only}</p></div>
       <div class="settings-row">
-        <div><strong>Hand back</strong><span class="dim">${status?.incomplete ? 'Stopped halfway; turn it off to set Switcher up again, then hand back again' : on ? 'On' : 'Off'}</span></div>
+        <div><strong>Hand back on this ${machine}</strong><span class="dim">${status?.incomplete ? 'Stopped halfway; turn it off to set Switcher up again, then hand back again' : on ? 'On' : 'Off'}</span></div>
         <label class="switch-wrap"><input type="checkbox" data-handback-switch aria-label="Hand every tool back to its provider" ${on ? 'checked' : ''} ${busy || !status ? 'disabled' : ''}><span class="switch-visual"></span></label>
       </div>
       ${busy ? `<p class="settings-sub" role="status">${on ? 'Setting Switcher up again…' : 'Handing your tools back…'}</p>` : ''}
@@ -95,8 +110,7 @@ export function createHandback({ api, confirm = async () => true, toast = () => 
   // set hands back (true) or sets Switcher up again (false).
   async function set(on) {
     if (busy) return false;
-    if (on && !await confirm({ title: 'Hand your tools back?', confirmLabel: 'Hand back', danger: true,
-      message: 'Codex gets its previous provider back, Claude Desktop its settings, and sharing turns off. Switcher then stops using its accounts until you set it up again.' })) {
+    if (!await confirm(handbackQuestion(on, scope()))) {
       render();
       return false;
     }

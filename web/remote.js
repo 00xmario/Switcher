@@ -28,10 +28,17 @@ function ring(value, now, total = 600) {
 
 const MAC_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="10.5" rx="1.8"/><path d="M2 18.5h20"/></svg>';
 
-export function createRemote({ api, confirm = async () => true, onConnectionChange = () => {}, now = () => Date.now(), machine = () => 'Mac' }) {
+// UPDATE_STEPS names a host's install steps.
+const UPDATE_STEPS = { downloading: 'Downloading', checking: 'Checking', installing: 'Installing', restarting: 'Restarting', updating: 'Updating' };
+
+export function createRemote({ api, confirm = async () => true, onConnectionChange = () => {}, now = () => Date.now() }) {
   // error belongs to the last action and stays until the next one; loadError
   // is the status poll's own.
   let view = null, status = null, found = null, scanning = false, busy = '', error = '', loadError = '', target = null, timer = null;
+  // hostUpdate is the paired host's Switcher version and update, if known;
+  // it is asked for apart from the status, at most once a minute unless an
+  // update runs, so a slow host never holds up this page.
+  let hostUpdate = null, hostFetchedAt = 0, hostFetching = false;
 
   async function load() {
     try {
@@ -39,6 +46,27 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       loadError = '';
     } catch (e) {
       loadError = e.message || 'Could not load sharing status.';
+    }
+    render();
+    await loadHostUpdate();
+  }
+
+  // loadHostUpdate asks the host about its Switcher while this Mac uses it
+  // and reaches it; one working without its host asks only on Check.
+  async function loadHostUpdate() {
+    const client = status?.client;
+    if (!client?.connected) {
+      hostUpdate = null;
+      return;
+    }
+    const updating = busy === 'host-update' || hostUpdate?.install;
+    if (client.local_only || !client.reachable || hostFetching || (!updating && now() - hostFetchedAt < 60000)) return;
+    hostFetching = true;
+    try {
+      hostUpdate = (await api('/api/remote/host-update')).host_update || null;
+      hostFetchedAt = now();
+    } catch { /* the host may be restarting; keep what was known */ } finally {
+      hostFetching = false;
     }
     render();
   }
@@ -88,7 +116,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       </div>
       ${host.enabled ? `
         ${host.error ? `<p class="remote-error">${escape(host.error)}</p>` : ''}
-        ${chips.length ? `<div class="set-chips" aria-label="Addresses of this ${machine()}">${chips.map(c => `<button type="button" class="set-chip" data-remote-copy="${escape(c.a)}" title="${c.kind}: click to copy">${c.icon}<code>${escape(c.a)}</code></button>`).join('')}</div>` : ''}
+        ${chips.length ? `<div class="set-chips" aria-label="Addresses of this ${mac()}">${chips.map(c => `<button type="button" class="set-chip" data-remote-copy="${escape(c.a)}" title="${c.kind}: click to copy">${c.icon}<code>${escape(c.a)}</code></button>`).join('')}</div>` : ''}
         ${host.pairing ? `<div class="remote-code" role="status">
             ${ring(host.pairing.expires_at, now())}
             <div><span class="remote-code-label">Enter this code on the other Mac</span>
@@ -101,6 +129,32 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
             <button type="button" class="quiet danger" data-remote-action="revoke" data-remote-id="${escape(d.id)}" ${busy ? 'disabled' : ''}>Remove</button>
           </li>`).join('')}</ul>` : '<p class="set-foot">No Macs paired yet. Pair one with a code; it stays paired until you remove it.</p>'}` : ''}
     </div>`;
+  }
+
+  // hostUpdateHTML offers to update the paired host's Switcher from here.
+  function hostUpdateHTML(name) {
+    const u = hostUpdate;
+    if (!u) {
+      // Working without the host: it is asked only when you check.
+      return status?.client?.local_only ? `<div class="settings-row">
+          <div><strong>Switcher on ${name}</strong><span class="dim">Check whether an update is out for it</span></div>
+          <button type="button" data-remote-action="host-update-check" ${busy ? 'disabled' : ''}>${busy === 'host-update-check' ? 'Checking…' : 'Check'}</button>
+        </div>` : '';
+    }
+    const latest = escape((u.latest || '').replace(/^v/, ''));
+    const version = u.current ? `Switcher ${escape(u.current)}` : 'Switcher';
+    if (!u.remote_update) {
+      return `<div class="settings-row">
+          <div><strong>Switcher on ${name}</strong><span class="dim">${version}. Update it on ${name} once; after that you can update it from here.</span></div>
+        </div>`;
+    }
+    const progress = u.install ? ` · ${escape(UPDATE_STEPS[u.install.step] || 'Updating')}${u.install.step === 'downloading' ? ` ${Math.round((u.install.fraction || 0) * 100)}%` : ''}` : '';
+    return `<div class="settings-row">
+        <div><strong>Switcher on ${name}</strong><span class="dim">${version}${u.update_available ? ` · ${latest} is out` : ' · up to date'}${progress}</span></div>
+        ${u.update_available
+          ? `<button type="button" class="primary" data-remote-action="host-update" ${busy || u.install ? 'disabled' : ''}>${busy === 'host-update' || u.install ? 'Updating…' : `Update to ${latest}`}</button>`
+          : `<button type="button" data-remote-action="host-update-check" ${busy ? 'disabled' : ''}>${busy === 'host-update-check' ? 'Checking…' : 'Check'}</button>`}
+      </div>`;
   }
 
   function clientHTML(client) {
@@ -119,6 +173,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
             : `Turn off if ${name} stops working: this ${mac()} then works on its own and stays paired.`}</span></div>
           <label class="switch-wrap"><input type="checkbox" data-remote-action="use-host" aria-label="Use the accounts of ${name}" ${local ? '' : 'checked'} ${busy ? 'disabled' : ''}><span class="switch-visual"></span></label>
         </div>
+        ${hostUpdateHTML(name)}
         ${!local && !client.reachable && client.error ? `<p class="remote-error">${escape(client.error)}</p>` : ''}
         <p class="settings-sub">${local
           ? `Nothing goes to ${name} now: this ${mac()}'s own accounts, usage checks, Codex and Claude routing all run here.`
@@ -150,7 +205,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     else if (t.enabled && t.error) detail = `<p class="remote-error">${escape(t.error)}</p>`;
     else if (t.enabled && !t.running) detail = '<p class="settings-sub">Starting…</p>';
     else if (t.enabled && t.state === 'NeedsLogin' && /^https:\/\//.test(t.auth_url || '')) detail = `<div class="remote-tailnet-login">
-        <p class="settings-sub">Sign in once to add this ${machine()} to your Tailscale network. Use the same Tailscale account on your other Macs.</p>
+        <p class="settings-sub">Sign in once to add this ${mac()} to your Tailscale network. Use the same Tailscale account on your other Macs.</p>
         <a class="button primary" href="${escape(t.auth_url)}" target="_blank" rel="noopener noreferrer">Sign in with Tailscale</a>
       </div>`;
     else if (t.enabled && t.state === 'Running') detail = `<p class="set-live"><span class="set-live-dot"></span>On Tailscale as <code>${escape(t.dns_name || t.name)}</code>${t.tailnet ? ` in ${escape(t.tailnet)}` : ''}. Your Macs find each other from anywhere.</p>`;
@@ -177,14 +232,14 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       flow = `<div class="flow is-off" aria-hidden="true">${node(me, 'uses its own accounts', true)}<div class="flow-wire"><span></span></div>${node(escape(client.host_name), 'paired, not in use')}</div>`;
       pill = '<span class="dr-status warn">Not in use</span>';
     } else if (client.connected) {
-      flow = `<div class="flow ${client.reachable ? 'is-on' : 'is-warn'}" aria-hidden="true">${node(me, `this ${machine()}`)}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(client.host_name), 'keeps the accounts', true)}</div>`;
+      flow = `<div class="flow ${client.reachable ? 'is-on' : 'is-warn'}" aria-hidden="true">${node(me, `this ${mac()}`)}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(client.host_name), 'keeps the accounts', true)}</div>`;
       pill = client.reachable ? '<span class="dr-status ok">Connected</span>' : '<span class="dr-status warn">Unreachable</span>';
     } else if (host?.enabled) {
       const n = host.devices.length;
-      flow = `<div class="flow is-on" aria-hidden="true">${node(n ? `${n} paired Mac${n === 1 ? '' : 's'}` : 'Your other Macs', n ? 'use these accounts' : 'pair one below')}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(host.name || status.device_name || `This ${machine()}`), `this ${machine()} keeps the accounts`, true)}</div>`;
+      flow = `<div class="flow is-on" aria-hidden="true">${node(n ? `${n} paired Mac${n === 1 ? '' : 's'}` : 'Your other Macs', n ? 'use these accounts' : 'pair one below')}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(host.name || status.device_name || `This ${mac()}`), `this ${mac()} keeps the accounts`, true)}</div>`;
       pill = '<span class="dr-status ok">Sharing</span>';
     } else {
-      flow = `<div class="flow is-off" aria-hidden="true">${node(me, `this ${machine()}`)}<div class="flow-wire"><span></span></div>${node('Your other Macs', 'not connected')}</div>`;
+      flow = `<div class="flow is-off" aria-hidden="true">${node(me, `this ${mac()}`)}<div class="flow-wire"><span></span></div>${node('Your other Macs', 'not connected')}</div>`;
       pill = '<span class="dr-status warn">Off</span>';
     }
     return `<div class="settings-card set-hero remote-hero">
@@ -262,10 +317,22 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
           view.querySelector('[data-remote-form] input[name="code"]')?.focus();
           return;
         case 'tailnet-remove':
-          if (!await confirm({ title: 'Remove the Tailscale add-on?', message: `This ${machine()} signs out of Tailscale and can only reach your other Macs at home again.`, confirmLabel: 'Remove', danger: true })) return;
+          if (!await confirm({ title: 'Remove the Tailscale add-on?', message: `This ${mac()} signs out of Tailscale and can only reach your other Macs at home again.`, confirmLabel: 'Remove', danger: true })) return;
           return act('tailnet-remove', () => post('/api/remote/tailnet/remove'));
+        case 'host-update-check':
+          return act('host-update-check', async () => {
+            hostUpdate = (await post('/api/remote/host-update', { action: 'check' })).host_update || hostUpdate;
+            hostFetchedAt = now();
+          });
+        case 'host-update': {
+          const name = status?.client?.host_name || 'the host';
+          const latest = (hostUpdate?.latest || '').replace(/^v/, '');
+          if (!await confirm({ title: `Update ${name} to Switcher ${latest}?`, confirmLabel: 'Update',
+            message: `${name} downloads the release, installs it and restarts. Its tools, and every computer that uses it, pause for a moment. Nothing changes on this ${mac()}.` })) return;
+          return act('host-update', () => post('/api/remote/host-update', { action: 'install' }));
+        }
         case 'disconnect':
-          if (!await confirm({ title: `Stop using ${status?.client?.host_name || 'the other Mac'}?`, message: `This ${machine()} goes back to its own accounts.`, confirmLabel: 'Disconnect' })) return;
+          if (!await confirm({ title: `Stop using ${status?.client?.host_name || 'the other Mac'}?`, message: `This ${mac()} goes back to its own accounts.`, confirmLabel: 'Disconnect' })) return;
           if (await act('disconnect', () => post('/api/remote/disconnect'))) onConnectionChange(false);
           return;
       }

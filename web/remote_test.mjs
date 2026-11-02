@@ -82,3 +82,42 @@ test('a Linux Switcher calls itself a computer', async () => {
   assert.match(html, /this computer uses its own accounts/);
   assert.doesNotMatch(html, /this Mac uses its own accounts/);
 });
+
+test('a paired Mac shows its host\'s Switcher and offers to update it', async () => {
+  const status = { host: host(), client: { connected: true, host_name: 'Studio <Mac>', address: 'studio.local', reachable: true } };
+  let update = { host: 'Studio <Mac>', current: '1.21.0', latest: 'v1.22.0', update_available: true, remote_update: true };
+  let clock = now;
+  const remote = createRemote({ api: async path => path === '/api/remote/host-update' ? { host_update: update } : status, now: () => clock });
+  await remote.load();
+  let html = remote.html();
+  assert.match(html, /Switcher on Studio &lt;Mac&gt;<\/strong><span class="dim">Switcher 1\.21\.0 · 1\.22\.0 is out/);
+  assert.match(html, /data-remote-action="host-update"[^>]*>Update to 1\.22\.0/);
+
+  update = { ...update, install: { step: 'downloading', fraction: 0.42 } };
+  clock += 61000; // the host is asked at most once a minute unless it updates
+  await remote.load();
+  html = remote.html();
+  assert.match(html, /Downloading 42%/);
+  assert.match(html, /data-remote-action="host-update" disabled>Updating…/);
+
+  update = { host: 'Studio <Mac>', current: '1.22.0', latest: 'v1.22.0', update_available: false, remote_update: true };
+  await remote.load();
+  assert.match(remote.html(), /up to date[^]*data-remote-action="host-update-check"/);
+});
+
+test('an older host is updated on it once; a Mac working without its host asks only on Check', async () => {
+  const calls = [];
+  let status = { host: host(), client: { connected: true, host_name: 'Studio', address: 'studio.local', reachable: true } };
+  const update = { host: 'Studio', current: '1.19.0', update_available: false, remote_update: false };
+  const remote = createRemote({ api: async path => { calls.push(path); return path === '/api/remote/host-update' ? { host_update: update } : status; }, now: () => now });
+  await remote.load();
+  assert.match(remote.html(), /Switcher 1\.19\.0\. Update it on Studio once/);
+  assert.doesNotMatch(remote.html(), /data-remote-action="host-update"/);
+
+  status = { host: host(), client: { connected: true, local_only: true, host_name: 'Studio', address: 'studio.local', reachable: false } };
+  const local = createRemote({ api: async path => { calls.push(path); return path === '/api/remote/host-update' ? { host_update: update } : status; }, now: () => now });
+  calls.length = 0;
+  await local.load();
+  assert.equal(calls.filter(p => p === '/api/remote/host-update').length, 0, 'no host request while working without it');
+  assert.match(local.html(), /data-remote-action="host-update-check"/);
+});

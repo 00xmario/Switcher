@@ -254,8 +254,8 @@ func TestEveryMachineImportRequiresLoopbackIncludingCopilot(t *testing.T) {
 }
 
 type fakeUpdateChecker struct {
-	refreshes, installs atomic.Int32
-	checkErr            error
+	refreshes, installs, unattended atomic.Int32
+	checkErr                        error
 }
 
 func (c *fakeUpdateChecker) Check(context.Context) (update.State, error) {
@@ -271,6 +271,10 @@ func (c *fakeUpdateChecker) State() update.State {
 }
 func (c *fakeUpdateChecker) InstallAndRestart() error {
 	c.installs.Add(1)
+	return errors.New("fake install blocked")
+}
+func (c *fakeUpdateChecker) InstallAndRestartUnattended() error {
+	c.unattended.Add(1)
 	return errors.New("fake install blocked")
 }
 

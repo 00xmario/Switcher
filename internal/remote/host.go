@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -276,7 +277,14 @@ func (h *Host) Status() HostStatus {
 var remotePaths = []string{"/remote/", "/api/state", "/api/accounts/", "/api/usage/refresh", "/api/providers/", "/v0/management/",
 	"/codex/", "/claude/", "/grok/", "/opencode/", "/antigravity/", "/gemini/", "/copilot/"}
 
+// remoteExactPaths are single routes a paired device may use: checking for
+// and installing an update of this Switcher, an official release only.
+var remoteExactPaths = []string{"/api/update", "/api/update/check"}
+
 func allowedRemotePath(path string) bool {
+	if slices.Contains(remoteExactPaths, path) {
+		return true
+	}
 	for _, prefix := range remotePaths {
 		if path == prefix || strings.HasPrefix(path, prefix) {
 			return true

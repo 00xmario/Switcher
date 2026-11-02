@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { autostartHTML, createHandback, handbackBannerHTML, machineWord, remoteBannerHTML, stepsHTML } from './toggles.js';
+import { autostartHTML, createHandback, handbackBannerHTML, handbackQuestion, machineWord, remoteBannerHTML, stepsHTML } from './toggles.js';
 
 test('the banner offers to work without an unreachable host', () => {
   const offline = remoteBannerHTML({ role: 'client', host: 'Studio Mac', connected: false });
@@ -68,9 +68,26 @@ test('handing back asks first and reports the steps', async () => {
   assert.match(card.html(), /Switcher no longer uses its accounts/);
   assert.match(card.html(), /until you restart it/);
 
-  assert.equal(await card.set(false), true, 'setting up again needs no question');
-  assert.equal(asked, 2);
+  assert.equal(await card.set(false), true, 'setting up again asks too');
+  assert.equal(asked, 3);
   assert.deepEqual(changes, [true, false]);
+});
+
+test('both questions say only this computer changes, never its host', () => {
+  for (const on of [true, false]) {
+    const q = handbackQuestion(on, { machine: 'computer', host: 'Studio' });
+    assert.match(q.message, /^Only this computer's Switcher changes; Studio's Switcher stays as it is\./);
+    assert.match(q.title, /this computer/);
+  }
+  assert.match(handbackQuestion(true, { machine: 'Mac', host: 'Studio' }).message, /stops using Studio's accounts/);
+  assert.doesNotMatch(handbackQuestion(true, { machine: 'Mac' }).message, /Studio|undefined/);
+});
+
+test('the card names the host it leaves alone, escaped', async () => {
+  const card = createHandback({ api: async () => ({ handed_back: false, steps: [] }), scope: () => ({ machine: 'Mac', host: '<b>Studio</b>' }) });
+  await card.load();
+  assert.match(card.html(), /Only this Mac's Switcher changes; &lt;b&gt;Studio&lt;\/b&gt;'s Switcher stays as it is/);
+  assert.match(card.html(), /Hand back on this Mac/);
 });
 
 test('a refused hand-back shows why and stays off', async () => {

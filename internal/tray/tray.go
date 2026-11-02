@@ -259,6 +259,20 @@ func (c *Controller) Click(ctx context.Context, action string) {
 			what, done = "Setting Switcher up again", "Switcher is set up again"
 		}
 		run(what, done, func() error { return api.Post(ctx, "/api/handback", map[string]bool{"enabled": on}) })
+	case action == "host-update":
+		if st.Remote == nil {
+			return
+		}
+		host := st.Remote.Host
+		run("Updating "+host, host+" is updating and restarts when done", func() error {
+			// The host downloads before it answers; past this menu's own
+			// wait the update goes on, and the state shows its progress.
+			err := api.Post(ctx, "/api/remote/host-update", map[string]string{"action": "install"})
+			if err != nil && (errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout")) {
+				return nil
+			}
+			return err
+		})
 	case action == "autostart":
 		on := st.Autostart == nil || !st.Autostart.Enabled
 		run("Saving", "", func() error { return api.Post(ctx, "/api/autostart", map[string]bool{"enabled": on}) })

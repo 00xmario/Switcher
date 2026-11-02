@@ -34,6 +34,16 @@ type State struct {
 		Role      string `json:"role"` // client: using the host; local: paired, not using it
 		Host      string `json:"host"`
 		Connected bool   `json:"connected"`
+		// HostUpdate is the host's Switcher version and update, while used.
+		HostUpdate *struct {
+			Current   string `json:"current"`
+			Latest    string `json:"latest"`
+			Available bool   `json:"update_available"`
+			Remote    bool   `json:"remote_update"` // the host takes updates from here
+			Install   *struct {
+				Step string `json:"step"`
+			} `json:"install"`
+		} `json:"host_update"`
 	} `json:"remote"`
 	HandedBack bool `json:"handed_back"`
 	Autostart  *struct {
