@@ -85,6 +85,22 @@ func newCreditManager(t *testing.T, upstream *httptest.Server, on func(store.Acc
 		t.Fatal(err)
 	}
 	m.SetAutoUseResetPolicy(on)
+	// A redeemed reset starts a usage check of its own; it must finish before
+	// the test's directory goes, or its last save races the cleanup.
+	t.Cleanup(func() {
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			m.mu.Lock()
+			pending := false
+			for _, event := range m.resetEvents {
+				pending = pending || event.Pending
+			}
+			m.mu.Unlock()
+			if !pending {
+				return
+			}
+		}
+		t.Error("the usage check after a banked reset never finished")
+	})
 	return m, prov
 }
 
