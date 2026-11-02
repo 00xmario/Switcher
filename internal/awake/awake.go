@@ -78,15 +78,30 @@ type system interface {
 	battery() (percent int, onBattery bool, err error)
 	// stopLeftover ends an assertion holder left by an earlier Switcher.
 	stopLeftover(pid int)
+	// bridge keeps the computer awake for a little while on its own, across
+	// an update's restart; 0 when this system needs none.
+	bridge(allowDisplaySleep bool) int
 }
 
 // record is the file on disk: settings plus what must be undone after a
-// crash.
+// crash, and a session to resume after an update's restart.
 type record struct {
 	Settings
-	HolderPID  int  `json:"holder_pid,omitempty"`
-	LidApplied bool `json:"lid_applied,omitempty"`
+	HolderPID  int     `json:"holder_pid,omitempty"`
+	LidApplied bool    `json:"lid_applied,omitempty"`
+	Resume     *resume `json:"resume,omitempty"`
 }
+
+// resume is a session an update's restart interrupted.
+type resume struct {
+	Until int64 `json:"until"` // Unix seconds; 0 runs until turned off
+	At    int64 `json:"at"`    // when the restart began, Unix seconds
+}
+
+// resumeWithin is how soon the next Switcher must start to resume a
+// session. A restart that failed leaves the mark behind; a much later start
+// is a new day, not the update.
+const resumeWithin = 10 * time.Minute
 
 type session struct {
 	until     time.Time // zero: until turned off
@@ -104,6 +119,7 @@ type Manager struct {
 	path      string
 	settings  Settings
 	current   *session
+	resume    *resume // set just before an update restarts Switcher
 	ended     string
 	lastError string
 	now       func() time.Time
@@ -132,20 +148,91 @@ func newManager(path string, sys system, now func() time.Time, poll time.Duratio
 	if err == nil {
 		m.settings = rec.Settings
 	}
-	if rec.HolderPID > 0 {
+	// A session resumed after an update keeps the closed-lid setting the last
+	// Switcher left on, so a host with its lid closed never sleeps in between,
+	// and the holder it left ends only once the new one holds.
+	resuming := rec.Resume != nil && m.resumable(*rec.Resume)
+	if rec.HolderPID > 0 && !resuming {
 		sys.stopLeftover(rec.HolderPID)
 	}
-	if rec.LidApplied {
+	if rec.LidApplied && !resuming {
 		if err := sys.setSleepDisabled(false); err != nil {
 			log.Printf("awake: could not turn sleep back on after the last run: %v", err)
 		} else {
 			log.Print("awake: turned sleep back on after the last run")
 		}
 	}
-	if rec.HolderPID > 0 || rec.LidApplied {
-		m.saveLocked()
+	if rec.HolderPID > 0 || rec.LidApplied || rec.Resume != nil {
+		m.saveLockedWith(record{Settings: m.settings, LidApplied: rec.LidApplied && resuming})
+	}
+	if resuming {
+		m.resumeLocked(*rec.Resume, rec.LidApplied)
+		if rec.HolderPID > 0 {
+			sys.stopLeftover(rec.HolderPID)
+		}
 	}
 	return m
+}
+
+// resumable reports whether a session an update's restart interrupted runs
+// on: the restart was just now and the session has time left.
+func (m *Manager) resumable(r resume) bool {
+	now, at := m.now(), time.Unix(r.At, 0)
+	if now.Sub(at) > resumeWithin || now.Before(at.Add(-time.Minute)) {
+		return false
+	}
+	return r.Until == 0 || time.Unix(r.Until, 0).Sub(now) >= time.Minute
+}
+
+// resumeLocked starts again a session an update's restart interrupted. lid
+// says the closed-lid setting is still on from before; the session takes it
+// over, and turns it back on if it cannot start.
+func (m *Manager) resumeLocked(r resume, lid bool) {
+	var until time.Time
+	if r.Until != 0 {
+		until = time.Unix(r.Until, 0)
+	}
+	if err := m.startLocked(until, lid); err != nil {
+		log.Printf("awake: could not keep the computer awake again after the update: %v", err)
+		if lid {
+			m.restoreLidLocked(&session{lid: true})
+		}
+	}
+}
+
+// CancelRestart drops the mark KeepThroughRestart set, for a restart that
+// failed: a later start is not the update's.
+func (m *Manager) CancelRestart() {
+	if !m.Supported() {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resume != nil {
+		m.resume = nil
+		m.saveLocked()
+	}
+}
+
+// KeepThroughRestart marks a running session to resume once Switcher starts
+// again. The updater calls it right before it restarts Switcher; a quit or a
+// crash ends keep awake as before.
+func (m *Manager) KeepThroughRestart() {
+	if !m.Supported() {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.current
+	if c == nil {
+		return
+	}
+	r := &resume{At: m.now().Unix()}
+	if !c.until.IsZero() {
+		r.Until = c.until.Unix()
+	}
+	m.resume = r
+	m.saveLocked()
 }
 
 // Supported reports whether keep awake works on this system.
@@ -193,6 +280,7 @@ func (m *Manager) Start(d time.Duration) (State, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.resume = nil
 	var until time.Time
 	if d > 0 {
 		until = m.now().Add(d)
@@ -233,18 +321,34 @@ func (m *Manager) Stop() State {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.resume = nil
 	m.stopLocked("")
 	m.ended = ""
 	return m.stateLocked()
 }
 
-// Close stops keep awake for a shutting down Switcher.
+// Close stops keep awake for a shutting down Switcher. A session marked to
+// resume after an update is handed over instead: its closed-lid setting
+// stays on, for the next Switcher to take over.
 func (m *Manager) Close() {
 	if !m.Supported() {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if c := m.current; c != nil && m.resume != nil {
+		// The holder ends with this process; a bridge holds until the next
+		// Switcher does, and that one ends it.
+		bridge := m.sys.bridge(m.settings.AllowDisplaySleep)
+		if c.timer != nil {
+			c.timer.Stop()
+		}
+		close(c.done)
+		c.release()
+		m.current = nil
+		m.saveLockedWith(record{Settings: m.settings, HolderPID: bridge, LidApplied: c.lid, Resume: m.resume})
+		return
+	}
 	m.stopLocked("")
 }
 
@@ -383,7 +487,7 @@ func (m *Manager) stopLocked(reason string) {
 	m.ended = reason
 	// A sleep setting that could not be restored stays on record.
 	if c.lid {
-		m.saveLockedWith(record{Settings: m.settings, LidApplied: true})
+		m.saveLockedWith(record{Settings: m.settings, LidApplied: true, Resume: m.resume})
 		return
 	}
 	m.saveLocked()
@@ -394,6 +498,7 @@ func (m *Manager) end(c *session, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.current == c {
+		m.resume = nil
 		m.stopLocked(reason)
 	}
 }
@@ -436,7 +541,7 @@ func (m *Manager) load() (record, error) {
 }
 
 func (m *Manager) saveLocked() {
-	rec := record{Settings: m.settings}
+	rec := record{Settings: m.settings, Resume: m.resume}
 	if c := m.current; c != nil {
 		rec.HolderPID, rec.LidApplied = c.holderPID, c.lid
 	}

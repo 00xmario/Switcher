@@ -351,6 +351,8 @@ func run(port, desktopRelayPort int) {
 	updater := update.New(version)
 	keepAwake := awake.New(config.Dir())
 	defer keepAwake.Close()
+	// An update's restart keeps a running keep awake going.
+	updater.BeforeRestart, updater.RestartFailed = keepAwake.KeepThroughRestart, keepAwake.CancelRestart
 
 	// Background usage sync: the server owns freshness, so the web UI and
 	// the menu bar always agree without waiting for a client to poll.

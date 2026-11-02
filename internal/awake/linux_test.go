@@ -110,3 +110,26 @@ func TestLinuxRefusedInhibitorIsAnError(t *testing.T) {
 		t.Fatalf("refused inhibitor: %v", err)
 	}
 }
+
+// A Switcher that restarted in place keeps its process id, so the closed-lid
+// inhibitor it had kept running unrecorded; turning sleep back on ends it,
+// and only it.
+func TestALeftoverLidInhibitorIsEnded(t *testing.T) {
+	proc := t.TempDir()
+	write := func(pid string, args []string) {
+		os.MkdirAll(filepath.Join(proc, pid), 0o755)
+		os.WriteFile(filepath.Join(proc, pid, "cmdline"), []byte(strings.Join(args, "\x00")+"\x00"), 0o644)
+	}
+	write("101", append([]string{"/usr/bin/systemd-inhibit"}, inhibitArgs("handle-lid-switch", os.Getpid())...))
+	write("102", append([]string{"/usr/bin/systemd-inhibit"}, inhibitArgs("handle-lid-switch", os.Getpid()+1)...)) // another Switcher's
+	write("103", append([]string{"/usr/bin/systemd-inhibit"}, inhibitArgs("sleep:idle", os.Getpid())...))          // keep awake's own hold
+	write("104", []string{"/bin/sh", "-c", "while kill -0 1 2>/dev/null; do sleep 5; done"})
+	var killed []int
+	s := &linuxSystem{proc: proc, kill: func(pid int) { killed = append(killed, pid) }}
+	if err := s.setSleepDisabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if len(killed) != 1 || killed[0] != 101 {
+		t.Fatalf("ended %v, want only the leftover lid inhibitor", killed)
+	}
+}

@@ -27,6 +27,8 @@ type fakeSystem struct {
 	percent       int
 	onBattery     bool
 	leftoverStops []int
+	holdersAtStop []int
+	bridges       int
 }
 
 func (f *fakeSystem) hold(allowDisplaySleep bool) (func(), int, error) {
@@ -76,7 +78,21 @@ func (f *fakeSystem) battery() (int, bool, error) {
 	return f.percent, f.onBattery, nil
 }
 
-func (f *fakeSystem) stopLeftover(pid int) { f.leftoverStops = append(f.leftoverStops, pid) }
+func (f *fakeSystem) stopLeftover(pid int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// What still holds when the leftover goes: the bridge must outlast the
+	// new hold.
+	f.leftoverStops = append(f.leftoverStops, pid)
+	f.holdersAtStop = append(f.holdersAtStop, f.holders)
+}
+
+func (f *fakeSystem) bridge(bool) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bridges++
+	return 5150
+}
 
 func (f *fakeSystem) snapshot() (holders int, sleepOff bool, sets []bool) {
 	f.mu.Lock()
@@ -400,5 +416,85 @@ func TestParseBattery(t *testing.T) {
 	}
 	if _, _, err := parseBattery("Now drawing from 'AC Power'\n"); err == nil {
 		t.Error("a Mac without a battery reports an error")
+	}
+}
+
+// An update's restart keeps a running session going; the next Switcher
+// resumes it with its end time.
+func TestAnUpdateRestartKeepsKeepAwakeGoing(t *testing.T) {
+	for name, d := range map[string]time.Duration{"until turned off": 0, "two hours": 2 * time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			m, sys, path := newFixture(t)
+			if _, err := m.Update(Patch{LidClosed: boolPtr(true)}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := m.Start(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.KeepThroughRestart()
+			m.Close() // the old Switcher shuts down
+			if _, _, sleeps := sys.snapshot(); len(sleeps) != 1 || !sleeps[0] {
+				t.Fatalf("the closing Switcher touched the lid setting: %v", sleeps)
+			}
+			if sys.bridges != 1 {
+				t.Fatalf("no bridge held across the restart: %d", sys.bridges)
+			}
+			// The same computer, sleep still disabled for the closed lid.
+			next := &fakeSystem{ruleReady: true, percent: 80, sleepOff: true}
+			c := &clock{t: time.Unix(1_800_000_000, 0).Add(time.Minute)}
+			restarted := newManager(path, next, c.now, time.Hour)
+			t.Cleanup(restarted.Close)
+			state := restarted.State()
+			if !state.Active || state.Until != before.Until || !state.LidActive {
+				t.Fatalf("after the update: %+v", state)
+			}
+			if _, _, sleeps := next.snapshot(); len(sleeps) != 0 {
+				t.Fatalf("sleep came back during the update: %v", sleeps)
+			}
+			if len(next.leftoverStops) != 1 || next.leftoverStops[0] != 5150 || next.holdersAtStop[0] != 1 {
+				t.Fatalf("the bridge must end only once the new hold runs: stops=%v holders=%v", next.leftoverStops, next.holdersAtStop)
+			}
+			restarted.Stop()
+			if _, _, sleeps := next.snapshot(); len(sleeps) != 1 || sleeps[0] {
+				t.Fatalf("stopping after the update must turn sleep back on: %v", sleeps)
+			}
+		})
+	}
+}
+
+func TestOnlyAJustRestartedSwitcherResumesKeepAwake(t *testing.T) {
+	cases := map[string]struct {
+		later  time.Duration
+		stop   bool
+		cancel bool
+		d      time.Duration
+	}{
+		"started much later":   {later: 11 * time.Minute},
+		"stopped before":       {later: time.Minute, stop: true},
+		"session already over": {later: 9 * time.Minute, d: 5 * time.Minute},
+		"restart failed":       {later: time.Minute, cancel: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			m, _, path := newFixture(t)
+			if _, err := m.Start(tc.d); err != nil {
+				t.Fatal(err)
+			}
+			m.KeepThroughRestart()
+			if tc.stop {
+				m.Stop()
+			}
+			if tc.cancel {
+				m.CancelRestart()
+			}
+			m.Close()
+			c := &clock{t: time.Unix(1_800_000_000, 0).Add(tc.later)}
+			restarted := newManager(path, &fakeSystem{ruleReady: true, percent: 80}, c.now, time.Hour)
+			t.Cleanup(restarted.Close)
+			if restarted.State().Active {
+				t.Fatal("keep awake resumed")
+			}
+		})
 	}
 }

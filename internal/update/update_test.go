@@ -352,3 +352,34 @@ func TestConcurrentReplacementsAreSerialized(t *testing.T) {
 	}
 	assertFixtureFile(t, f.current, "new fixture", 0o755)
 }
+
+// Releases out since the last check are skipped over: the install takes the
+// newest, not the one cached hours ago.
+func TestAnInstallTakesTheNewestRelease(t *testing.T) {
+	c := New("1.15.0")
+	c.latest, c.lastCheck = "v1.16.0", time.Now()
+	c.metadataFetch = func(context.Context) (string, error) { return "v1.20.0", nil }
+	c.refreshForInstall()
+	if got := c.Latest(); got != "v1.20.0" {
+		t.Fatalf("installs %s", got)
+	}
+	// A failed check still installs the newest release known.
+	c.metadataFetch = func(context.Context) (string, error) { return "", errors.New("offline") }
+	c.refreshForInstall()
+	if got := c.Latest(); got != "v1.20.0" {
+		t.Fatalf("after a failed check installs %s", got)
+	}
+}
+
+func TestBeforeRestartRunsRightBeforeTheRestart(t *testing.T) {
+	f := newInstallFixture(t)
+	var order []string
+	f.checker.BeforeRestart = func() { order = append(order, "before") }
+	f.ops.exec = func(string) error { order = append(order, "exec"); return nil }
+	if err := f.checker.installAndRestart(f.ops); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "before,exec" {
+		t.Fatalf("order: %v", order)
+	}
+}

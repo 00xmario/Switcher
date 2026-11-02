@@ -457,3 +457,36 @@ func TestRelaunchScriptStopsBothProcessesThenOpensTheApp(t *testing.T) {
 		}
 	}
 }
+
+// An install another computer asked for never waits on a password prompt
+// nobody here can answer: it is refused before anything is downloaded.
+func TestAnUnattendedInstallNeverAsksForAPassword(t *testing.T) {
+	f := newAppFixture(t)
+	f.writable = false
+	f.ops.unattended = true
+	if err := f.install(); !errors.Is(err, ErrNeedsAdministrator) || f.downloads != 0 {
+		t.Fatalf("unattended install into an administrator's folder: %v, downloads=%d", err, f.downloads)
+	}
+}
+
+// Keep awake is marked to resume before the app is replaced, since the menu
+// bar may quit on seeing the new app before the restart; a restart that fails
+// drops the mark again.
+func TestTheRestartIsAnnouncedBeforeTheAppIsReplaced(t *testing.T) {
+	f := newAppFixture(t)
+	var order []string
+	f.checker.BeforeRestart = func() { order = append(order, "before") }
+	f.checker.RestartFailed = func() { order = append(order, "failed") }
+	copyApp := f.ops.copyApp
+	f.ops.copyApp = func(ctx context.Context, from, to string) error {
+		order = append(order, "copy")
+		return copyApp(ctx, from, to)
+	}
+	f.ops.restart = func(string, string) error { order = append(order, "restart"); return errors.New("open failed") }
+	if err := f.install(); err == nil {
+		t.Fatal("a failed restart reported success")
+	}
+	if strings.Join(order, ",") != "before,copy,restart,failed" {
+		t.Fatalf("order: %v", order)
+	}
+}

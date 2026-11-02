@@ -70,6 +70,11 @@ type Checker struct {
 	metadataTimeout time.Duration                         // fixture timeout, capped at 20s
 	installMu       sync.Mutex
 	install         *Progress // the install in flight, guarded by mu
+
+	// BeforeRestart runs right before an installed update restarts
+	// Switcher, for what should outlive the restart (keep awake), and
+	// RestartFailed when that restart did not happen.
+	BeforeRestart, RestartFailed func()
 }
 
 const metadataCheckTimeout = 20 * time.Second
@@ -94,7 +99,7 @@ func (c *Checker) State() State {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.stateLocked()
-	if time.Since(c.lastCheck) > 6*time.Hour {
+	if time.Since(c.lastCheck) > time.Hour {
 		c.startCheckLocked()
 	}
 	return state
@@ -400,6 +405,30 @@ func part(parts []string, i int) int {
 	return n
 }
 
+// refreshForInstall checks for the newest release right before an install,
+// so releases out since the last check are skipped over, not installed one
+// at a time. A failed check installs the newest release known so far.
+func (c *Checker) refreshForInstall() {
+	if c.restarting() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), metadataCheckTimeout)
+	defer cancel()
+	_, _ = c.Check(ctx)
+}
+
+func (c *Checker) beforeRestart() {
+	if c.BeforeRestart != nil {
+		c.BeforeRestart()
+	}
+}
+
+func (c *Checker) restartFailed() {
+	if c.RestartFailed != nil {
+		c.RestartFailed()
+	}
+}
+
 // InstallAndRestart installs the latest release and restarts into it.
 //
 // Inside Switcher.app the whole app is replaced (installApp). A plain binary
@@ -407,7 +436,20 @@ func part(parts []string, i int) int {
 // exec-restarted; the process image is replaced, so that call never returns
 // on success. The app path returns nil once the new app is in place and its
 // restart is under way.
-func (c *Checker) InstallAndRestart() error {
+func (c *Checker) InstallAndRestart() error { return c.installAndRestartFor(false) }
+
+// InstallAndRestartUnattended is InstallAndRestart for a request from
+// another computer, such as a paired Mac updating its host. Nobody is at
+// this one to answer an administrator password prompt, so an install that
+// needs one is refused before anything is downloaded.
+func (c *Checker) InstallAndRestartUnattended() error { return c.installAndRestartFor(true) }
+
+// ErrNeedsAdministrator refuses an unattended install that would ask for
+// an administrator password.
+var ErrNeedsAdministrator = errors.New("Switcher.app is in a folder only an administrator can change; update it on this computer")
+
+func (c *Checker) installAndRestartFor(unattended bool) error {
+	c.refreshForInstall()
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve running binary: %w", err)
@@ -416,7 +458,9 @@ func (c *Checker) InstallAndRestart() error {
 		return fmt.Errorf("resolve running binary: %w", err)
 	}
 	if bundle, ok := appBundle(exe); ok && runtime.GOOS == "darwin" {
-		return c.installApp(bundle, exe, systemAppOps())
+		ops := systemAppOps()
+		ops.unattended = unattended
+		return c.installApp(bundle, exe, ops)
 	}
 	return c.installAndRestart(installOps{
 		tempDir: os.MkdirTemp,
@@ -626,7 +670,9 @@ func (c *Checker) installAndRestart(ops installOps) error {
 
 	log.Printf("update: installed %s, restarting", latest)
 	c.setStep("restarting", 1)
+	c.beforeRestart()
 	if err := ops.exec(current); err != nil {
+		c.restartFailed()
 		return rollback(fmt.Errorf("restart updated binary: %w", err))
 	}
 	return nil

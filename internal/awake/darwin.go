@@ -46,6 +46,24 @@ func (darwinSystem) hold(allowDisplaySleep bool) (func(), int, error) {
 	return release, cmd.Process.Pid, nil
 }
 
+// bridge holds the Mac awake for two minutes in its own session, so an
+// update's restart, which ends this process and its caffeinate, leaves no
+// gap for idle sleep. The next Switcher ends it once its own hold runs.
+func (darwinSystem) bridge(allowDisplaySleep bool) int {
+	args := []string{"-i", "-m", "-t", "120"}
+	if !allowDisplaySleep {
+		args = append(args, "-d")
+	}
+	cmd := exec.Command(caffeinate, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return 0
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	return pid
+}
+
 var sleepDisabledLine = regexp.MustCompile(`(?m)^\s*SleepDisabled\s+(\d)`)
 
 func (darwinSystem) sleepDisabled() (bool, error) {

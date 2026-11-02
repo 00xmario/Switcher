@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ var afterStart = func() <-chan time.Time { return time.After(300 * time.Millisec
 type linuxSystem struct {
 	inhibit string // systemd-inhibit
 	power   string // /sys/class/power_supply, a fixture in tests
+	proc    string // /proc, to find a lid inhibitor left behind; "" skips that
+	kill    func(pid int)
 
 	mu  sync.Mutex
 	lid func() // releases the closed-lid inhibitor
@@ -38,7 +41,7 @@ var inhibitPaths = []string{"/usr/bin/systemd-inhibit", "/bin/systemd-inhibit"}
 func newLinuxSystem() system {
 	for _, path := range inhibitPaths {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return &linuxSystem{inhibit: path, power: "/sys/class/power_supply"}
+			return &linuxSystem{inhibit: path, power: "/sys/class/power_supply", proc: "/proc"}
 		}
 	}
 	return nil
@@ -105,17 +108,52 @@ func (s *linuxSystem) setSleepDisabled(on bool) error {
 			s.lid()
 			s.lid = nil
 		}
+		s.endLeftoverLid(0)
 		return nil
 	}
 	if s.lid != nil {
 		return nil
 	}
-	release, _, err := s.start("handle-lid-switch")
+	release, pid, err := s.start("handle-lid-switch")
 	if err != nil {
 		return err
 	}
 	s.lid = release
+	// The new one holds the lid first, so it is never free in between.
+	s.endLeftoverLid(pid)
 	return nil
+}
+
+// endLeftoverLid ends closed-lid inhibitors this process did not start but
+// that watch it: a Switcher that updated restarts in place, with the same
+// process id, so its inhibitor kept running unrecorded. keep is spared.
+func (s *linuxSystem) endLeftoverLid(keep int) {
+	if s.proc == "" {
+		return
+	}
+	entries, err := os.ReadDir(s.proc)
+	if err != nil {
+		return
+	}
+	want := inhibitArgs("handle-lid-switch", os.Getpid())
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == keep {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(s.proc, e.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		if len(args) == len(want)+1 && slices.Equal(args[1:], want) {
+			if s.kill != nil {
+				s.kill(pid)
+			} else {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+	}
 }
 
 func (s *linuxSystem) lidRuleReady() bool    { return true }
@@ -162,6 +200,10 @@ func readPowerSupplies(root string) (int, bool, error) {
 	}
 	return percent, discharging && !charger, nil
 }
+
+// bridge needs nothing on Linux: an update restarts Switcher in place, with
+// the same process id, so its inhibitors keep holding across it.
+func (s *linuxSystem) bridge(bool) int { return 0 }
 
 // stopLeftover ends an inhibitor an earlier Switcher left behind, and only
 // that: the process must still be systemd-inhibit.

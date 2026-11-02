@@ -26,10 +26,13 @@ func appBundle(exe string) (string, bool) {
 // appOps keeps every disk image, file system and process effect of an app
 // install at one boundary. Tests supply all of them.
 type appOps struct {
-	tempDir  func(dir, pattern string) (string, error)
-	download func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error
-	attach   func(ctx context.Context, image, mountpoint string) error
-	detach   func(mountpoint string) error
+	// unattended refuses an install that would ask for an administrator
+	// password: nobody is at this computer to answer it.
+	unattended bool
+	tempDir    func(dir, pattern string) (string, error)
+	download   func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error
+	attach     func(ctx context.Context, image, mountpoint string) error
+	detach     func(mountpoint string) error
 	// version reads CFBundleShortVersionString of an app.
 	version func(ctx context.Context, app string) (string, error)
 	// verify checks the app's code signature, so a damaged copy is refused.
@@ -76,6 +79,9 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	}
 	parent := filepath.Dir(bundle)
 	writable := ops.writable(parent)
+	if !writable && ops.unattended {
+		return ErrNeedsAdministrator
+	}
 	if !writable && strings.HasPrefix(bundle, "/Volumes/") {
 		return errors.New("Switcher runs from its disk image. Drag Switcher.app to Applications, open it from there and update again")
 	}
@@ -89,10 +95,13 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	defer ops.removeAll(work)
 	asset := "Switcher_" + latest + ".dmg"
 	c.setStep("downloading", 0)
-	installed := false
+	installed, marked := false, false
 	defer func() {
 		if !installed { // a finished install keeps reporting its restart
 			c.setStep("", 0)
+			if marked {
+				c.restartFailed()
+			}
 		}
 	}()
 	if err := ops.download(ctx, tag, asset, work, c.downloaded); err != nil {
@@ -117,6 +126,10 @@ func (c *Checker) installApp(bundle, exe string, ops appOps) error {
 	}
 
 	c.setStep("installing", installingShare)
+	// Before the swap: the menu bar notices a replaced app and quits, which
+	// may come before the restart below.
+	c.beforeRestart()
+	marked = true
 	if !writable {
 		if err := ops.adminSwap(ctx, source, bundle); err != nil {
 			return fmt.Errorf("install update in %s: %w", parent, err)
