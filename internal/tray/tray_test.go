@@ -149,8 +149,8 @@ func TestMenuShowsAccountsUsageAndTheSwitches(t *testing.T) {
 			t.Errorf("menu lacks %q:\n%s", want, text)
 		}
 	}
-	if hb := find(items, "Hand back"); hb.Checked || !hb.Checkable {
-		t.Fatalf("hand-back: %+v", hb)
+	if hb := find(items, "Hand back"); hb.Checked || hb.Action != "" || find(hb.Children, "Hand back now").Action != "hand-back:on" {
+		t.Fatalf("hand-back must ask first: %+v", hb)
 	}
 }
 
@@ -172,8 +172,8 @@ func TestMenuFollowsTheHostAndTheHandBack(t *testing.T) {
 	if use := find(items, "Use the accounts of Studio"); use == nil || use.Checked {
 		t.Fatalf("use-host while local: %+v", use)
 	}
-	if hb := find(items, "Hand back"); !hb.Checked {
-		t.Fatal("hand-back not checked")
+	if hb := find(items, "Hand back"); !hb.Checked || hb.Action != "hand-back:off" {
+		t.Fatalf("hand-back: %+v", hb)
 	}
 	if work := find(items, "work@example.com · Max 20x"); !work.Disabled {
 		t.Fatal("accounts switchable while handed back")
@@ -185,13 +185,14 @@ func TestClicksSendTheirActions(t *testing.T) {
 	f.set("remote", map[string]any{"role": "client", "host": "Studio", "connected": true})
 	ctx := context.Background()
 	c.Refresh(ctx)
-	for _, action := range []string{"activate:claude-2", "use-host", "hand-back", "awake:60", "awake:off", "awake-display", "autostart", "refresh"} {
+	for _, action := range []string{"activate:claude-2", "use-host", "hand-back:on", "hand-back:off", "awake:60", "awake:off", "awake-display", "autostart", "refresh"} {
 		c.Click(ctx, action)
 	}
 	want := []string{
 		`POST /api/accounts/claude-2/activate`,
 		`POST /api/remote/use-host {"enabled":false}`,
 		`POST /api/handback {"enabled":true}`,
+		`POST /api/handback {"enabled":false}`,
 		`POST /api/awake {"minutes":60,"on":true}`,
 		`POST /api/awake {"on":false}`,
 		`PATCH /api/awake {"allow_display_sleep":true}`,

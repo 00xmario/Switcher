@@ -77,7 +77,7 @@ export function createHandback({ api, confirm = async () => true, toast = () => 
     return `<div class="settings-card handback-card">
       <div class="set-card-head"><h3>Hand back to the providers</h3><p class="settings-sub">${sub}</p></div>
       <div class="settings-row">
-        <div><strong>Hand back</strong><span class="dim">${status?.incomplete ? 'Stopped halfway; turn it on again to finish' : on ? 'On' : 'Off'}</span></div>
+        <div><strong>Hand back</strong><span class="dim">${status?.incomplete ? 'Stopped halfway; turn it off to set Switcher up again, then hand back again' : on ? 'On' : 'Off'}</span></div>
         <label class="switch-wrap"><input type="checkbox" data-handback-switch aria-label="Hand every tool back to its provider" ${on ? 'checked' : ''} ${busy || !status ? 'disabled' : ''}><span class="switch-visual"></span></label>
       </div>
       ${busy ? `<p class="settings-sub" role="status">${on ? 'Setting Switcher up again…' : 'Handing your tools back…'}</p>` : ''}

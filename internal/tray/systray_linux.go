@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 
 	"fyne.io/systray"
 	"github.com/godbus/dbus/v5"
@@ -58,16 +59,19 @@ func (u *systrayUI) add(parent *systray.MenuItem, item Item) {
 		}
 		return
 	}
+	// dbusmenu reads "_" as an access-key marker; "__" is a plain one, so
+	// first_last@example.com keeps its underscore.
+	title := strings.ReplaceAll(item.Title, "_", "__")
 	var mi *systray.MenuItem
 	switch {
 	case parent == nil && item.Checkable:
-		mi = systray.AddMenuItemCheckbox(item.Title, item.Tooltip, item.Checked)
+		mi = systray.AddMenuItemCheckbox(title, item.Tooltip, item.Checked)
 	case parent == nil:
-		mi = systray.AddMenuItem(item.Title, item.Tooltip)
+		mi = systray.AddMenuItem(title, item.Tooltip)
 	case item.Checkable:
-		mi = parent.AddSubMenuItemCheckbox(item.Title, item.Tooltip, item.Checked)
+		mi = parent.AddSubMenuItemCheckbox(title, item.Tooltip, item.Checked)
 	default:
-		mi = parent.AddSubMenuItem(item.Title, item.Tooltip)
+		mi = parent.AddSubMenuItem(title, item.Tooltip)
 	}
 	if item.Disabled {
 		mi.Disable()

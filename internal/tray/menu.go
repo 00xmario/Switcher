@@ -112,8 +112,16 @@ func Build(st State, status Status, now time.Time) []Item {
 		items = append(items, Item{Action: "use-host", Title: "Use the accounts of " + r.Host, Checkable: true, Checked: r.Role == "client",
 			Tooltip: "Off: this computer uses its own accounts and stays paired"})
 	}
-	items = append(items, Item{Action: "hand-back", Title: "Hand back to the providers", Checkable: true, Checked: st.HandedBack,
-		Tooltip: "Undo Switcher's setup so your tools talk to their providers directly, for example before removing Switcher"})
+	if st.HandedBack {
+		items = append(items, Item{Action: "hand-back:off", Title: "Hand back to the providers", Checkable: true, Checked: true,
+			Tooltip: "Turn off to set Switcher up again"})
+	} else {
+		// Handing back rewrites the tools' settings, so it takes a second
+		// click, as the Mac menu and the dashboard ask first.
+		items = append(items, Item{Title: "Hand back to the providers",
+			Tooltip:  "Undo Switcher's setup so your tools talk to their providers directly, for example before removing Switcher",
+			Children: []Item{label("Your tools will use their providers directly"), {Action: "hand-back:on", Title: "Hand back now"}}})
+	}
 	if a := st.Autostart; a != nil && a.Supported {
 		items = append(items, Item{Action: "autostart", Title: "Start at login", Checkable: true, Checked: a.Enabled})
 	}

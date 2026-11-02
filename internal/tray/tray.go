@@ -250,8 +250,10 @@ func (c *Controller) Click(ctx context.Context, action string) {
 			done = "Using the accounts of " + st.Remote.Host
 		}
 		run("Saving", done, func() error { return api.Post(ctx, "/api/remote/use-host", map[string]bool{"enabled": !using}) })
-	case action == "hand-back":
-		on := !st.HandedBack
+	case action == "hand-back:on" || action == "hand-back:off":
+		// The action names its direction, so a menu drawn before the state
+		// changed elsewhere never does the opposite.
+		on := action == "hand-back:on"
 		what, done := "Handing your tools back", "Handed back; restart Claude Desktop when you can"
 		if !on {
 			what, done = "Setting Switcher up again", "Switcher is set up again"

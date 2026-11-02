@@ -46,7 +46,7 @@ StatusNotifierItem protocol. KDE Plasma, Cinnamon, XFCE, LXQt and Ubuntu's
 GNOME show it; on another GNOME, turn on the AppIndicator extension. The
 menu shows every account with its usage and switches accounts (Claude also
 switches Claude Code's login), and holds keep awake, **Use the accounts of
-<host>**, **Hand back to the providers**, **Start at login**, updates and
+&lt;host&gt;**, **Hand back to the providers**, **Start at login**, updates and
 Quit. Everything else is in the dashboard, which the tray opens. The tray
 starts the server when it is not running; **Quit Switcher** stops both.
 

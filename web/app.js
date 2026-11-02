@@ -2097,8 +2097,9 @@ settingsPage.desktopRelay = createDesktopRelay({
 const remoteSettings = createRemote({
   api,
   confirm: options => confirmDialog({ initialFocus: 'cancel', ...options }),
+  machine: () => machineWord(data.platform),
   onConnectionChange: async connected => {
-    toast(connected ? 'Now using the other Mac\'s accounts' : 'Back to this Mac\'s own accounts');
+    toast(connected ? 'Now using the other Switcher\'s accounts' : `Back to this ${machineWord(data.platform)}'s own accounts`);
     await refreshState();
   },
 });
@@ -2536,6 +2537,7 @@ async function renderSettings() {
         const outcomes = {
           success: 'Switcher Codex route responded; native Codex CLI not tested',
           no_active_account: 'Select an active Codex account first',
+          handed_back: 'Switcher has handed Codex back to OpenAI; set it up again to test its route',
           quota_or_rate_limit: 'Route test inconclusive: upstream quota or rate limit',
           upstream_unauthorized: 'Route test inconclusive: upstream rejected this token',
           model_or_request_rejected: 'Route test inconclusive: fixed model or request rejected',

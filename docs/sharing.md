@@ -64,7 +64,7 @@ returns the client to its own accounts.
 ## When the host stops working
 
 If the host is down or unreachable, the client does not have to unpair. Turn
-off **Use the accounts of <host>** (Settings → Share between Macs, the
+off **Use the accounts of &lt;host&gt;** (Settings → Share between Macs, the
 **Work without it** button on the Accounts tab, the menu bar or tray, or
 `switcher use-host off`). The client then does everything itself: its own
 accounts and usage checks, and Codex, Claude Code and Claude Desktop routed

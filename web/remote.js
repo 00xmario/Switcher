@@ -28,7 +28,7 @@ function ring(value, now, total = 600) {
 
 const MAC_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="10.5" rx="1.8"/><path d="M2 18.5h20"/></svg>';
 
-export function createRemote({ api, confirm = async () => true, onConnectionChange = () => {}, now = () => Date.now() }) {
+export function createRemote({ api, confirm = async () => true, onConnectionChange = () => {}, now = () => Date.now(), machine = () => 'Mac' }) {
   // error belongs to the last action and stays until the next one; loadError
   // is the status poll's own.
   let view = null, status = null, found = null, scanning = false, busy = '', error = '', loadError = '', target = null, timer = null;
@@ -88,7 +88,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       </div>
       ${host.enabled ? `
         ${host.error ? `<p class="remote-error">${escape(host.error)}</p>` : ''}
-        ${chips.length ? `<div class="set-chips" aria-label="Addresses of this Mac">${chips.map(c => `<button type="button" class="set-chip" data-remote-copy="${escape(c.a)}" title="${c.kind}: click to copy">${c.icon}<code>${escape(c.a)}</code></button>`).join('')}</div>` : ''}
+        ${chips.length ? `<div class="set-chips" aria-label="Addresses of this ${machine()}">${chips.map(c => `<button type="button" class="set-chip" data-remote-copy="${escape(c.a)}" title="${c.kind}: click to copy">${c.icon}<code>${escape(c.a)}</code></button>`).join('')}</div>` : ''}
         ${host.pairing ? `<div class="remote-code" role="status">
             ${ring(host.pairing.expires_at, now())}
             <div><span class="remote-code-label">Enter this code on the other Mac</span>
@@ -150,7 +150,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     else if (t.enabled && t.error) detail = `<p class="remote-error">${escape(t.error)}</p>`;
     else if (t.enabled && !t.running) detail = '<p class="settings-sub">Starting…</p>';
     else if (t.enabled && t.state === 'NeedsLogin' && /^https:\/\//.test(t.auth_url || '')) detail = `<div class="remote-tailnet-login">
-        <p class="settings-sub">Sign in once to add this Mac to your Tailscale network. Use the same Tailscale account on your other Macs.</p>
+        <p class="settings-sub">Sign in once to add this ${machine()} to your Tailscale network. Use the same Tailscale account on your other Macs.</p>
         <a class="button primary" href="${escape(t.auth_url)}" target="_blank" rel="noopener noreferrer">Sign in with Tailscale</a>
       </div>`;
     else if (t.enabled && t.state === 'Running') detail = `<p class="set-live"><span class="set-live-dot"></span>On Tailscale as <code>${escape(t.dns_name || t.name)}</code>${t.tailnet ? ` in ${escape(t.tailnet)}` : ''}. Your Macs find each other from anywhere.</p>`;
@@ -177,14 +177,14 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       flow = `<div class="flow is-off" aria-hidden="true">${node(me, 'uses its own accounts', true)}<div class="flow-wire"><span></span></div>${node(escape(client.host_name), 'paired, not in use')}</div>`;
       pill = '<span class="dr-status warn">Not in use</span>';
     } else if (client.connected) {
-      flow = `<div class="flow ${client.reachable ? 'is-on' : 'is-warn'}" aria-hidden="true">${node(me, 'this Mac')}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(client.host_name), 'keeps the accounts', true)}</div>`;
+      flow = `<div class="flow ${client.reachable ? 'is-on' : 'is-warn'}" aria-hidden="true">${node(me, `this ${machine()}`)}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(client.host_name), 'keeps the accounts', true)}</div>`;
       pill = client.reachable ? '<span class="dr-status ok">Connected</span>' : '<span class="dr-status warn">Unreachable</span>';
     } else if (host?.enabled) {
       const n = host.devices.length;
-      flow = `<div class="flow is-on" aria-hidden="true">${node(n ? `${n} paired Mac${n === 1 ? '' : 's'}` : 'Your other Macs', n ? 'use these accounts' : 'pair one below')}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(host.name || status.device_name || 'This Mac'), 'this Mac keeps the accounts', true)}</div>`;
+      flow = `<div class="flow is-on" aria-hidden="true">${node(n ? `${n} paired Mac${n === 1 ? '' : 's'}` : 'Your other Macs', n ? 'use these accounts' : 'pair one below')}<div class="flow-wire"><span></span>${tailnet}</div>${node(escape(host.name || status.device_name || `This ${machine()}`), `this ${machine()} keeps the accounts`, true)}</div>`;
       pill = '<span class="dr-status ok">Sharing</span>';
     } else {
-      flow = `<div class="flow is-off" aria-hidden="true">${node(me, 'this Mac')}<div class="flow-wire"><span></span></div>${node('Your other Macs', 'not connected')}</div>`;
+      flow = `<div class="flow is-off" aria-hidden="true">${node(me, `this ${machine()}`)}<div class="flow-wire"><span></span></div>${node('Your other Macs', 'not connected')}</div>`;
       pill = '<span class="dr-status warn">Off</span>';
     }
     return `<div class="settings-card set-hero remote-hero">
@@ -262,10 +262,10 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
           view.querySelector('[data-remote-form] input[name="code"]')?.focus();
           return;
         case 'tailnet-remove':
-          if (!await confirm({ title: 'Remove the Tailscale add-on?', message: 'This Mac signs out of Tailscale and can only reach your other Macs at home again.', confirmLabel: 'Remove', danger: true })) return;
+          if (!await confirm({ title: 'Remove the Tailscale add-on?', message: `This ${machine()} signs out of Tailscale and can only reach your other Macs at home again.`, confirmLabel: 'Remove', danger: true })) return;
           return act('tailnet-remove', () => post('/api/remote/tailnet/remove'));
         case 'disconnect':
-          if (!await confirm({ title: `Stop using ${status?.client?.host_name || 'the other Mac'}?`, message: 'This Mac goes back to its own accounts.', confirmLabel: 'Disconnect' })) return;
+          if (!await confirm({ title: `Stop using ${status?.client?.host_name || 'the other Mac'}?`, message: `This ${machine()} goes back to its own accounts.`, confirmLabel: 'Disconnect' })) return;
           if (await act('disconnect', () => post('/api/remote/disconnect'))) onConnectionChange(false);
           return;
       }
