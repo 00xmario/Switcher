@@ -142,6 +142,12 @@ func TestTheStateCarriesTheHostsUpdateCleaned(t *testing.T) {
 // hostState is the host_update this Mac's merged /api/state carries.
 func hostState(t *testing.T, client *Client) HostUpdate {
 	t.Helper()
+	// Reading the host's state also refreshes its addresses in the
+	// background, which saves the pairing; just done, it is skipped, so
+	// nothing writes into the test's directory after it ends.
+	client.mu.Lock()
+	client.refreshedAt = time.Now()
+	client.mu.Unlock()
 	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/state", nil))
