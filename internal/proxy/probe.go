@@ -109,6 +109,11 @@ func completedProbeStream(body io.Reader) bool {
 func (m *Manager) ProbeCodex(ctx context.Context) ProbeCodexResult {
 	result := ProbeCodexResult{Outcome: "unavailable", Method: "switcher_proxy",
 		Model: CodexProbeModel, Route: CodexProbeRoute}
+	// A handed-back token is Codex's own; refreshing it here signs Codex out.
+	if m.HandedBack() {
+		result.Outcome = "handed_back"
+		return result
+	}
 	if !m.probeBusy.CompareAndSwap(false, true) {
 		result.Outcome = "busy"
 		return result

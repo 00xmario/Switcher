@@ -39,6 +39,8 @@ type Codex interface {
 	ReadLogin() (codexcfg.Login, error)
 	WriteLogin(codexcfg.AuthTokens) (string, error)
 	RemoveLoginIfUnchanged(written string) error
+	// HasRun reports whether Codex has run here: its directory exists.
+	HasRun() bool
 }
 
 // Desktop is the Claude Desktop relay's settings setup.
@@ -199,35 +201,97 @@ func (m *Manager) save(rec *record) error {
 // HandBack undoes Switcher's setup of every tool and stops using its
 // accounts. When a step fails, the steps before it are put back and nothing
 // is handed back; the error says which tool needs attention.
+//
+// Each change is recorded in handback.json before it is made, so a Switcher
+// that stops halfway restarts off its accounts and knows what to redo. One
+// that stopped halfway is finished by setting up again what it undid and
+// handing back afresh: the tools' logins need Switcher's accounts, which it
+// stays off after such a restart.
 func (m *Manager) HandBack(ctx context.Context) (Status, error) {
 	if !m.busy.TryLock() {
 		return m.Status(), ErrBusy
 	}
 	defer m.busy.Unlock()
 	m.mu.Lock()
-	rec := record{Phase: "handing_back", Since: m.deps.Now().UTC()}
-	if m.rec != nil {
-		rec = *m.rec // finish an earlier hand-back, keeping what it undid
-		rec.Phase = "handing_back"
-	}
+	prev := m.rec
 	m.mu.Unlock()
-
+	if prev != nil && prev.Phase == "handed_back" {
+		return m.Status(), nil
+	}
+	rec := record{Phase: "handing_back", Since: m.deps.Now().UTC()}
 	var steps []Step
+	carried := false // tools still handed back from the earlier attempt
+	if prev != nil {
+		failed, err := m.setUp(ctx)
+		if err != nil {
+			return m.Status(), fmt.Errorf("could not finish the earlier hand-back: %w", err)
+		}
+		// A tool that could not be set up again is still handed back: it
+		// stays on record, so setting up again later redoes it.
+		for _, s := range m.Status().Steps {
+			if s.Outcome == "failed" {
+				steps = append(steps, s)
+			}
+		}
+		carried = len(failed) > 0
+		for _, tool := range failed {
+			switch tool {
+			case "host":
+				rec.UseHost = true
+			case "sharing":
+				rec.Sharing = true
+			case "claude-desktop":
+				rec.Desktop = true
+			case "codex":
+				rec.CodexConfig = prev.CodexConfig
+			}
+		}
+	}
+
 	note := func(tool, outcome, message string) { steps = append(steps, Step{tool, outcome, message}) }
-	var undo []func()
+	var undo []func() error
 	fail := func(tool string, err error) (Status, error) {
 		note(tool, "failed", err.Error())
+		var undoErr error
 		for i := len(undo) - 1; i >= 0; i-- {
-			undo[i]()
+			if e := undo[i](); e != nil && undoErr == nil {
+				undoErr = e
+			}
 		}
+		if undoErr != nil || carried {
+			// What could not be put back stays on record, with Switcher off
+			// its accounts, so setting up again redoes it.
+			m.apply(true)
+			rec.Phase = "handing_back"
+			_ = m.save(&rec)
+			kept := rec
+			m.mu.Lock()
+			m.rec, m.last = &kept, steps
+			m.mu.Unlock()
+			why := "an earlier attempt left tools to set up again"
+			if undoErr != nil {
+				why = fmt.Sprintf("putting the earlier steps back also failed (%v)", undoErr)
+			}
+			return m.Status(), fmt.Errorf("%s: %w; %s, so Switcher stays handed back: set it up again to finish", tool, err, why)
+		}
+		_ = m.save(nil)
 		m.mu.Lock()
 		m.last = steps
 		m.mu.Unlock()
 		return m.Status(), fmt.Errorf("%s: %w; nothing was handed back", tool, err)
 	}
+	checkpoint := func() error {
+		if err := m.save(&rec); err != nil {
+			return fmt.Errorf("could not save the hand-back: %w", err)
+		}
+		return nil
+	}
+	if err := checkpoint(); err != nil {
+		return fail("switcher", err)
+	}
 
-	// Logins first: they need Switcher's accounts, which stop working once
-	// the hand-back is saved.
+	// Logins first: they need Switcher's accounts, which it stops using as
+	// soon as the tools have logins of their own.
 	if c := m.deps.ClaudeCode; c != nil {
 		loggedIn, available := c.LoggedIn()
 		switch {
@@ -248,19 +312,27 @@ func (m *Manager) HandBack(ctx context.Context) (Status, error) {
 		}
 	}
 	if c := m.deps.Codex; c != nil {
-		if err := m.handBackCodex(ctx, &rec, note, &undo); err != nil {
+		if err := m.handBackCodex(ctx, &rec, checkpoint, note, &undo); err != nil {
 			return fail("codex", err)
 		}
 	}
+	m.apply(true)
+	undo = append(undo, func() error { m.apply(false); return nil })
+
 	if d := m.deps.Desktop; d != nil {
 		setup := d.SetupStatus()
 		switch {
-		case setup.Configured:
+		case setup.Configured || setup.Condition == "pending":
+			// A restore that stopped halfway leaves Desktop's own setup
+			// pending; restoring again finishes it.
+			rec.Desktop = true
+			if err := checkpoint(); err != nil {
+				return fail("switcher", err)
+			}
 			if err := d.Restore(ctx); err != nil {
 				return fail("claude-desktop", err)
 			}
-			rec.Desktop = true
-			undo = append(undo, func() { _ = d.Configure(context.Background()); rec.Desktop = false })
+			undo = append(undo, func() error { return d.Configure(context.Background()) })
 			note("claude-desktop", "done", "Claude Desktop's settings are restored. Until you restart Desktop it keeps running through Switcher, on its own login.")
 		case setup.Condition == "unavailable":
 			note("claude-desktop", "skipped", "Claude Desktop routing is unavailable here.")
@@ -268,32 +340,33 @@ func (m *Manager) HandBack(ctx context.Context) (Status, error) {
 			note("claude-desktop", "unchanged", "Claude Desktop was not routed through Switcher.")
 		}
 	}
-	if s := m.deps.Sharing; s != nil {
-		if s.On() {
-			if err := s.Set(false); err != nil {
-				return fail("sharing", err)
-			}
-			rec.Sharing = true
-			undo = append(undo, func() { _ = s.Set(true); rec.Sharing = false })
-			note("sharing", "done", "Sharing is off. Switchers that used this one can work without it.")
+	if s := m.deps.Sharing; s != nil && s.On() {
+		rec.Sharing = true
+		if err := checkpoint(); err != nil {
+			return fail("switcher", err)
 		}
+		if err := s.Set(false); err != nil {
+			return fail("sharing", err)
+		}
+		undo = append(undo, func() error { return s.Set(true) })
+		note("sharing", "done", "Sharing is off. Switchers that used this one can work without it.")
 	}
-	if h := m.deps.UseHost; h != nil {
-		if h.On() {
-			if err := h.Set(false); err != nil {
-				return fail("host", err)
-			}
-			rec.UseHost = true
-			undo = append(undo, func() { _ = h.Set(true); rec.UseHost = false })
-			note("host", "done", "This Switcher no longer uses its paired host; the pairing stays.")
+	if h := m.deps.UseHost; h != nil && h.On() {
+		rec.UseHost = true
+		if err := checkpoint(); err != nil {
+			return fail("switcher", err)
 		}
+		if err := h.Set(false); err != nil {
+			return fail("host", err)
+		}
+		undo = append(undo, func() error { return h.Set(true) })
+		note("host", "done", "This Switcher no longer uses its paired host; the pairing stays.")
 	}
 
 	rec.Phase = "handed_back"
-	if err := m.save(&rec); err != nil {
-		return fail("switcher", fmt.Errorf("could not save the hand-back: %w", err))
+	if err := checkpoint(); err != nil {
+		return fail("switcher", err)
 	}
-	m.apply(true)
 	note("switcher", "done", "Switcher no longer uses its accounts: nothing is routed, refreshed or switched until you set it up again.")
 	m.mu.Lock()
 	m.rec, m.last = &rec, steps
@@ -301,33 +374,42 @@ func (m *Manager) HandBack(ctx context.Context) (Status, error) {
 	return m.Status(), nil
 }
 
-func (m *Manager) handBackCodex(ctx context.Context, rec *record, note func(tool, outcome, message string), undo *[]func()) error {
+func (m *Manager) handBackCodex(ctx context.Context, rec *record, checkpoint func() error, note func(tool, outcome, message string), undo *[]func() error) error {
 	c := m.deps.Codex
 	status := c.Check()
 	// Only a Codex that used Switcher is pointed at it again afterwards; an
 	// entry the user had switched away from is just removed.
 	inUse := status.Condition == "ready" || status.Condition == "misconfigured"
-	remember := func(kind string) {
+	uninstall := func(kind string, run func() error) error {
 		if inUse {
 			rec.CodexConfig = kind
-			*undo = append(*undo, func() { _ = c.Install(); rec.CodexConfig = "" })
+			if err := checkpoint(); err != nil {
+				return err
+			}
 		}
+		if err := run(); err != nil {
+			return err
+		}
+		if inUse {
+			*undo = append(*undo, c.Install)
+		}
+		return nil
 	}
 	switch {
 	case status.Ownership == "tracked":
-		if err := c.Uninstall(); err != nil {
+		if err := uninstall("tracked", c.Uninstall); err != nil {
 			return err
 		}
-		remember("tracked")
 		note("codex", "done", "Codex uses its previous provider again.")
 	case status.Ownership == "legacy_candidate":
-		if err := c.UninstallLegacy(); err != nil {
+		if err := uninstall("legacy", c.UninstallLegacy); err != nil {
 			return err
 		}
-		remember("legacy")
 		note("codex", "done", "Switcher's entry is gone from Codex's config; Codex uses OpenAI directly.")
 	case status.Condition == "pending" || status.Condition == "conflict" || status.Condition == "invalid":
 		return errors.New("Codex's config.toml changed outside Switcher or is invalid; fix it, or remove the [model_providers.switcher] entry yourself")
+	case rec.CodexConfig != "":
+		note("codex", "unchanged", "Codex still uses its previous provider; setting Switcher up again points it at Switcher.")
 	default:
 		note("codex", "unchanged", "Codex was not set up to use Switcher.")
 	}
@@ -343,9 +425,13 @@ func (m *Manager) handBackCodex(ctx context.Context, rec *record, note func(tool
 	case login.Present:
 		note("codex-login", "unchanged", "Codex keeps its own login.")
 		return nil
-	}
-	if m.deps.Accounts == nil {
+	case m.deps.Accounts == nil:
 		note("codex-login", "skipped", "Codex has no login; run codex login.")
+		return nil
+	case !c.HasRun():
+		// A login nobody uses would only rotate alongside Switcher's copy
+		// once Codex is installed.
+		note("codex-login", "skipped", "Codex has not run on this computer, so it gets no login; run codex login if you install it.")
 		return nil
 	}
 	account, ok, err := m.deps.Accounts.SelectedCodex(ctx)
@@ -356,16 +442,25 @@ func (m *Manager) handBackCodex(ctx context.Context, rec *record, note func(tool
 		note("codex-login", "skipped", "Codex has no login and no Codex account is selected in Switcher; run codex login.")
 		return nil
 	}
+	rec.CodexLogin = account.ID
+	if err := checkpoint(); err != nil {
+		return err
+	}
 	written, err := c.WriteLogin(codexcfg.AuthTokens{IDToken: account.Token.IDToken, AccessToken: account.Token.AccessToken,
 		RefreshToken: account.Token.RefreshToken, AccountID: account.Token.AccountID})
+	if errors.Is(err, codexcfg.ErrNoCodex) {
+		rec.CodexLogin = ""
+		note("codex-login", "skipped", "Codex has not run on this computer, so it gets no login; run codex login if you install it.")
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("could not give Codex a login: %w", err)
 	}
-	rec.CodexLogin, rec.CodexLoginDigest = account.ID, written
-	*undo = append(*undo, func() {
-		_ = c.RemoveLoginIfUnchanged(written)
-		rec.CodexLogin, rec.CodexLoginDigest = "", ""
-	})
+	rec.CodexLoginDigest = written
+	*undo = append(*undo, func() error { return c.RemoveLoginIfUnchanged(written) })
+	if err := checkpoint(); err != nil {
+		return err
+	}
 	note("codex-login", "done", "Codex is now logged in as "+account.Email+" and refreshes that login itself.")
 	return nil
 }
@@ -378,10 +473,23 @@ func (m *Manager) SetUp(ctx context.Context) (Status, error) {
 		return m.Status(), ErrBusy
 	}
 	defer m.busy.Unlock()
+	failed, err := m.setUp(ctx)
+	if err != nil {
+		return m.Status(), err
+	}
+	if len(failed) > 0 {
+		return m.Status(), fmt.Errorf("Switcher is set up again, except: %v", failed)
+	}
+	return m.Status(), nil
+}
+
+// setUp is SetUp with the busy lock held. It returns the tools that could
+// not be set up again; an error means Switcher stayed handed back.
+func (m *Manager) setUp(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
 	if m.rec == nil {
 		m.mu.Unlock()
-		return m.Status(), nil
+		return nil, nil
 	}
 	rec := *m.rec
 	m.mu.Unlock()
@@ -394,23 +502,32 @@ func (m *Manager) SetUp(ctx context.Context) (Status, error) {
 		failed = append(failed, tool)
 	}
 
-	// A login Codex kept refreshing is newer than Switcher's copy of it.
+	// Codex had no login before the hand-back. The one it was given goes back
+	// to Switcher, with any tokens Codex refreshed meanwhile, so the account
+	// has one owner again. Until that works Switcher stays off its accounts.
 	if rec.CodexLogin != "" && m.deps.Codex != nil && m.deps.Accounts != nil {
-		if adopted, err := m.adoptCodexLogin(rec.CodexLogin); err != nil {
-			failure("codex-login", "Could not take back Codex's newer login", err)
-		} else if adopted {
-			note("codex-login", "done", "Switcher took over the newer login Codex refreshed meanwhile.")
+		took, adopted, err := m.takeBackCodexLogin(rec.CodexLogin, rec.CodexLoginDigest)
+		if err != nil {
+			note("codex-login", "failed", "Could not take back the login Codex was given: "+err.Error())
+			m.mu.Lock()
+			m.last = steps
+			m.mu.Unlock()
+			return nil, fmt.Errorf("could not take back the login Codex was given: %w; Switcher stays handed back, so try again", err)
+		}
+		if took {
+			message := "Switcher took back the login it gave Codex"
+			if adopted {
+				message += ", with the tokens Codex refreshed meanwhile"
+			}
+			message += "."
+			if rec.CodexConfig == "" {
+				message += " Codex has no login again, as before the hand-back; run codex login to give it one."
+			}
+			note("codex-login", "done", message+" Restart Codex if it is running, so it lets go of that login.")
 		}
 	}
-	if err := m.save(nil); err != nil {
-		return m.Status(), fmt.Errorf("could not save the setup: %w", err)
-	}
-	m.mu.Lock()
-	m.rec = nil
-	m.mu.Unlock()
-	m.apply(false)
-	note("switcher", "done", "Switcher uses its accounts again.")
-
+	// The redo steps are safe to repeat, so the record goes only after them:
+	// a Switcher that stops meanwhile stays handed back and redoes them all.
 	if rec.UseHost && m.deps.UseHost != nil {
 		if err := m.deps.UseHost.Set(true); err != nil {
 			failure("host", "Could not use the paired host again", err)
@@ -425,8 +542,17 @@ func (m *Manager) SetUp(ctx context.Context) (Status, error) {
 			note("sharing", "done", "Sharing is on again.")
 		}
 	}
-	if rec.Desktop && m.deps.Desktop != nil {
-		if err := m.deps.Desktop.Configure(ctx); err != nil {
+	if d := m.deps.Desktop; rec.Desktop && d != nil {
+		// A restore that stopped halfway has to finish before Desktop can be
+		// connected again.
+		var err error
+		if d.SetupStatus().Condition == "pending" {
+			err = d.Restore(ctx)
+		}
+		if err == nil {
+			err = d.Configure(ctx)
+		}
+		if err != nil {
 			failure("claude-desktop", "Could not connect Claude Desktop again", err)
 		} else {
 			note("claude-desktop", "done", "Claude Desktop is connected again; restart it when your work is done.")
@@ -439,59 +565,111 @@ func (m *Manager) SetUp(ctx context.Context) (Status, error) {
 			note("codex", "done", "Codex uses Switcher again.")
 		}
 	}
+	if err := m.save(nil); err != nil {
+		m.mu.Lock()
+		m.last = steps
+		m.mu.Unlock()
+		return nil, fmt.Errorf("could not save the setup: %w; Switcher stays handed back, so try again", err)
+	}
+	m.mu.Lock()
+	m.rec = nil
+	m.mu.Unlock()
+	m.apply(false)
+	note("switcher", "done", "Switcher uses its accounts again.")
 	if c := m.deps.ClaudeCode; c != nil {
 		note("claude-code", "done", "Switcher follows Claude Code's login again; switch accounts as before.")
 	}
 	m.mu.Lock()
 	m.last = steps
 	m.mu.Unlock()
-	if len(failed) > 0 {
-		return m.Status(), fmt.Errorf("Switcher is set up again, except: %v", failed)
-	}
-	return m.Status(), nil
+	return failed, nil
 }
 
-// adoptCodexLogin takes back the tokens of the login Switcher gave Codex,
-// when Codex still holds that account and refreshed it.
-func (m *Manager) adoptCodexLogin(id string) (bool, error) {
-	login, err := m.deps.Codex.ReadLogin()
+// takeBackCodexLogin takes back the login hand-back gave Codex. Only a file
+// that holds nothing but that account's ChatGPT login goes: Switcher adopts
+// its tokens if Codex refreshed them, then removes it. Any other login is
+// Codex's own and stays, and Switcher keeps its own tokens, so neither has
+// two owners.
+func (m *Manager) takeBackCodexLogin(id, written string) (took, adopted bool, err error) {
+	c := m.deps.Codex
+	login, err := c.ReadLogin()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	tokens, _, ok := login.Tokens()
-	if !ok {
-		return false, nil
+	if !ok || login.APIKey {
+		return false, false, nil
 	}
 	account, err := m.deps.Accounts.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, false, nil // removed from Switcher meanwhile: the login is Codex's alone
+	}
 	if err != nil {
-		return false, nil // removed meanwhile: nothing to take back
+		return false, false, err
 	}
-	if account.Token.AccountID == "" || tokens.AccountID != account.Token.AccountID || tokens.RefreshToken == account.Token.RefreshToken {
-		return false, nil
+	if account.Token.AccountID == "" {
+		// Without an account id only the file as written, or one still
+		// holding the account's own refresh token, is known to be Switcher's.
+		if login.Digest() != written && tokens.RefreshToken != account.Token.RefreshToken {
+			return false, false, nil
+		}
+		return true, false, m.removeCodexLogin(login.Digest())
 	}
-	token := account.Token
-	token.IDToken, token.AccessToken, token.RefreshToken = tokens.IDToken, tokens.AccessToken, tokens.RefreshToken
-	token.ExpiresAt = jwtExpiry(tokens.AccessToken)
-	return true, m.deps.Accounts.AdoptToken(id, token)
+	// Team seats share an account id; the email tells them apart.
+	if tokens.AccountID != account.Token.AccountID || !sameEmail(tokens.IDToken, account.Email) {
+		return false, false, nil
+	}
+	if tokens.RefreshToken != account.Token.RefreshToken {
+		token := account.Token
+		token.IDToken, token.AccessToken, token.RefreshToken = tokens.IDToken, tokens.AccessToken, tokens.RefreshToken
+		token.ExpiresAt = jwtClaimsOf(tokens.AccessToken).Exp
+		if err := m.deps.Accounts.AdoptToken(id, token); err != nil {
+			return false, false, err
+		}
+		adopted = true
+	}
+	return true, adopted, m.removeCodexLogin(login.Digest())
 }
 
-// jwtExpiry reads a JWT's exp claim without verifying it: the token came from
-// Codex's own store and only decides when Switcher refreshes it. 0 means
-// unknown, and the first rejection refreshes it.
-func jwtExpiry(token string) int64 {
+// removeCodexLogin removes auth.json while it is still the file as read. One
+// Codex rewrote since is newer still: that is an error, so Switcher stays
+// handed back and the next set-up takes the newer tokens.
+func (m *Manager) removeCodexLogin(read string) error {
+	if err := m.deps.Codex.RemoveLoginIfUnchanged(read); err != nil {
+		return err
+	}
+	if login, err := m.deps.Codex.ReadLogin(); err != nil || login.Digest() != "" {
+		return errors.New("Codex changed its login meanwhile; set Switcher up again to take the newer one")
+	}
+	return nil
+}
+
+// sameEmail reports whether an id token belongs to email. A token or account
+// without an email cannot tell, and does not refuse.
+func sameEmail(idToken, email string) bool {
+	claim := jwtClaimsOf(idToken).Email
+	return claim == "" || email == "" || strings.EqualFold(claim, email)
+}
+
+type jwtClaims struct {
+	Exp   int64  `json:"exp"`
+	Email string `json:"email"`
+}
+
+// jwtClaimsOf reads a JWT's claims without verifying it: the token came from
+// Codex's own store, and the claims only decide when Switcher refreshes it
+// and whose it is. A zero exp means unknown, and the first rejection
+// refreshes it.
+func jwtClaimsOf(token string) jwtClaims {
+	var claims jwtClaims
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return 0
+		return claims
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return 0
+		return claims
 	}
-	var claims struct {
-		Exp int64 `json:"exp"`
-	}
-	if json.Unmarshal(raw, &claims) != nil {
-		return 0
-	}
-	return claims.Exp
+	_ = json.Unmarshal(raw, &claims)
+	return claims
 }

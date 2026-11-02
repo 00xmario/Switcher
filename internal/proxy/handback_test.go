@@ -60,6 +60,9 @@ func TestHandedBackStopsEveryUseOfTheAccounts(t *testing.T) {
 	if _, err := m.ActivateForClient(context.Background(), "a"); !errors.Is(err, ErrHandedBack) {
 		t.Fatalf("native switch while handed back: %v", err)
 	}
+	if got := m.ProbeCodex(context.Background()); got.Outcome != "handed_back" {
+		t.Fatalf("Codex route test while handed back: %+v", got)
+	}
 	time.Sleep(20 * time.Millisecond) // the poll's follow-up switch runs on its own goroutine
 	if n := prov.refreshes.Load(); n != 0 {
 		t.Fatalf("%d token refreshes while handed back", n)

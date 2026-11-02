@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,7 @@ import (
 
 	"switcher/internal/codexcfg"
 	"switcher/internal/handback"
+	"switcher/internal/store"
 )
 
 func TestHandbackRoutesHandBackAndSetUpFromThisMachineOnly(t *testing.T) {
@@ -54,6 +57,34 @@ func TestHandbackRoutesHandBackAndSetUpFromThisMachineOnly(t *testing.T) {
 	w = phoneRequest(mux, http.MethodPost, "/api/handback", "127.0.0.1:5000", map[string]bool{"enabled": false})
 	if w.Code != http.StatusOK || api.handedBack() || codexcfg.Check(config, 8787).Condition != "ready" {
 		t.Fatalf("set up again: %d %s", w.Code, w.Body)
+	}
+}
+
+// keptAccounts is a Switcher account that cannot take its tokens back.
+type keptAccounts struct{ account store.Account }
+
+func (k keptAccounts) SelectedCodex(context.Context) (store.Account, bool, error) {
+	return k.account, true, nil
+}
+func (k keptAccounts) Get(string) (store.Account, error)    { return k.account, nil }
+func (k keptAccounts) AdoptToken(string, store.Token) error { return errors.New("disk full") }
+func (k keptAccounts) SetHandedBack(bool)                   {}
+
+// A set-up that stays handed back, because Codex's login could not be taken
+// back, is an error: the dashboard and tray must not say it is set up.
+func TestASetUpThatStaysHandedBackIsAConflict(t *testing.T) {
+	codexDir := t.TempDir()
+	config := filepath.Join(codexDir, "config.toml")
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "handback.json"), []byte(`{"phase":"handed_back","since":"2026-11-01T12:00:00Z","codex_login":"codex-1"}`), 0o600)
+	os.WriteFile(codexcfg.AuthPath(config), []byte(`{"tokens":{"access_token":"a2","refresh_token":"codex-r2","account_id":"acct"}}`), 0o600)
+	account := store.Account{ID: "codex-1", Provider: "codex", Token: store.Token{AccessToken: "a", RefreshToken: "r", AccountID: "acct"}}
+	api := &API{Handback: handback.New(dir, handback.Deps{Codex: handback.CodexFiles(config, 8787), Accounts: keptAccounts{account}})}
+	mux := http.NewServeMux()
+	api.registerHandbackRoutes(mux)
+	w := phoneRequest(mux, http.MethodPost, "/api/handback", "127.0.0.1:5000", map[string]bool{"enabled": false})
+	if w.Code != http.StatusConflict || !api.handedBack() {
+		t.Fatalf("set up that stayed handed back: %d %s", w.Code, w.Body)
 	}
 }
 

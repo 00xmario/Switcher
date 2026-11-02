@@ -129,7 +129,7 @@ required; OpenCode Go uses its own API key.
   that Mac; the other Macs' account views, Codex, T3 Code hub, Claude Code and
   Claude Desktop follow it. See [sharing](sharing.md).
 - **Working without the host**: a Mac paired with a host can turn off
-  **Use the accounts of <host>** when the host stops working. It then uses
+  **Use the accounts of &lt;host&gt;** when the host stops working. It then uses
   its own accounts, polls their usage and routes its tools itself, and stays
   paired across restarts until the switch goes back on. See
   [sharing](sharing.md#when-the-host-stops-working).
@@ -139,14 +139,16 @@ required; OpenCode Go uses its own API key.
   settings are restored, and a Desktop still running keeps working through
   the relay on its own login until it restarts; sharing and the use of a
   paired host turn off. Claude Code and Codex keep their own logins; one with
-  none gets the account selected in Switcher (Codex only when its login lives
-  in `auth.json`, never in the keyring). Switcher then uses none of its
-  accounts: no proxying, token refresh, usage poll, banked reset or Claude
-  Code switch, because a refresh token rotated by two owners signs one of
+  none gets the account selected in Switcher (Codex only when it has run on
+  the computer and keeps its login in `auth.json`, never in the keyring).
+  Switcher then uses none of its accounts: no proxying, token refresh, usage
+  poll, banked reset or Claude Code switch, because a refresh token rotated by two owners signs one of
   them out. If a step fails, the ones before it are put back and nothing is
   handed back. Turning it off redoes what was undone, from a record kept in
-  `~/.switcher/handback.json`, and takes back a newer Codex login that Codex
-  refreshed meanwhile.
+  `~/.switcher/handback.json` and written before each change, so a hand-back
+  that stopped halfway is finished or set up again cleanly. It also takes
+  back the login Codex was given: Switcher keeps any tokens Codex refreshed
+  meanwhile and removes that `auth.json`, so the account has one owner again.
 - **Linux**: the same server, dashboard, sharing and command line, with a tray
   icon instead of the menu bar app, `systemd-inhibit` for keep awake and a
   systemd user service for Start at login. See [Linux](linux.md).

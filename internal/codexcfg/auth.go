@@ -34,9 +34,16 @@ type Login struct {
 	Present bool `json:"present"`
 	// AccountID is the ChatGPT account of a token login.
 	AccountID string `json:"account_id,omitempty"`
+	// APIKey reports an OpenAI API key beside or instead of the tokens.
+	APIKey    bool `json:"api_key,omitempty"`
 	tokens    *AuthTokens
 	lastFresh time.Time
+	digest    string
 }
+
+// Digest identifies the auth.json the login was read from, for
+// RemoveLoginIfUnchanged; "" when there was none.
+func (l Login) Digest() string { return l.digest }
 
 // Tokens returns the login's tokens, if it is a ChatGPT login.
 func (l Login) Tokens() (AuthTokens, time.Time, bool) {
@@ -91,6 +98,7 @@ func ReadLogin(configPath string) (Login, error) {
 	if err != nil {
 		return login, err
 	}
+	login.digest = digest(raw)
 	var f authFile
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return login, nil
@@ -102,7 +110,7 @@ func ReadLogin(configPath string) (Login, error) {
 		return login, nil
 	}
 	if f.OpenAIAPIKey != nil && *f.OpenAIAPIKey != "" {
-		login.Present = true
+		login.Present, login.APIKey = true, true
 	}
 	if f.Tokens != nil && f.Tokens.RefreshToken != "" {
 		login.Present = true
@@ -113,17 +121,29 @@ func ReadLogin(configPath string) (Login, error) {
 	return login, nil
 }
 
+// ErrNoCodex reports that Codex has never run here: its directory is missing.
+var ErrNoCodex = errors.New("Codex has not run on this computer")
+
+// HasRun reports whether Codex has run here: its directory exists.
+func HasRun(configPath string) bool {
+	info, err := os.Lstat(filepath.Dir(configPath))
+	return err == nil && info.IsDir()
+}
+
 // WriteLogin creates auth.json with a ChatGPT login and returns the digest of
-// what it wrote. It never replaces an existing file.
+// what it wrote. It never replaces an existing file, and never creates
+// Codex's directory: a login nobody uses would only rotate alongside
+// Switcher's copy once Codex is installed.
 func WriteLogin(configPath string, tokens AuthTokens, now time.Time) (string, error) {
 	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		return "", errors.New("the account has no complete login to hand to Codex")
 	}
 	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", ErrNoCodex
 	}
-	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+	if err != nil || !info.IsDir() {
 		return "", errors.New("the Codex directory is not a plain directory")
 	}
 	raw, err := json.MarshalIndent(authFile{AuthMode: "chatgpt", Tokens: &tokens, LastRefresh: now.UTC().Format(time.RFC3339Nano)}, "", "  ")
@@ -135,16 +155,11 @@ func WriteLogin(configPath string, tokens AuthTokens, now time.Time) (string, er
 	if err != nil {
 		return "", err
 	}
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
+	// A file that failed halfway is removed: an error means Codex got no
+	// login, so none of Switcher's tokens may be left with it.
+	err = errors.Join(func() error { _, err := f.Write(raw); return err }(), f.Sync())
+	if err = errors.Join(err, f.Close()); err != nil {
 		os.Remove(AuthPath(configPath))
-		return "", err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return "", err
-	}
-	if err := f.Close(); err != nil {
 		return "", err
 	}
 	return digest(raw), nil

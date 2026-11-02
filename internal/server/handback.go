@@ -60,11 +60,13 @@ func (a *API) handleHandback(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, handback.ErrBusy):
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "handback": status})
-	case err != nil && *body.Enabled:
+	case err != nil && (*body.Enabled || status.HandedBack):
+		// A hand-back that failed, or a set-up that kept Switcher handed
+		// back because a login could not be taken back yet.
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "handback": status})
 	default:
-		// Setting up again always lets Switcher use its accounts; a tool
-		// that could not be set up is named in the steps.
+		// Switcher uses its accounts again; a tool that could not be set up
+		// is named in the steps.
 		answer := map[string]any{"handback": status}
 		if err != nil {
 			answer["warning"] = err.Error()

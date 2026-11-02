@@ -32,6 +32,7 @@ func (c codexFiles) WriteLogin(t codexcfg.AuthTokens) (string, error) {
 func (c codexFiles) RemoveLoginIfUnchanged(written string) error {
 	return codexcfg.RemoveLoginIfUnchanged(c.path, written)
 }
+func (c codexFiles) HasRun() bool { return codexcfg.HasRun(c.path) }
 
 // DesktopRelay is Claude Desktop's relay setup in the given settings file.
 // A nil manager has nothing to restore.

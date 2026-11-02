@@ -367,8 +367,13 @@ func run(port, desktopRelayPort int) {
 		ClaudeCode: handback.ClaudeNative(proxyManager, st, claudeProvider),
 		Accounts:   handback.ProxyAccounts(proxyManager, st),
 		Sharing: handback.Funcs{
-			OnFunc:  func() bool { return sharing != nil && sharing.Status().Enabled },
-			SetFunc: func(on bool) error { return sharing.SetEnabled(on) },
+			OnFunc: func() bool { return sharing != nil && sharing.Status().Enabled },
+			SetFunc: func(on bool) error {
+				if sharing == nil {
+					return errors.New("sharing is unavailable on this computer right now")
+				}
+				return sharing.SetEnabled(on)
+			},
 		},
 		UseHost: handback.Funcs{
 			OnFunc: remoteClient.Connected,
