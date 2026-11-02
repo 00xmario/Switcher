@@ -257,7 +257,11 @@ func runUse(c *ctx, args []string) error {
 	case answer.Native != nil:
 		human += " Claude Code already used it."
 	}
-	c.result(map[string]any{"account": account, "claude_code_switched": switched}, human)
+	out := map[string]any{"account": account, "claude_code_switched": switched}
+	if answer.Host != "" {
+		out["claude_code_host"] = answer.Host // whose Claude Code claude_code_switched is about
+	}
+	c.result(out, human)
 	return nil
 }
 

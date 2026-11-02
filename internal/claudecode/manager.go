@@ -73,6 +73,29 @@ func (m *Manager) saveAccount(a store.Account) error {
 
 func (m *Manager) Status() Status { m.statusMu.Lock(); defer m.statusMu.Unlock(); return m.status }
 
+// ErrUnmanagedLogin refuses a switch, marked with KeepUnmanaged, that would
+// replace a Claude Code login to an account Switcher does not have.
+var ErrUnmanagedLogin = errors.New("Claude Code is logged in to an account that is not in Switcher")
+
+type keepUnmanagedKey struct{}
+
+// KeepUnmanaged marks a switch that must leave a Claude Code login to an
+// account Switcher does not have, such as one another computer asked for:
+// that login is this computer's own.
+func KeepUnmanaged(ctx context.Context) context.Context {
+	return context.WithValue(ctx, keepUnmanagedKey{}, true)
+}
+
+// inSwitcher reports whether identity is one of Switcher's Claude accounts.
+func inSwitcher(identity Identity, accounts []store.Account) bool {
+	for _, a := range accounts {
+		if a.Provider == "claude" && identity.UUID == a.Token.AccountID && strings.EqualFold(identity.Email, a.Email) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) SetReceiptReader(reader func(string) (bool, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -971,6 +994,9 @@ func (m *Manager) SwitchWithReceipt(ctx context.Context, id string, commit func(
 	owner, err := m.owner(ctx, initial, accounts)
 	if err != nil {
 		return result, err
+	}
+	if keep, _ := ctx.Value(keepUnmanagedKey{}).(bool); keep && owner.UUID != "" && !inSwitcher(owner, accounts) {
+		return result, ErrUnmanagedLogin
 	}
 	target, err := m.store.Get(id)
 	if err != nil {

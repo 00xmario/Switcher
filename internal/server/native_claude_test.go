@@ -65,6 +65,8 @@ func nativeClaudeFixtureAPI(t *testing.T) (*API, *proxy.Manager, claudecode.Path
 			t.Fatal(err)
 		}
 	}
+	// A login of the user's own that Switcher does not have.
+	identities["fixture-token-x"] = claudecode.Identity{UUID: "uuid-x", Email: "x@work.example.test"}
 	config, _ := json.Marshal(map[string]any{"oauthAccount": identities["fixture-token-a"], "projects": map[string]any{"fixture": "preserve"}})
 	credential, _ := json.Marshal(map[string]any{"claudeAiOauth": map[string]any{"accessToken": "fixture-token-a", "refreshToken": "fixture-refresh-a", "expiresAt": time.Now().Add(time.Hour).UnixMilli()}, "mcpOAuth": map[string]any{"fixture-secret": "preserve"}})
 	if err := os.WriteFile(paths.ConfigFile, config, 0600); err != nil {

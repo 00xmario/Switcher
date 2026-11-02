@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"switcher/internal/autostart"
 	"switcher/internal/awake"
+	"switcher/internal/claudecode"
 	"switcher/internal/claudesync"
 	"switcher/internal/codexcfg"
 	"switcher/internal/config"
@@ -1209,34 +1210,18 @@ func (a *API) handleActivate(w http.ResponseWriter, r *http.Request) {
 	// on it, or a Mac paired with it: a paired Mac uses this one's accounts,
 	// so its switch is this Mac's switch, Claude Code's login included.
 	_, paired := remote.PairedDevice(r)
-	if native, ok := a.Providers[account.Provider].(provider.NativeLoginProvider); ok && native.NativeEnabled() {
+	native, nativeOK := a.Providers[account.Provider].(provider.NativeLoginProvider)
+	nativeOK = nativeOK && native.NativeEnabled()
+	if nativeOK {
 		if _, approved := phone.ApprovedPhone(r.Context()); !approved && !paired && !loopbackOnly(w, r) {
 			return
 		}
 	}
-	result, err := a.Proxy.ActivateForClient(r.Context(), id)
-	if paired && result != nil {
-		// The paired Mac shows this message; it is about this Mac.
-		host := remote.MachineName()
-		if err != nil && !errors.Is(err, proxy.ErrHandedBack) {
-			// Claude Code's login did not switch, for example while this
-			// Mac's Keychain is locked. The account the paired Macs use
-			// still switches.
-			if aerr := a.Proxy.Activate(id); aerr == nil {
-				writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "host": host,
-					"native": map[string]any{"changed": false, "message": "Claude Code on " + host + " still uses its previous login: " + err.Error()}})
-				return
-			}
-		}
-		if err == nil {
-			result.Message = "Claude Code on " + host + " switched too."
-			if !result.Changed {
-				result.Message = "Claude Code on " + host + " already used this login."
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "host": host, "native": result})
-			return
-		}
+	if paired {
+		a.activateForPairedMac(w, r, id, nativeOK)
+		return
 	}
+	result, err := a.Proxy.ActivateForClient(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, proxy.ErrHandedBack) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
@@ -1254,6 +1239,51 @@ func (a *API) handleActivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "native": result})
+}
+
+// activateForPairedMac switches for a paired Mac, which uses this Mac's
+// accounts: the account every Mac uses and, when Switcher manages it, this
+// Mac's own Claude Code login. A Claude Code login to an account Switcher
+// does not have stays this Mac's, as automatic switching leaves it too. The
+// paired Mac shows the message, so it names this Mac and leaves out paths.
+func (a *API) activateForPairedMac(w http.ResponseWriter, r *http.Request, id string, native bool) {
+	host := remote.MachineName()
+	answer := func(message string, changed bool) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "host": host,
+			"native": map[string]any{"changed": changed, "message": message}})
+	}
+	// A dropped connection must not cut the switch off halfway.
+	ctx, cancel := context.WithTimeout(claudecode.KeepUnmanaged(context.WithoutCancel(r.Context())), time.Minute)
+	defer cancel()
+	result, err := a.Proxy.ActivateForClient(ctx, id)
+	switch {
+	case native && errors.Is(err, claudecode.ErrUnmanagedLogin):
+		if aerr := a.Proxy.Activate(id); aerr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not activate account"})
+			return
+		}
+		answer("Claude Code on "+host+" keeps its own login, which is not one of Switcher's accounts.", false)
+	case errors.Is(err, proxy.ErrHandedBack):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, store.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such account"})
+	case err != nil && result != nil:
+		// Claude Code's login did not switch, for example while this Mac's
+		// Keychain is locked. The account the paired Macs use still does.
+		if aerr := a.Proxy.Activate(id); aerr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not activate account"})
+			return
+		}
+		answer("Claude Code on "+host+" still uses its previous login: "+err.Error(), false)
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not activate account"})
+	case result == nil:
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": id, "host": host})
+	case result.Changed:
+		answer("Claude Code on "+host+" switched too.", true)
+	default:
+		answer("Claude Code on "+host+" already used this login.", false)
+	}
 }
 
 // handleUsage answers with the cost/token summary for a window

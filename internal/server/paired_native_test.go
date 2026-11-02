@@ -77,3 +77,29 @@ func TestAPairedMacsSwitchStillSwitchesWhenClaudeCodeCannot(t *testing.T) {
 		t.Fatalf("the host's selection is %s", manager.ActiveID("claude"))
 	}
 }
+
+// A Claude Code login on the host to an account Switcher does not have is
+// the host's own: a paired Mac's switch leaves it, as automatic switching
+// does, and still switches the account every Mac uses.
+func TestAPairedMacsSwitchLeavesALoginSwitcherDoesNotManage(t *testing.T) {
+	api, manager, paths, _, _, _ := nativeClaudeFixtureAPI(t)
+	mux := http.NewServeMux()
+	api.Register(mux)
+	client := pairedClientOf(t, mux)
+	own := `{"claudeAiOauth":{"accessToken":"fixture-token-x","refreshToken":"fixture-refresh-x","expiresAt":4102444800000}}`
+	if err := os.WriteFile(paths.CredentialsFile, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	client.ServeHTTP(w, httptest.NewRequest("POST", "/api/accounts/claude-b/activate", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "keeps its own login") || strings.Contains(w.Body.String(), "backup") {
+		t.Fatalf("switch from the paired Mac: %d %s", w.Code, w.Body)
+	}
+	if manager.ActiveID("claude") != "claude-b" {
+		t.Fatalf("the host's selection is %s", manager.ActiveID("claude"))
+	}
+	if raw, _ := os.ReadFile(paths.CredentialsFile); string(raw) != own {
+		t.Fatalf("the host's own Claude Code login was replaced: %s", raw)
+	}
+}
