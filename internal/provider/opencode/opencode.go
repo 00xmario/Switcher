@@ -131,6 +131,28 @@ func probeKey(ctx context.Context, key string) (usageSnapshot, error) {
 	return fetchUsage(ctx, key)
 }
 
+// errorCode names why OpenCode refused a request, from the error code in its
+// answer, such as an expired key. Only a known code or a short identifier is
+// kept: the rest of the answer stays out of errors and logs.
+func errorCode(body io.Reader) string {
+	var answer struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&answer) != nil {
+		return ""
+	}
+	code := answer.Error.Code
+	if code == "api_key_expired" {
+		return "this API key has expired; create a new one in the OpenCode console"
+	}
+	if code == "" || len(code) > 40 || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz_") != "" {
+		return ""
+	}
+	return code
+}
+
 // fetchUsage queries the Zen usage endpoint.
 func fetchUsage(ctx context.Context, key string) (usageSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -147,7 +169,11 @@ func fetchUsage(ctx context.Context, key string) (usageSnapshot, error) {
 		return usageSnapshot{}, fmt.Errorf("%w: %w", provider.ErrUsageUnavailable, err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		code := errorCode(resp.Body)
 		resp.Body.Close()
+		if code != "" {
+			return usageSnapshot{}, fmt.Errorf("%w: %s", provider.UsageStatusError(resp.StatusCode), code)
+		}
 		return usageSnapshot{}, provider.UsageStatusError(resp.StatusCode)
 	}
 	var snap struct {
