@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"switcher/internal/fileperm"
 )
 
 var errSetupMissing = errors.New("setup path missing")
@@ -48,7 +50,7 @@ func openSetupDirectory(path string, create bool) (*os.File, error) {
 		}
 		fd = next
 		var st unix.Stat_t
-		if unix.Fstat(fd, &st) != nil || (st.Uid != 0 && st.Uid != uint32(os.Getuid())) || (st.Mode&0022 != 0 && !(st.Uid == 0 && st.Mode&unix.S_ISVTX != 0)) || (i == len(parts)-1 && st.Uid != uint32(os.Getuid())) {
+		if unix.Fstat(fd, &st) != nil || (st.Uid != 0 && st.Uid != uint32(os.Getuid())) || (fileperm.OthersCanWrite(st.Mode, st.Gid) && !(st.Uid == 0 && st.Mode&unix.S_ISVTX != 0)) || (i == len(parts)-1 && st.Uid != uint32(os.Getuid())) {
 			unix.Close(fd)
 			return nil, ErrUnavailable
 		}
@@ -88,7 +90,7 @@ func readSetupFile(dir *os.File, name string) (setupFile, error) {
 	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	var st unix.Stat_t
-	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uint32(os.Getuid()) || st.Nlink != 1 || st.Mode&0022 != 0 || st.Size > maxSetupSettings {
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uint32(os.Getuid()) || st.Nlink != 1 || fileperm.OthersCanWrite(st.Mode, st.Gid) || st.Size > maxSetupSettings {
 		return out, ErrUnavailable
 	}
 	info, err := f.Stat()
@@ -104,7 +106,7 @@ func readSetupFile(dir *os.File, name string) (setupFile, error) {
 		return out, setupConflict()
 	}
 	var named unix.Stat_t
-	if unix.Fstatat(int(dir.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || named.Dev != st.Dev || named.Ino != st.Ino || named.Uid != uint32(os.Getuid()) || named.Mode&0022 != 0 || named.Nlink != 1 {
+	if unix.Fstatat(int(dir.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || named.Dev != st.Dev || named.Ino != st.Ino || named.Uid != uint32(os.Getuid()) || fileperm.OthersCanWrite(named.Mode, named.Gid) || named.Nlink != 1 {
 		return out, setupConflict()
 	}
 	return setupFile{data: data, exists: true, info: info}, nil
@@ -173,7 +175,7 @@ func acquireSetupLease(ctx context.Context, dir *os.File, name string) (*setupLe
 		f := os.NewFile(uintptr(fd), name)
 		info, e := f.Stat()
 		var st, named unix.Stat_t
-		safe := e == nil && unix.Fstat(fd, &st) == nil && st.Uid == uint32(os.Getuid()) && st.Mode&0022 == 0
+		safe := e == nil && unix.Fstat(fd, &st) == nil && st.Uid == uint32(os.Getuid()) && !fileperm.OthersCanWrite(st.Mode, st.Gid)
 		if !safe {
 			f.Close()
 			return nil, setupConflict()
@@ -200,7 +202,7 @@ func acquireSetupLease(ctx context.Context, dir *os.File, name string) (*setupLe
 func (l *setupLease) checkLocked() bool {
 	var st, named unix.Stat_t
 	info, err := l.file.Stat()
-	if l.lost || err != nil || !os.SameFile(info, l.info) || time.Since(info.ModTime()) > 10*time.Second || !setupDirectoryCurrent(l.dir) || unix.Fstat(int(l.file.Fd()), &st) != nil || st.Uid != uint32(os.Getuid()) || st.Mode&0022 != 0 || unix.Fstatat(int(l.dir.Fd()), l.name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || named.Dev != st.Dev || named.Ino != st.Ino {
+	if l.lost || err != nil || !os.SameFile(info, l.info) || time.Since(info.ModTime()) > 10*time.Second || !setupDirectoryCurrent(l.dir) || unix.Fstat(int(l.file.Fd()), &st) != nil || st.Uid != uint32(os.Getuid()) || fileperm.OthersCanWrite(st.Mode, st.Gid) || unix.Fstatat(int(l.dir.Fd()), l.name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || named.Dev != st.Dev || named.Ino != st.Ino {
 		l.lost = true
 		return false
 	}

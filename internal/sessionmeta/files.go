@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"switcher/internal/fileperm"
 )
 
 const (
@@ -34,7 +36,7 @@ func safeDirectory(st *unix.Stat_t, own bool) bool {
 	uid := uint32(os.Getuid())
 	return st.Mode&unix.S_IFMT == unix.S_IFDIR &&
 		(st.Uid == uid || !own && st.Uid == 0) &&
-		(st.Mode&0022 == 0 || !own && st.Uid == 0 && st.Mode&unix.S_ISVTX != 0)
+		(!fileperm.OthersCanWrite(st.Mode, st.Gid) || !own && st.Uid == 0 && st.Mode&unix.S_ISVTX != 0)
 }
 
 // Pin every path component without following symlinks. Root-owned sticky temp
@@ -145,7 +147,7 @@ func walkMetadata(path string, depth int, b *budget, accept func(string) bool, v
 }
 
 func safeFile(st *unix.Stat_t) bool {
-	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Uid == uint32(os.Getuid()) && st.Nlink == 1 && st.Mode&0022 == 0 && st.Size >= 0 && st.Size <= maxFile
+	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Uid == uint32(os.Getuid()) && st.Nlink == 1 && !fileperm.OthersCanWrite(st.Mode, st.Gid) && st.Size >= 0 && st.Size <= maxFile
 }
 
 func readMetadata(dir *os.File, name string, b *budget) []byte {

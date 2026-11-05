@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"switcher/internal/desktoprelay"
+	"switcher/internal/fileperm"
 )
 
 func setupFixture(t *testing.T) (*desktoprelay.Manager, desktoprelay.Config, string) {
@@ -292,5 +293,38 @@ func TestSetupKeepsLocalServersOffTheRelayAndRestoresNoProxy(t *testing.T) {
 	json.Unmarshal(setupRead(t, path), &after)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("disconnect left %s", setupRead(t, path))
+	}
+}
+
+// Ubuntu's umask leaves the Claude folder and settings group-writable for the
+// user's private group. That is as private as 0700, so Connect works there;
+// group write for a shared group (a Mac's staff) is still refused.
+func TestSetupAcceptsGroupWriteOnlyForTheUsersPrivateGroup(t *testing.T) {
+	m, _, path := setupFixture(t)
+	dir := filepath.Dir(path)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"env":{"KEEP":"yes"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0664); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.Configure(context.Background(), path)
+	if fileperm.PrivateGroup(uint32(os.Getgid())) {
+		if err != nil {
+			t.Fatalf("private group: %v", err)
+		}
+		if setupEnv(t, path)["KEEP"] != "yes" {
+			t.Fatal("configure lost an existing setting")
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("settings writable by a shared group were configured")
 	}
 }
