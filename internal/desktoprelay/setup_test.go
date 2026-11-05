@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -313,6 +314,28 @@ func TestSetupAcceptsGroupWriteOnlyForTheUsersPrivateGroup(t *testing.T) {
 	}
 	if err := os.Chmod(path, 0664); err != nil {
 		t.Fatal(err)
+	}
+	// A setgid temp folder would hand the files its own group.
+	if err := os.Chown(dir, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(path, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	if fileperm.PrivateGroup(uint32(os.Getgid())) {
+		// An ACL entry for another user hides behind the same group bits.
+		if setfacl, err := exec.LookPath("setfacl"); err == nil {
+			if out, err := exec.Command(setfacl, "-m", "u:nobody:rw", path).CombinedOutput(); err == nil {
+				if _, err := m.Configure(context.Background(), path); err == nil {
+					t.Fatal("settings another user may write through an ACL were configured")
+				}
+				if out, err := exec.Command(setfacl, "-b", path).CombinedOutput(); err != nil {
+					t.Fatalf("setfacl -b: %v %s", err, out)
+				}
+			} else {
+				t.Logf("no ACLs here: %s", out)
+			}
+		}
 	}
 	_, err := m.Configure(context.Background(), path)
 	if fileperm.PrivateGroup(uint32(os.Getgid())) {

@@ -390,9 +390,11 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
       await copy(JSON.stringify(profile.env, null, 2));
       profile = null;
       failed = false;
+      loadFailed = false;
       message = 'Environment copied.';
     } catch {
       failed = true;
+      loadFailed = false;
       message = 'Could not copy. Select the text and copy it manually.';
     }
     render();

@@ -4,8 +4,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
-	"sync"
 	"testing"
 )
 
@@ -14,53 +12,75 @@ func TestFindPrivateGroup(t *testing.T) {
 	if err != nil {
 		t.Skip(err)
 	}
-	gid, _ := strconv.Atoi(me.Gid)
 	passwd := me.Username + ":x:" + me.Uid + ":" + me.Gid + "::/home/me:/bin/sh\n"
-	for _, c := range []struct {
-		name, group, passwd string
-		want                int
-	}{
-		{"the user's own group", "root:x:0:\n" + me.Username + ":x:" + me.Gid + ":\n", passwd, gid},
-		{"the user listed as its member", me.Username + ":x:" + me.Gid + ":" + me.Username + "\n", passwd, gid},
-		{"a shared group", "staff:x:" + me.Gid + ":\n", passwd, -1},
-		{"another member", me.Username + ":x:" + me.Gid + ":someone\n", passwd, -1},
-		{"another user's primary group", me.Username + ":x:" + me.Gid + ":\n", passwd + "someone:x:99999:" + me.Gid + "::/:/bin/sh\n", -1},
-		{"no group entry", "root:x:0:\n", passwd, -1},
+	own := me.Username + ":x:" + me.Gid + ":\n"
+	files := "passwd: files systemd\ngroup: files [SUCCESS=merge] systemd\n"
+	type setup struct {
+		name, group, passwd, nsswitch string
+		sssdConf, userdbRecord        bool
+		private                       bool
+	}
+	for _, c := range []setup{
+		{"the user's own group", "root:x:0:\n" + own, passwd, files, false, false, true},
+		{"the user listed as its member", me.Username + ":x:" + me.Gid + ":" + me.Username + "\n", passwd, files, false, false, true},
+		{"the gid written with a leading zero", me.Username + ":x:0" + me.Gid + ":\n", passwd, files, false, false, true},
+		{"no nsswitch.conf", own, passwd, "", false, false, true},
+		{"sss listed while sssd is not set up", own, passwd, "passwd: files systemd sss\ngroup: files systemd sss\n", false, false, true},
+		{"a shared group", "staff:x:" + me.Gid + ":\n", passwd, files, false, false, false},
+		{"another member", me.Username + ":x:" + me.Gid + ":someone\n", passwd, files, false, false, false},
+		{"another group line with the gid", own + "other:x:" + me.Gid + ":\n", passwd, files, false, false, false},
+		{"another user's primary group", own, passwd + "someone:x:99999:" + me.Gid + "::/:/bin/sh\n", files, false, false, false},
+		{"no group entry", "root:x:0:\n", passwd, files, false, false, false},
+		{"an unreadable gid", own + "odd:x:abc:\n", passwd, files, false, false, false},
+		{"an NIS line", own + "+:::\n", passwd, files, false, false, false},
+		{"LDAP groups", own, passwd, "passwd: files ldap\ngroup: files ldap\n", false, false, false},
+		{"a configured sssd", own, passwd, "passwd: files sss\ngroup: files sss\n", true, false, false},
+		{"systemd userdb records", own, passwd, files, false, true, false},
+		{"group missing from nsswitch.conf", own, passwd, "passwd: files\n", false, false, false},
 	} {
 		dir := t.TempDir()
-		groupFile, passwdFile := filepath.Join(dir, "group"), filepath.Join(dir, "passwd")
-		os.WriteFile(groupFile, []byte(c.group), 0o600)
-		os.WriteFile(passwdFile, []byte(c.passwd), 0o600)
-		if got := findPrivateGroup(groupFile, passwdFile); got != c.want {
-			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
+		path := func(name string) string { return filepath.Join(dir, name) }
+		os.WriteFile(path("group"), []byte(c.group), 0o600)
+		os.WriteFile(path("passwd"), []byte(c.passwd), 0o600)
+		if c.nsswitch != "" {
+			os.WriteFile(path("nsswitch.conf"), []byte(c.nsswitch), 0o600)
+		}
+		if c.sssdConf {
+			os.WriteFile(path("sssd.conf"), []byte("[sssd]\n"), 0o600)
+		}
+		userdb := path("userdb")
+		if c.userdbRecord {
+			os.Mkdir(userdb, 0o700)
+			os.WriteFile(filepath.Join(userdb, "someone.membership"), []byte("{}"), 0o600)
+		}
+		got := findPrivateGroup(path("group"), path("passwd"), path("nsswitch.conf"), path("sssd.conf"), path("sss-pipe"), []string{userdb})
+		if (got >= 0) != c.private {
+			t.Errorf("%s: got %d, want private=%v", c.name, got, c.private)
 		}
 	}
-	if got := findPrivateGroup("/nonexistent/group", "/nonexistent/passwd"); got != -1 {
-		t.Errorf("unreadable files: got %d", got)
+}
+
+func TestSignatureNoticesAChangedFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "group")
+	os.WriteFile(file, []byte("a:x:1:\n"), 0o600)
+	before := signature([]string{file}, nil)
+	os.WriteFile(file, []byte("a:x:1:bob\n"), 0o600)
+	if signature([]string{file}, nil) == before {
+		t.Fatal("a changed group file kept its signature")
 	}
 }
 
 func TestOthersCanWrite(t *testing.T) {
-	privateOnce.Do(func() {})
-	privateGID = 1000
-	defer func() { privateGID = -1; privateOnce = sync.Once{} }()
-	for _, c := range []struct {
-		mode uint32
-		gid  uint32
-		want bool
-	}{
-		{0o644, 20, false},
-		{0o664, 1000, false}, // the user's private group
-		{0o664, 20, true},    // a shared group
-		{0o775, 1000, false},
-		{0o646, 1000, true}, // world-writable
-		{0o1777, 0, true},
-	} {
-		if got := OthersCanWrite(c.mode, c.gid); got != c.want {
-			t.Errorf("mode %o gid %d: got %v", c.mode, c.gid, got)
-		}
+	if !OthersCanWrite(-1, uint32(0o646), uint32(os.Getgid())) {
+		t.Error("world-writable counted as safe")
 	}
-	if OthersCanWrite(uint16(0o664), 1000) {
-		t.Error("uint16 modes (macOS) must work the same")
+	if OthersCanWrite(-1, uint32(0o644), 20) || OthersCanWrite(-1, uint16(0o755), 20) {
+		t.Error("owner-only write counted as unsafe")
+	}
+	if !OthersCanWrite(-1, uint32(0o664), 4294967294) {
+		t.Error("write for a group that is not the user's private group counted as safe")
+	}
+	if !privateGroupsApply && !OthersCanWrite(-1, uint16(0o664), uint32(os.Getgid())) {
+		t.Error("group write counted as safe outside Linux")
 	}
 }
