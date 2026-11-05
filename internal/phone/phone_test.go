@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -413,5 +414,29 @@ func TestTheAPIRouterAdmitsOnlyThePhoneRoutes(t *testing.T) {
 	}
 	if status, _ := x.h.call(r, http.MethodPost, "/api/accounts/codex-a/use-reset", []byte(`{}`)); status != http.StatusOK || len(x.calls) != 1 {
 		t.Fatalf("a phone route was refused: %d", status)
+	}
+}
+
+// The page's scripts import their modules from this listener, which serves
+// only the listed assets; a module missing from the list breaks the page.
+func TestThePageGetsEveryModuleItImports(t *testing.T) {
+	served := map[string]bool{}
+	for _, name := range assets {
+		served[name] = true
+	}
+	imports := regexp.MustCompile(`(?m)^\s*(?:import|export)\b[^'"]*from\s+'\./([^']+)'`)
+	for _, script := range []string{"phone.js", "account-cards.js"} {
+		if !served[script] {
+			t.Fatalf("%s is not served", script)
+		}
+		source, err := os.ReadFile(filepath.Join("..", "..", "web", script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range imports.FindAllStringSubmatch(string(source), -1) {
+			if !served[m[1]] {
+				t.Errorf("%s imports %s, which the phone listener does not serve", script, m[1])
+			}
+		}
 	}
 }

@@ -74,6 +74,8 @@ verify-common:
 	node --check web/brand.js
 	node --check web/settings-visuals.js
 	node web/settings-visuals_test.mjs
+	node --check web/account-cards.js
+	node web/account-cards_test.mjs
 	node --check web/phone.js
 	node web/phone_test.mjs
 	node --check web/phone-settings.js

@@ -88,11 +88,12 @@ func (h *Handler) api() http.Handler {
 }
 
 var assets = map[string]string{
-	"/":            "phone.html",
-	"/phone.js":    "phone.js",
-	"/phone.css":   "phone.css",
-	"/brand.js":    "brand.js",
-	"/favicon.png": "favicon.png",
+	"/":                 "phone.html",
+	"/phone.js":         "phone.js",
+	"/phone.css":        "phone.css",
+	"/account-cards.js": "account-cards.js",
+	"/brand.js":         "brand.js",
+	"/favicon.png":      "favicon.png",
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
