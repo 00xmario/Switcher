@@ -51,6 +51,9 @@ type State struct {
 		Enabled   bool `json:"enabled"`
 	} `json:"autostart"`
 	ResetNotifications bool `json:"reset_notifications"`
+	// MenuUsageBars is the dashboard's choice of usage bars in the menu;
+	// unset means on, as in the Mac menu.
+	MenuUsageBars *bool `json:"menu_usage_bars"`
 }
 
 // Account is one account card.
@@ -62,12 +65,17 @@ type Account struct {
 	Active                bool   `json:"active"`
 	NativeActive          bool   `json:"native_active"`
 	NativeSwitchAvailable bool   `json:"native_switch_available"`
-	Usage                 *struct {
+	// ExhaustedUntil is when an account that ran out of usage gets it back.
+	ExhaustedUntil float64 `json:"exhausted_until"`
+	Usage          *struct {
 		Windows []Window `json:"windows"`
 	} `json:"usage"`
 	Health *struct {
 		Condition string `json:"condition"`
 	} `json:"health"`
+	ResetCredits *struct {
+		Count int `json:"count"`
+	} `json:"reset_credits"`
 }
 
 // Selected is the account the account card marks: Claude Code's login for

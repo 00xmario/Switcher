@@ -1,9 +1,11 @@
 package tray
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -127,8 +129,18 @@ func TestMenuShowsAccountsUsageAndTheSwitches(t *testing.T) {
 	c.Refresh(context.Background())
 	items := ui.last()
 	work := find(items, "work@example.com · Max 20x")
-	if work == nil || !work.Checked || work.Title != "work@example.com · Max 20x · Session 34% · Weekly 61%" || work.Action != "activate:claude-1" {
+	if work == nil || !work.Checked || work.Title != "work@example.com · Max 20x" || work.Action != "activate:claude-1" {
 		t.Fatalf("Claude Code's account:\n%s", titles(items))
+	}
+	// Its usage follows on dim lines, as what is left.
+	if text := titles(items); !strings.Contains(text, "work@example.com · Max 20x\n    Session: ▰▰▰▱▱ 66% left\n    Weekly: ▰▰▱▱▱ 39% left\n") {
+		t.Fatalf("usage lines:\n%s", text)
+	}
+	if line := find(items, "    Session:"); !line.Disabled || line.Action != "" {
+		t.Fatalf("a usage line is clickable: %+v", line)
+	}
+	if head := find(items, "Claude"); head.Icon != "claude" || !head.Disabled {
+		t.Fatalf("provider head: %+v", head)
 	}
 	// Claude marks Claude Code's login, not the proxy's selection.
 	if home := find(items, "home@example.com"); home == nil || home.Checked {
@@ -313,5 +325,100 @@ func TestTheHostIsUpdatedFromHere(t *testing.T) {
 	c.Refresh(ctx)
 	if find(ui.last(), "Update Studio") != nil {
 		t.Fatalf("older host:\n%s", titles(ui.last()))
+	}
+}
+
+// The menu says what is left, rounded and with the reset countdown, the way
+// the Mac menu and the phone page do, so the three never disagree.
+func TestUsageReadsAsWhatIsLeftWithItsReset(t *testing.T) {
+	f, ui, c, now := newFixture(t)
+	at := func(d time.Duration) int64 { return now.Add(d).Unix() }
+	accounts := baseState()["accounts"].([]map[string]any)
+	accounts[0]["usage"] = map[string]any{"windows": []map[string]any{
+		{"label": "Session", "used_percent": 34, "resets_at": at(2*time.Hour + 20*time.Minute + 30*time.Second)},
+		{"label": "Weekly", "used_percent": 69, "resets_at": at(56*time.Hour + 10*time.Minute)},
+		{"label": "Fable", "used_percent": 92.4, "resets_at": at(30 * time.Second)},
+		{"label": "Opus", "used_percent": 0, "resets_at": at(-time.Minute)},
+	}}
+	accounts[0]["reset_credits"] = map[string]any{"count": 2}
+	accounts[1]["exhausted_until"] = at(time.Hour)
+	accounts[1]["health"] = map[string]any{"condition": "needs_relogin"}
+	accounts[1]["usage"] = map[string]any{"windows": []map[string]any{{"label": "Weekly", "used_percent": 100}, {"label": "Session", "used_percent": 3}}}
+	f.set("accounts", accounts)
+	c.Refresh(context.Background())
+	want := strings.Join([]string{
+		"work@example.com · Max 20x · ⚡ 2 banked",
+		"    Session: ▰▰▰▱▱ 66% left · ↻ 2h 20m",
+		"    Weekly: ▰▰▱▱▱ 31% left · ↻ 2d 8h",
+		"    Fable: ▰▱▱▱▱ 8% left · ↻ 1m",
+		"    Opus: ▰▰▰▰▰ 100% left",
+		"home@example.com · Max 5x",
+		"    Out of usage · back in 1h 0m",
+		"    Sign in again",
+		"    Weekly: ▱▱▱▱▱ 0% left",
+		"    Session: ▰▰▰▰▱ 97% left",
+		"—",
+		"Codex",
+		"work@example.com · Pro 5x",
+		"    No usage reported yet",
+	}, "\n")
+	if text := titles(ui.last()); !strings.Contains(text, want) {
+		t.Fatalf("menu:\n%s\nwant:\n%s", text, want)
+	}
+
+	// Without usage bars in the dashboard's settings, the menu has none.
+	f.set("menu_usage_bars", false)
+	c.Refresh(context.Background())
+	if find(ui.last(), "    Weekly: 31% left · ↻ 2d 8h") == nil {
+		t.Fatalf("without bars:\n%s", titles(ui.last()))
+	}
+}
+
+func TestProvidersMissingFromTheOrderComeLast(t *testing.T) {
+	st := State{Order: []string{"codex"}, Accounts: []Account{
+		{ID: "o", Provider: "opencode", Email: "o@example.com"},
+		{ID: "x", Provider: "codex", Email: "x@example.com"},
+	}}
+	text := titles(Build(st, Status{Running: true}, time.Unix(0, 0)))
+	if strings.Index(text, "Codex") > strings.Index(text, "OpenCode") || !strings.Contains(text, "o@example.com") {
+		t.Fatalf("menu:\n%s", text)
+	}
+}
+
+// A countdown ticking or an account switching changes the menu in place;
+// only new or removed lines rebuild it.
+func TestMenuShapeDecidesBetweenInPlaceAndRebuild(t *testing.T) {
+	st := State{Accounts: []Account{{ID: "a", Provider: "codex", Email: "a@example.com", Active: true}}}
+	now := time.Unix(1_800_000_000, 0)
+	st.Accounts[0].Usage = &struct {
+		Windows []Window `json:"windows"`
+	}{Windows: []Window{{Label: "Weekly", UsedPercent: 10, ResetsAt: float64(now.Add(3 * time.Hour).Unix())}}}
+	before := Build(st, Status{Running: true}, now)
+	later := Build(st, Status{Running: true}, now.Add(time.Minute))
+	if titles(before) == titles(later) || !sameShape(before, later) {
+		t.Fatal("a ticking countdown must change the menu in place")
+	}
+	st.Accounts[0].Active = false
+	if switched := Build(st, Status{Running: true}, now); !sameShape(before, switched) {
+		t.Fatal("switching accounts must change the menu in place")
+	}
+	st.Accounts = append(st.Accounts, Account{ID: "b", Provider: "codex", Email: "b@example.com"})
+	if sameShape(before, Build(st, Status{Running: true}, now)) {
+		t.Fatal("a new account must rebuild the menu")
+	}
+}
+
+func TestEveryProviderHasAMenuLogo(t *testing.T) {
+	for provider := range providerNames {
+		img, err := png.Decode(bytes.NewReader(logo(provider)))
+		if err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
+		if b := img.Bounds(); b.Dx() != 32 || b.Dy() != 32 {
+			t.Fatalf("%s: %v", provider, b)
+		}
+	}
+	if logo("unknown") != nil {
+		t.Fatal("an unknown provider has a logo")
 	}
 }
