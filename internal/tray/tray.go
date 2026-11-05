@@ -28,7 +28,9 @@ type Options struct {
 	Open func(url string)
 	// Updated restarts the tray when its binary was replaced by an update;
 	// it returns only when there was nothing to restart into.
-	Updated  func()
+	Updated func()
+	// Interval is how often a server that cannot report changes is read,
+	// and how long a failed wait for changes pauses; 3 seconds.
 	Interval time.Duration
 	Now      func() time.Time
 }
@@ -51,7 +53,7 @@ type Controller struct {
 // New returns a controller drawing on ui.
 func New(opt Options, ui UI) *Controller {
 	if opt.Interval == 0 {
-		opt.Interval = 15 * time.Second
+		opt.Interval = 3 * time.Second
 	}
 	if opt.Now == nil {
 		opt.Now = time.Now
@@ -59,19 +61,69 @@ func New(opt Options, ui UI) *Controller {
 	return &Controller{opt: opt, ui: ui, resets: map[string]float64{}, alerted: map[string]float64{}}
 }
 
-// Run polls until ctx ends. A server that is not running is started once.
+// pollRounds is how many reads a server that cannot report changes gets
+// before it is asked again, in case an update taught it.
+const pollRounds = 20
+
+// Run keeps the menu in step until ctx ends. It waits for the server to
+// report a change and then reads the state, so an account switched from
+// another computer shows within a second or two; a server too old to report
+// changes is read every Interval instead. A server that is not running is
+// started once.
 func (c *Controller) Run(ctx context.Context) {
 	c.Refresh(ctx)
-	ticker := time.NewTicker(c.opt.Interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	tag := ""
+	for ctx.Err() == nil {
+		next, changed, err := c.opt.Client.Changes(ctx, tag)
+		switch {
+		case errors.Is(err, ErrNoChanges):
+			tag = ""
+			for i := 0; i < pollRounds && c.pause(ctx); i++ {
+				c.Refresh(ctx)
+			}
+		case err != nil:
+			// Stopped, restarting or refusing: read the state after a pause,
+			// which also starts a stopped server once.
+			tag = ""
+			if c.pause(ctx) {
+				c.Refresh(ctx)
+			}
+		case changed && next == tag:
+			// A changed state keeps its tag only on a server that is not
+			// keeping its side; never ask it in a tight loop.
+			if c.pause(ctx) {
+				c.Refresh(ctx)
+			}
+		case changed:
+			tag = next
 			c.Refresh(ctx)
+		default:
+			// Nothing changed, but countdowns and reset alerts move on.
+			tag = next
+			c.tick()
 		}
 	}
+}
+
+// pause waits one Interval; false means ctx ended.
+func (c *Controller) pause(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(c.opt.Interval):
+		return true
+	}
+}
+
+// tick sends due reset alerts and redraws the menu from the state it has.
+func (c *Controller) tick() {
+	c.mu.Lock()
+	alerts := c.dueAlertsLocked()
+	c.mu.Unlock()
+	for _, a := range alerts {
+		c.ui.Notify(a[0], a[1])
+	}
+	c.draw()
 }
 
 // Refresh reads the state and redraws the menu if it changed.

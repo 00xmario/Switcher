@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image/png"
 	"io"
 	"net/http"
@@ -41,6 +42,7 @@ func (u *recordingUI) last() []Item {
 	}
 	return u.renders[len(u.renders)-1]
 }
+func (u *recordingUI) count() int { u.mu.Lock(); defer u.mu.Unlock(); return len(u.renders) }
 
 // fakeServer is a Switcher API with a settable state; it records posts.
 type fakeServer struct {
@@ -48,9 +50,20 @@ type fakeServer struct {
 	state map[string]any
 	calls []string
 	down  bool
+	// feed answers waits for changes; without it they get a 404, as from
+	// a server older than them. A wait without a change lasts hold.
+	feed    bool
+	hold    time.Duration
+	version int // the state's tag, raised by every set
+	reads   int // state reads
+	waits   int // waits for changes
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/state/changes" && r.Header.Get("Authorization") == "Bearer device-token" {
+		f.changes(w, r)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Header.Get("Authorization") != "Bearer device-token" {
@@ -58,6 +71,7 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/api/state" {
+		f.reads++
 		json.NewEncoder(w).Encode(f.state)
 		return
 	}
@@ -66,7 +80,47 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, `{}`)
 }
 
-func (f *fakeServer) set(key string, value any) { f.mu.Lock(); f.state[key] = value; f.mu.Unlock() }
+// changes answers the way the server's /api/state/changes does: at once
+// when the state differs from since, otherwise once it changes or hold
+// passes, with the tag it was asked about.
+func (f *fakeServer) changes(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.waits++
+	feed, hold := f.feed, f.hold
+	f.mu.Unlock()
+	if !feed {
+		http.NotFound(w, r)
+		return
+	}
+	since := r.URL.Query().Get("since")
+	deadline := time.Now().Add(hold)
+	for {
+		f.mu.Lock()
+		tag := fmt.Sprint(f.version)
+		f.mu.Unlock()
+		if tag != since || time.Now().After(deadline) {
+			json.NewEncoder(w).Encode(map[string]any{"etag": tag, "changed": tag != since})
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+}
+
+func (f *fakeServer) set(key string, value any) {
+	f.mu.Lock()
+	f.state[key] = value
+	f.version++
+	f.mu.Unlock()
+}
+func (f *fakeServer) counts() (reads, waits int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads, f.waits
+}
 func (f *fakeServer) posted() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -405,6 +459,79 @@ func TestMenuShapeDecidesBetweenInPlaceAndRebuild(t *testing.T) {
 	st.Accounts = append(st.Accounts, Account{ID: "b", Provider: "codex", Email: "b@example.com"})
 	if sameShape(before, Build(st, Status{Running: true}, now)) {
 		t.Fatal("a new account must rebuild the menu")
+	}
+}
+
+// run runs the controller until the test ends.
+func run(t *testing.T, c *Controller) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func switchClaudeToHome(f *fakeServer) {
+	accounts := baseState()["accounts"].([]map[string]any)
+	accounts[0]["native_active"], accounts[1]["native_active"] = false, true
+	f.set("accounts", accounts)
+}
+
+func homeChecked(ui *recordingUI) bool {
+	home := find(ui.last(), "home@example.com")
+	return home != nil && home.Checked
+}
+
+// An account switched from another computer shows at once: the tray waits
+// for the server to report a change rather than reading on a timer, and a
+// wait that ends without one neither reads the state nor redraws the menu.
+func TestTheMenuFollowsChangesAsTheyHappen(t *testing.T) {
+	f, ui, c, _ := newFixture(t)
+	f.mu.Lock()
+	f.feed, f.hold = true, 40*time.Millisecond
+	f.mu.Unlock()
+	c.opt.Interval = time.Hour // no timer could show the switch in time
+	run(t, c)
+	waitFor(t, "the first waits", func() bool { _, waits := f.counts(); return waits >= 3 })
+	reads, _ := f.counts()
+	renders := ui.count()
+	time.Sleep(200 * time.Millisecond)
+	if again, waits := f.counts(); again != reads || ui.count() != renders || waits < 5 {
+		t.Fatalf("without changes: %d reads (was %d), %d renders (was %d), %d waits", again, reads, ui.count(), renders, waits)
+	}
+	switchClaudeToHome(f)
+	waitFor(t, "the switch to show", func() bool { return homeChecked(ui) })
+	if find(ui.last(), "work@example.com · Max 20x").Checked {
+		t.Fatal("the old account is still checked")
+	}
+}
+
+// A server from before the changes feed answers 404; the tray then reads
+// the state every Interval, still redrawing only what changed.
+func TestAServerWithoutChangesIsReadEveryFewSeconds(t *testing.T) {
+	f, ui, c, _ := newFixture(t)
+	c.opt.Interval = 10 * time.Millisecond
+	run(t, c)
+	waitFor(t, "a few reads", func() bool { reads, _ := f.counts(); return reads >= 4 })
+	if ui.count() != 1 {
+		t.Fatalf("an unchanged state was drawn %d times", ui.count())
+	}
+	switchClaudeToHome(f)
+	waitFor(t, "the switch to show", func() bool { return homeChecked(ui) })
+	// It asks again after each round of reads, in case an update taught it.
+	if reads, waits := f.counts(); waits < 1 || waits > reads/pollRounds+1 {
+		t.Fatalf("asked for changes %d times in %d reads", waits, reads)
 	}
 }
 
