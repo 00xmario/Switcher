@@ -253,19 +253,65 @@ func runTailscale(ctx context.Context, limit int, args ...string) ([]byte, error
 	if bin == "" {
 		return nil, errNoTailscale
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	return runProgram(ctx, bin, limit, args...)
+}
+
+// tailscaleTimeout bounds one command; tests shorten it.
+var tailscaleTimeout = 5 * time.Second
+
+func runProgram(ctx context.Context, bin string, limit int, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, tailscaleTimeout)
 	defer cancel()
-	out := &cappedBuffer{limit: limit}
+	out, errOut := &cappedBuffer{limit: limit}, &cappedBuffer{limit: 4 << 10}
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdout, cmd.Stderr = out, io.Discard
+	cmd.Stdout, cmd.Stderr = out, errOut
 	cmd.WaitDelay = time.Second
 	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.Exited() && ctx.Err() == nil {
+			return nil, &exitedError{command: args[0], err: err, stderr: errOut.b.String()}
+		}
 		return nil, fmt.Errorf("tailscale %s: %w", args[0], err)
 	}
 	if out.over {
 		return nil, fmt.Errorf("tailscale %s answered too much", args[0])
 	}
 	return out.b.Bytes(), nil
+}
+
+// exitedError is a command that ran and exited with a failure, with what it
+// said about why.
+type exitedError struct {
+	command string
+	err     error
+	stderr  string
+}
+
+func (e *exitedError) Error() string { return "tailscale " + e.command + ": " + e.err.Error() }
+func (e *exitedError) Unwrap() error { return e.err }
+
+// daemonDown reports whether a failed command said for certain that no
+// Tailscale daemon or app runs here: no process and no socket, or no
+// process and a socket nobody listens on. Such a node carries nobody's
+// traffic. A daemon that runs but does not answer, a timeout, or anything
+// else is not that.
+func daemonDown(err error) bool {
+	var exited *exitedError
+	if !errors.As(err, &exited) {
+		return false
+	}
+	said := strings.ToLower(exited.stderr)
+	switch {
+	case strings.Contains(said, "which appears to be running"):
+		return false
+	case strings.Contains(said, "failed to connect to local tailscaled; it doesn't appear to be running"),
+		strings.Contains(said, "failed to connect to local tailscaled process; it doesn't appear to be running"),
+		strings.Contains(said, "failed to connect to local tailscale service; is tailscale running?"):
+		return true
+	case strings.Contains(said, "no tailscaled process found") && strings.Contains(said, "connection refused"):
+		return true
+	}
+	return false
 }
 
 // systemTailscale reads identities from the Tailscale app or daemon on this
@@ -358,6 +404,9 @@ func (s *systemTailscale) status(ctx context.Context, peers bool, limit int) (st
 		args = append(args, "--peers=false")
 	}
 	out, err := s.run(ctx, limit, args...)
+	if daemonDown(err) {
+		return statusAnswer{}, errTailscaleDown
+	}
 	if err != nil {
 		return statusAnswer{}, err
 	}
@@ -376,10 +425,15 @@ func (s *systemTailscale) status(ctx context.Context, peers bool, limit int) (st
 
 // selfNode is this computer's node in the Tailscale app. The answer, or the
 // failure, is kept for ten seconds, so callers cannot make the command line
-// run more often than that.
+// run more often than that; that Tailscale is down only for two, since it
+// may be started any moment.
 func (s *systemTailscale) selfNode(ctx context.Context) (tailnetSelf, error) {
 	s.mu.Lock()
-	if time.Since(s.selfAt) < 10*time.Second {
+	keep := 10 * time.Second
+	if errors.Is(s.selfErr, errTailscaleDown) {
+		keep = 2 * time.Second
+	}
+	if time.Since(s.selfAt) < keep {
 		self, err := s.self, s.selfErr
 		s.mu.Unlock()
 		return self, err

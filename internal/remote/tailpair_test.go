@@ -619,6 +619,11 @@ func TestHostRefusesItsOwnTailscaleAppThroughTheAddon(t *testing.T) {
 	}
 }
 
+// exited is a command line that exited with a failure, saying said.
+func exited(said string) error {
+	return &exitedError{command: "status", err: errors.New("exit status 1"), stderr: "tailscale: " + said + "\n"}
+}
+
 // failingRun is a Tailscale command line that fails with err.
 func failingRun(err error) func(context.Context, int, ...string) ([]byte, error) {
 	return func(context.Context, int, ...string) ([]byte, error) { return nil, err }
@@ -652,6 +657,15 @@ func TestHostFailsClosedWhenItCannotRuleOutItsOwnTailscaleApp(t *testing.T) {
 		{"an app that says it is not connected", appSaying("Stopped"), true, http.StatusOK},
 		{"an app that is starting", appSaying("Starting"), true, http.StatusForbidden},
 		{"an app running another node", appSaying("Running"), true, http.StatusOK},
+		// The command line says for certain that no daemon runs: down, safe.
+		{"no daemon and no socket", failingRun(exited("failed to connect to local tailscaled; it doesn't appear to be running (sudo systemctl start tailscaled ?)")), true, http.StatusOK},
+		{"the Mac app not running", failingRun(exited("failed to connect to local Tailscale service; is Tailscale running?")), true, http.StatusOK},
+		{"a stale socket nobody listens on", failingRun(exited("failed to connect to local tailscaled (no tailscaled process found): dial unix /var/run/tailscale/tailscaled.sock: connect: connection refused")), true, http.StatusOK},
+		// Anything less certain is no.
+		{"a daemon that runs but does not answer", failingRun(exited("failed to connect to local tailscaled (which appears to be running as /usr/sbin/tailscaled, pid 41). Got error: dial unix: connect: connection refused")), true, http.StatusForbidden},
+		{"no process found, but another failure", failingRun(exited("failed to connect to local tailscaled (no tailscaled process found): dial unix /var/run/tailscale/tailscaled.sock: connect: permission denied")), true, http.StatusForbidden},
+		{"some other failure", failingRun(exited("unexpected state")), true, http.StatusForbidden},
+		{"the message without a failed exit", failingRun(errors.New("failed to connect to local tailscaled; it doesn't appear to be running")), true, http.StatusForbidden},
 		{"garbled output", func(context.Context, int, ...string) ([]byte, error) { return []byte(`{"BackendState":`), nil }, true, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
