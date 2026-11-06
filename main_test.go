@@ -439,6 +439,56 @@ func TestDefaultWithoutPasswordStillServesApp(t *testing.T) {
 	}
 }
 
+// The tray's panel is this computer's: a browser here gets it, behind the
+// dashboard's login, which comes back to it; nothing else gets it.
+func TestThePanelIsServedToThisComputerOnly(t *testing.T) {
+	preferences := settings.New(t.TempDir())
+	srv := webTestServer(t, preferences)
+	resp, err := http.Get(srv.URL + "/panel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte(`src="/panel.js"`)) ||
+		!strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") || resp.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("panel: %d %q", resp.StatusCode, resp.Header)
+	}
+
+	// Paired devices, the LAN listener and look-alike hosts get nothing.
+	static, err := fs.Sub(webFS, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	registerWebRoutes(mux, static, preferences)
+	for _, peer := range []struct{ remote, host string }{{"192.0.2.10:5000", "127.0.0.1:8787"}, {"127.0.0.1:5000", "switcher-host"}} {
+		for _, path := range []string{"/panel", "/panel.html"} {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			r.RemoteAddr, r.Host = peer.remote, peer.host
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s from %s for %s: %d", path, peer.remote, peer.host, w.Code)
+			}
+		}
+	}
+
+	// With a password the login comes first, and returns to the panel.
+	if err := preferences.SetPassword("hunter22"); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	locked, err := client.Get(srv.URL + "/panel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked.Body.Close()
+	if locked.StatusCode != http.StatusSeeOther || locked.Header.Get("Location") != "/login?next=/panel" {
+		t.Fatalf("locked panel: %d %s", locked.StatusCode, locked.Header.Get("Location"))
+	}
+}
+
 func TestCallbackServerBoundsPartialHeaders(t *testing.T) {
 	var called atomic.Bool
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called.Store(true) }))

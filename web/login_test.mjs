@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const loginScript = readFileSync(new URL('./login.js', import.meta.url), 'utf8');
 
-async function submitLogin(reply) {
+async function submitLogin(reply, search = '') {
   const elements = {
     'login-form': { addEventListener: (_event, handler) => { elements.handler = handler; } },
     'login-password': { value: 'test-password' },
@@ -18,7 +18,8 @@ async function submitLogin(reply) {
     document: { getElementById: id => elements[id] },
     fetch: async (path, options) => { requests.push({ path, options }); return reply; },
     localStorage: { setItem: (...args) => stored.push(args) },
-    location: { replace: path => redirects.push(path) },
+    location: { search, replace: path => redirects.push(path) },
+    URLSearchParams,
   });
   await elements.handler({ preventDefault() {} });
   return { elements, requests, stored, redirects };
@@ -32,6 +33,12 @@ assert.equal(success.stored[0][0], 'switcher-csrf');
 assert.equal(success.stored[0][1], 'csrf-for-session');
 assert.deepEqual(success.redirects, ['/']);
 assert.equal(success.elements['login-password'].value, '');
+
+// The tray's panel gets its login back; nothing else is followed.
+const ok = { ok: true, json: async () => ({ csrf: 'csrf-for-session' }) };
+assert.deepEqual((await submitLogin(ok, '?next=/panel')).redirects, ['/panel']);
+assert.deepEqual((await submitLogin(ok, '?next=https://example.com/')).redirects, ['/']);
+assert.deepEqual((await submitLogin(ok, '?next=//example.com/panel')).redirects, ['/']);
 
 const failure = await submitLogin({ ok: false, json: async () => ({ error: 'Incorrect password' }) });
 assert.equal(failure.elements['login-error'].textContent, 'Incorrect password');

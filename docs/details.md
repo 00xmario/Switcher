@@ -124,7 +124,9 @@ required; OpenCode Go uses its own API key.
   storage and credential-overriding environment variables block the operation
   with an explanation. See [the source analysis and comparison](claude-swap-analysis.md).
 - **Share between Macs**: let your other Macs use one Mac's accounts. Pair once
-  with a code (Switchers on your network are found automatically). The optional
+  with a code (Switchers on your network are found automatically), or, for
+  your own Macs on Tailscale, without one. A client switches between hosts
+  in one step and keeps the old one if the new one fails. The optional
   **Away from home** add-on, downloaded only when turned on, connects your Macs
   over Tailscale from anywhere. Accounts, tokens and every provider request stay on
   that Mac; the other Macs' account views, Codex, T3 Code hub, Claude Code and
@@ -235,6 +237,21 @@ required; OpenCode Go uses its own API key.
   Bar colors are shared by compact cards, expanded cards, and usage charts.
 - **T3 Code hub**: speaks CLIProxyAPI's management protocol, so T3 Code
   shows every account's quota from one place.
+- **Changes show at once**: the dashboard and the menu bar wait on
+  `GET /api/state/changes?since=<etag>`, which answers
+  `{"etag": "…", "changed": true}` as soon as `/api/state` differs from that
+  tag (at once for an empty or stale one) and `"changed": false` with the
+  same tag after 25 seconds. A switch made on a paired computer, on the host,
+  or by automatic switching shows within about half a second, also in an
+  open menu. One watcher per server runs only while something waits; it
+  compares `/api/state` as a paired device would see it, without the
+  relay's count of replies in flight, every half second, and at once after
+  a change made on that Switcher. The route is guarded like `/api/state`;
+  paired Macs may use the host's, the phone page may not. At most 64 waits
+  run at once; each paired Mac holds at most two, and callers from elsewhere
+  together leave 16 for the host's own menu bar, dashboard and tray. The dashboard
+  keeps polling every four seconds and the menu every minute, which also
+  covers an older server; a hidden tab holds no wait open.
 - **Menu bar app**: the macOS app supervises the server, shows every
   account's usage and plan, switches, refreshes, and updates itself. The
   Copilot mark follows the menu's light or dark appearance. It retries an
@@ -351,6 +368,28 @@ environment; a terminal-only override needs the CLI command. The first
   on the LAN, so only enable this on networks you trust.
   Disabling authentication or invalidating LAN prerequisites denies dashboard
   access immediately, including while a restart is pending or fails.
+- **Sharing between Macs.** The host listener (port 8788, its own pinned
+  certificate) drops connections from outside private, link-local and
+  Tailscale addresses before TLS. Pairing needs a code proved in both
+  directions, or, for the user's own Tailscale devices, Tailscale's device
+  authentication: the host takes who is calling only from Tailscale (its
+  add-on, for connections it forwarded and marked with a random id, or the
+  Tailscale app's `whois`, for connections to the host's own Tailscale
+  address), never from the request, and admits only an untagged device of
+  the same Tailscale user in the same tailnet that is not shared in, not
+  expired, routes no traffic for other machines and is not the host itself.
+  The client checks the host the same way before it sends anything and pins
+  the certificate of that same connection. Whenever the Tailscale app on
+  either computer is there but cannot say whether it is the other side, the
+  answer is no. Refusals look like a wrong code; attempts are limited per
+  device and per address. Tailscale vouches for devices, not the accounts
+  on them: another account, a container, or a device added with an
+  untagged auth key (a CI runner, `TS_AUTHKEY`) counts as yours; tag such
+  devices. **Let my own Tailscale devices connect without a code** decides:
+  on for a host that starts sharing now, off with a one-time offer for one
+  that shared before. Paired Macs get revocable tokens, stored only as
+  hashes on the host; account tokens never leave the host. See
+  [sharing](sharing.md#without-a-code-over-tailscale).
 - **Phone access, opt-in and tailnet-only.** The Tailscale add-on serves a
   small phone page over HTTPS with Tailscale's certificate. It admits only
   your own Tailscale devices, and Switcher admits only phones approved on
@@ -374,8 +413,9 @@ Switcher; authentication resets to off.
 preparation path using six synthetic accounts and bundled logos. The menu
 keeps prepared views, patches changed providers, caches blurred email images,
 and reuses formatters and text measurements. It updates countdowns on open.
-State polling compares only menu-visible data; hidden web tabs pause polling,
-and unchanged account cards retain their DOM nodes.
+State polling compares only menu-visible data; hidden web tabs pause polling
+and their wait for changes, and unchanged account cards retain their DOM
+nodes.
 
 Run `make verify` before creating a tag. The same Go, race, vet, web-state,
 Swift menu, and cross-platform build checks run on pushes and pull requests

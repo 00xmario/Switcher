@@ -139,3 +139,74 @@ func TestAPairedMacUpdatesItsHostUnattended(t *testing.T) {
 		t.Fatalf("the host's refusal must reach the dashboard: %d %s", w.Code, w.Body)
 	}
 }
+
+// Without a code, connecting works only over Tailscale; anything else is
+// told to use a code, which the dashboard and the command line then ask for.
+func TestConnectWithoutACodeAsksForOneOffTailscale(t *testing.T) {
+	api := &API{RemoteClient: remote.NewClient(t.TempDir(), "")}
+	mux := http.NewServeMux()
+	api.registerRemoteRoutes(mux)
+	w := phoneRequest(mux, http.MethodPost, "/api/remote/connect", "127.0.0.1:5000", map[string]any{"address": "studio.local"})
+	var answer struct {
+		Error     string `json:"error"`
+		NeedsCode bool   `json:"needs_code"`
+	}
+	if w.Code != http.StatusBadRequest || json.Unmarshal(w.Body.Bytes(), &answer) != nil || !answer.NeedsCode || answer.Error == "" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if w := phoneRequest(mux, http.MethodPost, "/api/remote/connect", "192.168.1.20:5000", map[string]any{"address": "x.ts.net"}); w.Code != http.StatusForbidden {
+		t.Fatalf("from the network: %d", w.Code)
+	}
+}
+
+// A paired Mac switches hosts only when asked to, and a sharing Mac uses
+// no other host at all.
+func TestSwitchingHostsNeedsTheChoiceAndNoSharing(t *testing.T) {
+	api, mux := pairedRemoteAPI(t)
+	if w := phoneRequest(mux, http.MethodPost, "/api/remote/connect", "127.0.0.1:5000", map[string]any{"address": "studio.local"}); w.Code != http.StatusConflict {
+		t.Fatalf("a second host without switching: %d %s", w.Code, w.Body)
+	}
+	// With switch, a host that needs a code leaves the current one in use.
+	w := phoneRequest(mux, http.MethodPost, "/api/remote/connect", "127.0.0.1:5000", map[string]any{"address": "studio.local", "switch": true})
+	if w.Code != http.StatusBadRequest || !api.RemoteClient.Connected() {
+		t.Fatalf("a failed switch: %d %s, connected=%v", w.Code, w.Body, api.RemoteClient.Connected())
+	}
+	sharing, err := remote.NewHost(t.TempDir(), 0, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharing.Quiet = true
+	t.Cleanup(sharing.Close)
+	sharing.SetEnabled(true)
+	alone := &API{RemoteClient: remote.NewClient(t.TempDir(), ""), RemoteHost: sharing}
+	own := http.NewServeMux()
+	alone.registerRemoteRoutes(own)
+	if w := phoneRequest(own, http.MethodPost, "/api/remote/connect", "127.0.0.1:5000", map[string]any{"address": "x.ts.net"}); w.Code != http.StatusConflict {
+		t.Fatalf("a sharing Mac: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestTheHostChoosesWhetherItsOwnDevicesNeedACode(t *testing.T) {
+	api, mux := pairedRemoteAPI(t)
+	for _, remoteAddr := range []string{"192.168.1.20:5000", "100.101.102.103:443"} {
+		if w := phoneRequest(mux, http.MethodPost, "/api/remote/host/tailnet", remoteAddr, map[string]bool{"enabled": false}); w.Code != http.StatusForbidden {
+			t.Fatalf("from %s: %d", remoteAddr, w.Code)
+		}
+	}
+	if w := phoneRequest(mux, http.MethodPost, "/api/remote/host/tailnet", "127.0.0.1:5000", map[string]string{}); w.Code != http.StatusBadRequest {
+		t.Fatalf("no choice: %d", w.Code)
+	}
+	w := phoneRequest(mux, http.MethodPost, "/api/remote/host/tailnet", "127.0.0.1:5000", map[string]bool{"enabled": false})
+	if w.Code != http.StatusOK || api.RemoteHost.Status().TailnetPairing {
+		t.Fatalf("turning it off: %d %s", w.Code, w.Body)
+	}
+	var status struct {
+		Host struct {
+			TailnetPairing *bool `json:"tailnet_pairing"`
+		} `json:"host"`
+	}
+	w = phoneRequest(mux, http.MethodGet, "/api/remote", "127.0.0.1:5000", nil)
+	if json.Unmarshal(w.Body.Bytes(), &status) != nil || status.Host.TailnetPairing == nil || *status.Host.TailnetPairing {
+		t.Fatalf("status: %s", w.Body)
+	}
+}

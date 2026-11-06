@@ -108,6 +108,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
 
   function hostHTML(host) {
     const chips = [...(host.lan || []).map(a => ({ a, icon: HOME_ICON, kind: 'Home network' })), ...(host.tailscale || []).map(a => ({ a, icon: NET_ICON, kind: 'Tailscale' }))];
+    const tailnet = host.tailnet_pairing !== false;
     return `<div class="settings-card remote-section">
       <div class="settings-row set-row-icon">
         <span class="set-icon">${SHARE_ICON}</span>
@@ -117,6 +118,16 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       ${host.enabled ? `
         ${host.error ? `<p class="remote-error">${escape(host.error)}</p>` : ''}
         ${chips.length ? `<div class="set-chips" aria-label="Addresses of this ${mac()}">${chips.map(c => `<button type="button" class="set-chip" data-remote-copy="${escape(c.a)}" title="${c.kind}: click to copy">${c.icon}<code>${escape(c.a)}</code></button>`).join('')}</div>` : ''}
+        ${host.tailnet_notice ? `<div class="settings-row remote-notice" role="status">
+          <div><strong>New: your own Tailscale devices can connect without a code</strong><span class="dim">It is off on this ${mac()}, which shared before it existed. Turned on, your ${mac()}s signed in to the same Tailscale account connect from their list of Switchers. So could other accounts or machines that use one of your Tailscale devices; anything else still needs a code.</span></div>
+          <div class="set-foot-actions"><button type="button" class="primary" data-remote-action="tailnet-notice-on" ${busy ? 'disabled' : ''}>Turn on</button><button type="button" data-remote-action="tailnet-notice-off" ${busy ? 'disabled' : ''}>Not now</button></div>
+        </div>` : ''}
+        <div class="settings-row">
+          <div><strong>Let my own Tailscale devices connect without a code</strong><span class="dim">${tailnet
+            ? `Your ${mac()}s signed in to the same Tailscale account connect from their list of Switchers. Everything else needs a code.`
+            : `Off: every ${mac()} needs a code, also your own.`}</span></div>
+          <label class="switch-wrap"><input type="checkbox" data-remote-action="tailnet-pairing" aria-label="Let my own Tailscale devices connect without a code" ${tailnet ? 'checked' : ''} ${busy ? 'disabled' : ''}><span class="switch-visual"></span></label>
+        </div>
         ${host.pairing ? `<div class="remote-code" role="status">
             ${ring(host.pairing.expires_at, now())}
             <div><span class="remote-code-label">Enter this code on the other Mac</span>
@@ -125,10 +136,32 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
           </div>` : `<div><button type="button" class="primary" data-remote-action="pair" ${busy ? 'disabled' : ''}>${LINK_ICON}Pair a Mac</button></div>`}
         ${host.devices.length ? `<ul class="remote-devices">${host.devices.map(d => `<li>
             <span class="set-icon">${MAC_ICON}</span>
-            <span><strong>${escape(d.name)}</strong><span class="dim">last used ${escape(ago(d.last_seen, now()))}</span></span>
+            <span><strong>${escape(d.name)}</strong><span class="dim"${d.tailscale ? ` title="Paired via Tailscale as ${escape(d.tailscale)}"` : ''}>${d.tailscale ? 'Paired via Tailscale · ' : ''}last used ${escape(ago(d.last_seen, now()))}</span></span>
             <button type="button" class="quiet danger" data-remote-action="revoke" data-remote-id="${escape(d.id)}" ${busy ? 'disabled' : ''}>Remove</button>
-          </li>`).join('')}</ul>` : '<p class="set-foot">No Macs paired yet. Pair one with a code; it stays paired until you remove it.</p>'}` : ''}
+          </li>`).join('')}</ul>` : `<p class="set-foot">No Macs paired yet. Pair one with a code${tailnet ? ', or connect from your own Tailscale devices' : ''}; it stays paired until you remove it.</p>`}
+        <p class="set-foot">While this ${mac()} shares, it cannot use another Switcher. Turn off sharing to use one.</p>` : ''}
     </div>`;
+  }
+
+  // foundHTML lists Switchers to connect to, or, while connected, to use
+  // instead of the current host.
+  function foundHTML(hosts, action, label) {
+    return `<ul class="remote-found">${hosts.map(h => `<li>
+        <span><strong>${escape(h.name)}</strong><span class="dim">${escape(h.address)}</span></span>
+        <button type="button" data-remote-action="${action}" data-remote-address="${escape(h.address)}" data-remote-port="${escape(h.port)}" data-remote-name="${escape(h.name)}"${h.tailnet ? ` data-remote-tailnet="${escape(h.tailnet)}"` : ''} ${busy ? 'disabled' : ''}>${busy === 'connect' && target?.address === h.address ? 'Connecting…' : label}</button>
+      </li>`).join('')}</ul>`;
+  }
+
+  // codeFormHTML pairs by address, with a code unless the host is one of
+  // the user's own Tailscale devices.
+  function codeFormHTML() {
+    const name = target ? escape(target.name) : '';
+    return `<form class="remote-connect" data-remote-form>
+        <input name="address" placeholder="Address, e.g. marios-mac.local or 100.101.2.3" autocomplete="off" value="${escape(target?.address || '')}" ${busy ? 'disabled' : ''} required>
+        <input name="code" placeholder="Code, e.g. K7QF-M2XP" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" ${busy ? 'disabled' : ''} ${target?.needsCode ? 'required' : ''}>
+        <button type="submit" class="primary" ${busy ? 'disabled' : ''}>${busy === 'connect' ? 'Connecting…' : target?.switching ? `Use ${name}` : target ? `Connect to ${name}` : 'Connect'}</button>
+      </form>
+      <p class="set-foot">${target?.needsCode ? `Enter the code shown on ${name} (Settings → Share between Macs → Pair a Mac).` : 'Your own devices on Tailscale connect without a code.'}</p>`;
   }
 
   // hostUpdateHTML offers to update the paired host's Switcher from here.
@@ -178,21 +211,27 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
         <p class="settings-sub">${local
           ? `Nothing goes to ${name} now: this ${mac()}'s own accounts, usage checks, Codex and Claude routing all run here.`
           : `Accounts, usage, Codex, the T3 Code hub, and Claude Code and Claude Desktop (once connected below) all run through ${name}. Requests leave from that ${mac()}.`}</p>
-      </div>`;
+      </div>
+      ${switchHTML(name)}`;
     }
     const hosts = found || [];
     return `<div class="settings-card remote-section">
       <div class="settings-row set-row-icon"><span class="set-icon">${LINK_ICON}</span><div><strong>Use another Switcher</strong><span class="dim">Run on the accounts of another Mac</span></div>
         <button type="button" data-remote-action="scan" ${scanning || busy ? 'disabled' : ''}>${scanning ? 'Looking…' : 'Look again'}</button></div>
-      ${hosts.length ? `<ul class="remote-found">${hosts.map(h => `<li>
-          <span><strong>${escape(h.name)}</strong><span class="dim">${escape(h.address)}</span></span>
-          <button type="button" data-remote-action="choose" data-remote-address="${escape(h.address)}" data-remote-port="${escape(h.port)}" data-remote-name="${escape(h.name)}" ${busy ? 'disabled' : ''}>Connect</button>
-        </li>`).join('')}</ul>` : `<p class="settings-sub">${scanning ? 'Looking for Switchers on your network…' : found ? 'No shared Switcher found on this network. Turn on sharing on the other Mac, or enter its address (for example its Tailscale name).' : ''}</p>`}
-      <form class="remote-connect" data-remote-form>
-        <input name="address" placeholder="Address, e.g. marios-mac.local or 100.101.2.3" autocomplete="off" value="${escape(target?.address || '')}" ${busy ? 'disabled' : ''} required>
-        <input name="code" placeholder="Code, e.g. K7QF-M2XP" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" ${busy ? 'disabled' : ''} required>
-        <button type="submit" class="primary" ${busy ? 'disabled' : ''}>${busy === 'connect' ? 'Connecting…' : target ? `Connect to ${escape(target.name)}` : 'Connect'}</button>
-      </form>
+      ${hosts.length ? foundHTML(hosts, 'connect-found', 'Connect') : `<p class="settings-sub">${scanning ? 'Looking for Switchers on your network…' : found ? 'No shared Switcher found on this network. Turn on sharing on the other Mac, or enter its address (for example its Tailscale name).' : ''}</p>`}
+      ${codeFormHTML()}
+    </div>`;
+  }
+
+  // switchHTML offers the other Switchers found, to use one instead of the
+  // current host. The current host stays until the new one is paired.
+  function switchHTML(name) {
+    const others = (found || []).filter(h => !h.current);
+    return `<div class="settings-card remote-section">
+      <div class="settings-row set-row-icon"><span class="set-icon">${LINK_ICON}</span><div><strong>Other Switchers</strong><span class="dim">Use another one instead of ${name}</span></div>
+        <button type="button" data-remote-action="scan" ${scanning || busy ? 'disabled' : ''}>${scanning ? 'Looking…' : 'Look again'}</button></div>
+      ${others.length ? foundHTML(others, 'switch', 'Use this one') : `<p class="settings-sub">${scanning ? 'Looking for Switchers…' : found ? 'No other shared Switcher found.' : ''}</p>`}
+      ${target?.switching && target.needsCode ? codeFormHTML() : ''}
     </div>`;
   }
 
@@ -288,6 +327,10 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
         const enabled = event.target.checked;
         act('tailnet', () => post('/api/remote/tailnet', { enabled }));
       }
+      if (event.target.matches('[data-remote-action="tailnet-pairing"]')) {
+        const enabled = event.target.checked;
+        act('tailnet-pairing', () => post('/api/remote/host/tailnet', { enabled }));
+      }
       if (event.target.matches('[data-remote-action="use-host"]')) {
         const enabled = event.target.checked;
         act('use-host', () => post('/api/remote/use-host', { enabled })).then(ok => { if (ok) onConnectionChange(enabled); });
@@ -306,16 +349,17 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       if (!button || button.disabled) return;
       switch (button.dataset.remoteAction) {
         case 'pair': return act('pair', () => post('/api/remote/host/pairing'));
+        // Either answer to the notice is a choice the host remembers.
+        case 'tailnet-notice-on': return act('tailnet-pairing', () => post('/api/remote/host/tailnet', { enabled: true }));
+        case 'tailnet-notice-off': return act('tailnet-pairing', () => post('/api/remote/host/tailnet', { enabled: false }));
         case 'scan': return scan();
         case 'revoke':
           if (!await confirm({ title: 'Remove this Mac?', message: 'It can no longer use this Switcher until you pair it again.', confirmLabel: 'Remove', danger: true })) return;
           return act('revoke', () => api(`/api/remote/host/devices/${encodeURIComponent(button.dataset.remoteId)}`, { method: 'DELETE' }));
-        case 'choose':
-          target = { address: button.dataset.remoteAddress, port: Number(button.dataset.remotePort) || 0, name: button.dataset.remoteName };
-          render();
-          view.querySelector('[data-remote-form] input[name="address"]').value = target.address;
-          view.querySelector('[data-remote-form] input[name="code"]')?.focus();
-          return;
+        case 'connect-found':
+          return connect(chosen(button));
+        case 'switch':
+          return switchTo(chosen(button));
         case 'tailnet-remove':
           if (!await confirm({ title: 'Remove the Tailscale add-on?', message: `This ${mac()} signs out of Tailscale and can only reach your other Macs at home again.`, confirmLabel: 'Remove', danger: true })) return;
           return act('tailnet-remove', () => post('/api/remote/tailnet/remove'));
@@ -342,12 +386,51 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       event.preventDefault();
       const form = event.target.elements;
       const address = form.address.value.trim();
-      const port = target && target.address === address ? target.port : 0;
-      if (await act('connect', () => post('/api/remote/connect', { address, port, code: form.code.value }))) {
-        target = null;
-        onConnectionChange(true);
+      const next = target && target.address === address ? target : { address, port: 0, name: address };
+      await connect(next, form.code.value.trim());
+    });
+  }
+
+  const chosen = button => ({ address: button.dataset.remoteAddress, port: Number(button.dataset.remotePort) || 0, name: button.dataset.remoteName,
+    ...(button.dataset.remoteTailnet ? { tailnet: button.dataset.remoteTailnet } : {}) });
+
+  // connect pairs with a host: without a code first, which works for the
+  // user's own Tailscale devices, and with a code once the host asks for
+  // one. A host found nearby that is in the tailnet too is tried over
+  // Tailscale for that, and over its local address with a code. Switching
+  // keeps the current host until the new one is paired.
+  async function connect(next, code = '') {
+    target = { ...next, needsCode: !!(code || next.needsCode) };
+    const [address, port] = !code && next.tailnet ? [next.tailnet, 0] : [next.address, next.port || 0];
+    let needsCode = false;
+    const ok = await act('connect', async () => {
+      try {
+        await post('/api/remote/connect', { address, port, ...(code ? { code } : {}), ...(next.switching ? { switch: true } : {}) });
+      } catch (e) {
+        needsCode = !!e.body?.needs_code;
+        throw e;
       }
     });
+    if (ok) {
+      target = null;
+      render();
+      onConnectionChange(true);
+      return true;
+    }
+    if (needsCode) {
+      target = { ...next, needsCode: true };
+      render();
+      view?.querySelector('[data-remote-form] input[name="code"]')?.focus();
+    }
+    return false;
+  }
+
+  // switchTo uses another host instead of the current one, once confirmed.
+  async function switchTo(next) {
+    const current = status?.client?.host_name || 'the current host';
+    if (!await confirm({ title: `Use ${next.name} instead of ${current}?`, confirmLabel: `Use ${next.name}`,
+      message: `This ${mac()} connects to ${next.name} first and stops using ${current} only once that works, so it never ends up with neither. If ${next.name} asks for a code, you can enter it next.` })) return false;
+    return connect({ ...next, switching: true });
   }
 
   function mount(root) {
@@ -356,7 +439,9 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     error = '';
     bind(root);
     render();
-    load().then(() => { if (!status?.client?.connected && !status?.host?.enabled && found === null) scan(); });
+    // Connected or not, the Switchers around are listed: to connect to one,
+    // or to use one instead of the current host. A Mac that shares uses none.
+    load().then(() => { if (!status?.host?.enabled && found === null) scan(); });
     clearInterval(timer);
     timer = setInterval(() => {
       if (!view?.isConnected) { clearInterval(timer); timer = null; return; }
@@ -365,5 +450,5 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     }, 3000);
   }
 
-  return { mount, html, load, act };
+  return { mount, html, load, act, scan, connect, switchTo };
 }

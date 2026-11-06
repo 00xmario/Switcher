@@ -2,6 +2,7 @@ package tray
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -11,15 +12,22 @@ import (
 // description: the Linux front end draws it, tests read it.
 type Item struct {
 	// Action names what a click does; empty for a label.
-	Action    string
-	Title     string
-	Tooltip   string
+	Action  string
+	Title   string
+	Tooltip string
+	// Icon names the picture beside the title: a provider's logo, or
+	// "switcher" for Switcher's own.
+	Icon      string
 	Checkable bool
 	Checked   bool
 	Disabled  bool
 	Separator bool
 	Children  []Item
 }
+
+// detail indents the lines under an account (its usage and notes), so they
+// read as part of the account above, like the lines of a Mac menu card.
+const detail = "    "
 
 var providerNames = map[string]string{"claude": "Claude", "codex": "Codex", "grok": "Grok", "opencode": "OpenCode",
 	"antigravity": "Antigravity", "gemini": "Gemini", "copilot": "Copilot"}
@@ -58,7 +66,10 @@ func Build(st State, status Status, now time.Time) []Item {
 			Item{Action: "quit-tray", Title: "Close this menu"})
 		return items
 	}
-	items = append(items, label("Switcher "+st.Version))
+	// The header: the panel, which has the Mac menu's look, then the
+	// version and what changes how the accounts are used.
+	items = append(items, Item{Action: "panel", Title: "Open Switcher…", Icon: "switcher"},
+		label("Switcher "+st.Version))
 	if r := st.Remote; r != nil {
 		switch {
 		case r.Role == "client" && r.Connected:
@@ -78,25 +89,19 @@ func Build(st State, status Status, now time.Time) []Item {
 		items = append(items, label(status.Note))
 	}
 
-	providers := st.Order
-	if len(providers) == 0 {
-		providers = []string{"codex", "claude", "grok", "opencode", "antigravity", "gemini", "copilot"}
-	}
+	bars := st.MenuUsageBars == nil || *st.MenuUsageBars
 	shown := 0
-	for _, p := range providers {
-		if slices.Contains(st.Hidden, p) {
-			continue
-		}
+	for _, p := range providerOrder(st) {
 		var section []Item
 		for _, a := range st.Accounts {
 			if a.Provider == p {
-				section = append(section, accountItem(a, st.HandedBack))
+				section = append(section, accountItems(a, st.HandedBack, bars, now)...)
 			}
 		}
 		if len(section) == 0 {
 			continue
 		}
-		items = append(items, sep, label(name(p)))
+		items = append(items, sep, Item{Title: name(p), Icon: p, Disabled: true})
 		items = append(items, section...)
 		shown++
 	}
@@ -162,27 +167,144 @@ func name(provider string) string {
 	return provider
 }
 
-func accountItem(a Account, handedBack bool) Item {
-	parts := []string{a.Email}
-	if plan := planNames[a.Plan]; plan != "" {
-		parts = append(parts, plan)
-	} else if a.Plan != "" {
-		parts = append(parts, a.Plan)
+// providerOrder is the dashboard's provider order without hidden providers;
+// providers missing from the order come last, as on the phone page.
+func providerOrder(st State) []string {
+	order := st.Order
+	if len(order) == 0 {
+		order = []string{"codex", "claude", "grok", "opencode", "antigravity", "gemini", "copilot"}
 	}
-	if a.Usage != nil {
-		for _, w := range a.Usage.Windows {
-			parts = append(parts, fmt.Sprintf("%s %.0f%%", w.Label, w.UsedPercent))
+	order = slices.Clone(order)
+	for _, a := range st.Accounts {
+		if !slices.Contains(order, a.Provider) {
+			order = append(order, a.Provider)
 		}
 	}
-	if a.Health != nil && a.Health.Condition == "needs_relogin" {
-		parts = append(parts, "needs relogin")
+	return slices.DeleteFunc(order, func(p string) bool { return slices.Contains(st.Hidden, p) })
+}
+
+// accountItems are one account's lines: its email, plan and banked resets,
+// which switch to it, then dim lines with its notes and usage, as the Mac
+// menu and the phone page show an account card.
+func accountItems(a Account, handedBack, bars bool, now time.Time) []Item {
+	title := a.Email
+	if title == "" {
+		title = a.ID
+	}
+	if plan := planNames[a.Plan]; plan != "" {
+		title += " · " + plan
+	} else if a.Plan != "" {
+		title += " · " + a.Plan
+	}
+	if a.ResetCredits != nil && a.ResetCredits.Count > 0 {
+		title += fmt.Sprintf(" · ⚡ %d banked", a.ResetCredits.Count)
 	}
 	tooltip := "Use this account"
 	if a.NativeSwitchAvailable {
 		tooltip = "Use this account in Claude Code and for Claude"
 	}
-	return Item{Action: "activate:" + a.ID, Title: strings.Join(parts, " · "), Tooltip: tooltip,
-		Checkable: true, Checked: a.Selected(), Disabled: handedBack}
+	items := []Item{{Action: "activate:" + a.ID, Title: title, Tooltip: tooltip,
+		Checkable: true, Checked: a.Selected(), Disabled: handedBack}}
+	note := func(text string) { items = append(items, Item{Title: detail + text, Disabled: true}) }
+
+	unix := float64(now.Unix())
+	if a.ExhaustedUntil > unix {
+		note("Out of usage · back in " + countdown(a.ExhaustedUntil-unix))
+	}
+	var windows []Window
+	if a.Usage != nil {
+		windows = a.Usage.Windows
+	}
+	// The Mac menu's badges: cached usage stays on screen when checks fail,
+	// so say when it is old or the login no longer refreshes.
+	if a.Health != nil {
+		switch a.Health.Condition {
+		case "needs_relogin":
+			note("Sign in again")
+		case "usage_stale", "usage_unavailable":
+			if len(windows) > 0 {
+				note("Usage stale")
+			}
+		}
+	}
+	for _, w := range windows {
+		note(usageLine(w, bars, unix))
+	}
+	if len(windows) == 0 {
+		note("No usage reported yet")
+	}
+	return items
+}
+
+// usageLine is one usage window as what is left, the way the Mac menu, the
+// phone page and the dashboard show it: "Weekly: ▰▰▱▱▱ 31% left · ↻ 2d 8h".
+// Model windows such as Fable or Opus carry the model's name as their label.
+func usageLine(w Window, bars bool, now float64) string {
+	left := percentLeft(w)
+	line := w.Label + ": "
+	if bars {
+		line += bar(left) + " "
+	}
+	line += fmt.Sprintf("%d%% left", left)
+	if w.ResetsAt > now {
+		line += " · ↻ " + countdown(w.ResetsAt-now)
+	}
+	return line
+}
+
+// percentLeft turns the used share around and rounds it, as the Mac menu
+// and the phone page do.
+func percentLeft(w Window) int {
+	used := min(100, max(0, w.UsedPercent))
+	return int(math.Round(100 - used))
+}
+
+// bar draws what is left in five steps. It is full only while nothing is
+// used and empty only once nothing is left, so it never reads as either
+// while the percentage beside it says otherwise.
+func bar(left int) string {
+	filled := int(math.Round(float64(left) / 20))
+	switch {
+	case left > 0 && filled == 0:
+		filled = 1
+	case left < 100 && filled == 5:
+		filled = 4
+	}
+	return strings.Repeat("▰", filled) + strings.Repeat("▱", 5-filled)
+}
+
+// countdown is the time until a reset as the Mac menu and the phone page
+// write it: 38m, 6h 12m or 2d 3h.
+func countdown(seconds float64) string {
+	if !(seconds > 0) {
+		return ""
+	}
+	m := int(seconds / 60)
+	if m < 60 {
+		return fmt.Sprintf("%dm", max(m, 1))
+	}
+	h := m / 60
+	if h < 24 {
+		return fmt.Sprintf("%dh %dm", h, m%60)
+	}
+	return fmt.Sprintf("%dd %dh", h/24, h%24)
+}
+
+// sameShape reports whether b differs from a only in what its items say and
+// whether they are checked or enabled. Such a menu changes in place: rebuilt,
+// it would close or flicker on GNOME while open, and its countdowns change
+// every minute.
+func sameShape(a, b []Item) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Separator != b[i].Separator || a[i].Checkable != b[i].Checkable ||
+			(a[i].Icon == "") != (b[i].Icon == "") || !sameShape(a[i].Children, b[i].Children) {
+			return false
+		}
+	}
+	return true
 }
 
 func awakeMenu(a Awake, now time.Time) Item {

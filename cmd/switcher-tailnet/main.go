@@ -4,6 +4,8 @@
 // forwards the tailnet's port 8788 to this Mac's Switcher host listener, and
 // gives Switcher a loopback CONNECT proxy to reach other Switchers. With phone
 // access on, it also serves the phone dashboard over HTTPS (see phone.go).
+// For pairing without a code it tells Switcher what Tailscale says about the
+// devices behind its connections (see identity.go).
 //
 // Switcher starts it with SWITCHER_TAILNET_TOKEN set (and, for the phone
 // dashboard, SWITCHER_TAILNET_PHONE and SWITCHER_TAILNET_PHONE_KEY) and reads one JSON line
@@ -22,6 +24,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"sort"
 	"strings"
@@ -74,10 +77,17 @@ func main() {
 			return selfInfo{}, fmt.Errorf("not signed in")
 		}
 		selfCached = selfInfo{user: st.Self.UserID, tagged: st.Self.Tags != nil && st.Self.Tags.Len() > 0,
-			dnsName: strings.TrimSuffix(st.Self.DNSName, ".")}
+			dnsName: strings.TrimSuffix(st.Self.DNSName, "."), id: st.Self.ID, suffix: st.MagicDNSSuffix,
+			ips: append([]netip.Addr(nil), st.Self.TailscaleIPs...)}
+		if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" {
+			selfCached.suffix = st.CurrentTailnet.MagicDNSSuffix
+		}
 		selfAt = time.Now()
 		return selfCached, nil
 	}
+	// The connections forwarded to the host listener, for Switcher to ask
+	// who is behind them.
+	carried := newForwarded()
 	// The phone dashboard is configured through the environment so that a
 	// Switcher never passes a flag an older add-on would reject. Its key is
 	// separate from the control token: it travels with every phone request.
@@ -102,15 +112,7 @@ func main() {
 				conn.Close()
 				continue
 			}
-			go func() {
-				defer conn.Close()
-				local, err := net.DialTimeout("tcp", *forward, 5*time.Second)
-				if err != nil {
-					return
-				}
-				defer local.Close()
-				splice(conn, local)
-			}()
+			go forwardOne(conn, func() (net.Conn, error) { return net.DialTimeout("tcp", *forward, 5*time.Second) }, carried)
 		}
 	}()
 
@@ -135,6 +137,11 @@ func main() {
 				http.Error(w, "unreachable on the tailnet", http.StatusBadGateway)
 				return
 			}
+			// Asked for, the answer names the node this very tunnel reached.
+			identified := ""
+			if r.Header.Get(whoisHeader) == "1" {
+				identified = tunnelIdentity(r.Context(), remote.RemoteAddr(), lc.WhoIs, self)
+			}
 			hj, ok := w.(http.Hijacker)
 			if !ok {
 				remote.Close()
@@ -145,7 +152,7 @@ func main() {
 				remote.Close()
 				return
 			}
-			rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+			rw.WriteString("HTTP/1.1 200 Connection Established\r\n" + identified + "\r\n")
 			rw.Flush()
 			go func() {
 				defer conn.Close()
@@ -192,6 +199,8 @@ func main() {
 			sort.Slice(out.Peers, func(i, j int) bool { return out.Peers[i].Name < out.Peers[j].Name })
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
+		case r.URL.Path == "/whois" && r.Method == http.MethodGet:
+			whoisHandler(carried, lc.WhoIs, self)(w, r)
 		case r.URL.Path == "/phone" && r.Method == http.MethodPost:
 			if phone == nil {
 				http.NotFound(w, r)

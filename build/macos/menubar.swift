@@ -538,6 +538,12 @@ struct ClaudeSyncResponse: Decodable {
     struct SyncResult: Decodable { let backup: String? }
 }
 
+// StateChanges is Switcher's answer to a wait on api/state/changes.
+struct StateChanges: Decodable {
+    let etag: String
+    let changed: Bool
+}
+
 struct AccountActivationResponse: Decodable {
     let error: String?
     let details: String?
@@ -1364,6 +1370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var terminationSignal: DispatchSourceSignal?
     private var statusMark: NSImage?
     private(set) var statusBadge: String?   // the release the menu bar badge announces
+    private(set) var liveEtag = ""          // the state's tag the menu saw last
+    private var liveGeneration = 0
+    private var liveFailures = 0
 
     init(runtime: MenuRuntime = MenuRuntime()) {
         self.runtime = runtime
@@ -1439,7 +1448,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         menu.delegate = self
         rebuildMenu()
         fetchStateAsync()
-        // Keep the cache warm so the menu opens instantly with recent data.
+        watchStateChanges()
+        // A wait that was open while the Mac slept may hang on a dead
+        // connection; start a fresh one.
+        _ = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.watchStateChanges() }
+        // Keep the cache warm so the menu opens instantly with recent data;
+        // also the fallback while the server cannot say when it changed.
         let warm = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.fetchStateAsync() }
         RunLoop.main.add(warm, forMode: .common)
         let alerts = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.deliverDueResetAlerts() }
@@ -1643,6 +1658,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             if self.menuOpen { self.prepareMenuForOpening() }
             self.updateResetAlerts()
             self.relaunchIfReplaced()
+        }
+    }
+
+    // watchStateChanges waits, off the main thread, for Switcher to say its
+    // state changed, then reads it: a switch made on another computer or by
+    // automatic switching reaches the cache at once, and an open menu
+    // patches itself. Each answer starts the next wait. An older server
+    // answers 404 and is asked again after a while, in case it was updated;
+    // errors back off. The timers above carry on either way.
+    func watchStateChanges() {
+        guard !quitting else { return }
+        liveGeneration += 1
+        let generation = liveGeneration
+        var request = makeRequest(path: "api/state/changes", timeout: 35)
+        if let url = request.url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.queryItems = [URLQueryItem(name: "since", value: liveEtag)]
+            request.url = components.url
+        }
+        performRequest(request) { [weak self] data, response, _ in
+            guard let self = self, !self.quitting, generation == self.liveGeneration else { return }
+            let status = (response as? HTTPURLResponse)?.statusCode
+            if status == 200, let data = data, let answer = try? JSONDecoder().decode(StateChanges.self, from: data) {
+                self.liveFailures = 0
+                self.liveEtag = answer.etag
+                if answer.changed { self.fetchStateAsync() }
+                self.watchStateChanges()
+                return
+            }
+            var delay: TimeInterval = 300
+            if status != 404 {
+                self.liveFailures += 1
+                delay = min(pow(2, Double(self.liveFailures - 1)), 30)
+            }
+            self.runtime.schedule(delay) { [weak self] in
+                guard let self = self, generation == self.liveGeneration else { return }
+                self.watchStateChanges()
+            }
         }
     }
 

@@ -15,9 +15,26 @@ const shareHelp = `One Mac (the host) keeps the accounts; your other Macs use th
   switcher share code      show a pairing code, valid for ten minutes
   switcher share devices   list paired Macs
   switcher share revoke <id|name> --yes
+  switcher share tailnet on|off
+                           let your own Tailscale devices connect without a
+                           code, or make them use one (on for a Mac that
+                           starts sharing now, off for one that shared before)
   switcher share off
 
-On the other Mac: switcher connect <host address> --code <code>.
+On the other Mac: switcher connect <host address>. Over Tailscale, your own
+devices need no code; anything else needs --code <code>.
+`
+
+const connectHelp = `Over Tailscale, your own devices connect without a code: both computers'
+Tailscale must say they belong to the same Tailscale user, in the same
+tailnet, untagged and not shared in, and the host must allow it (switcher
+share tailnet). Give the host's Tailscale name or address, as switcher
+discover lists it. Anything else needs a code from the host: --code CODE,
+shown there with switcher share code.
+
+Already using another host? Add --yes to switch: this computer pairs with the
+new host first and only then stops using the old one, so it keeps the old
+host if the new one cannot be paired.
 `
 
 func runShare(c *ctx, args []string) error {
@@ -35,6 +52,15 @@ func runShare(c *ctx, args []string) error {
 	case "status", "devices":
 		if len(pos) > 1 {
 			return usagef("unexpected argument %q", pos[1])
+		}
+	case "tailnet":
+		if len(pos) > 1 {
+			if pos[1] != "on" && pos[1] != "off" {
+				return usagef("use on or off, not %q", pos[1])
+			}
+			if err := c.cl.call(http.MethodPost, "/api/remote/host/tailnet", map[string]bool{"enabled": pos[1] == "on"}, nil); err != nil {
+				return err
+			}
 		}
 	case "on", "off":
 		if err := c.cl.call(http.MethodPost, "/api/remote/host", map[string]bool{"enabled": action == "on"}, nil); err != nil {
@@ -89,7 +115,7 @@ func runShare(c *ctx, args []string) error {
 			return err
 		}
 	default:
-		return usagef("unknown action %q; use on, off, code, devices or revoke", action)
+		return usagef("unknown action %q; use on, off, code, devices, revoke or tailnet", action)
 	}
 	r, err := c.remote()
 	if err != nil {
@@ -105,12 +131,30 @@ func runShare(c *ctx, args []string) error {
 		if len(addresses) > 0 {
 			lines = append(lines, "Reachable at "+strings.Join(addresses, ", "))
 		}
+		switch {
+		case r.Host.TailnetPairing:
+			lines = append(lines, "Your own Tailscale devices connect without a code (switcher share tailnet off to require one)")
+		case r.Host.TailnetNotice:
+			lines = append(lines, "New: your own Tailscale devices can connect without a code. It is off here because this "+machine()+" shared before; turn it on with: switcher share tailnet on")
+		default:
+			lines = append(lines, "Every "+machine()+" needs a code, also your own Tailscale devices (switcher share tailnet on to change that)")
+		}
 		for _, d := range r.Host.Devices {
-			lines = append(lines, fmt.Sprintf("  %s (%s)", d.Name, d.ID))
+			via := ""
+			if d.Tailscale != "" {
+				via = ", paired via Tailscale as " + d.Tailscale
+			}
+			lines = append(lines, fmt.Sprintf("  %s (%s%s)", d.Name, d.ID, via))
 		}
 		if action == "on" {
-			lines = append(lines, "Pair a Mac with: switcher share code")
+			lines = append(lines, "Pair a Mac with: switcher share code, or from your own Tailscale devices: switcher connect <this Mac's Tailscale name>")
 		}
+	} else if action == "tailnet" && r.Host != nil {
+		state := "need a code"
+		if r.Host.TailnetPairing {
+			state = "connect without a code"
+		}
+		lines = append(lines, "Your own Tailscale devices "+state+" once sharing is on")
 	}
 	fmt.Fprintln(c.out, strings.Join(lines, "\n"))
 	return nil
@@ -120,12 +164,20 @@ func runConnect(c *ctx, args []string) error {
 	fs := c.flags("connect")
 	code := fs.String("code", "", "")
 	port := fs.Int("port", 8788, "")
+	yes := fs.Bool("yes", false, "")
 	pos, err := c.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
 	}
-	if *code == "" {
-		return usagef("missing --code; show one on the other Mac with: switcher share code")
+	r, err := c.remote()
+	if err != nil {
+		return err
+	}
+	if r.Host != nil && r.Host.Enabled {
+		return fmt.Errorf("this %s shares its own Switcher, and a %s that shares cannot use another one at the same time; turn sharing off first: switcher share off", machine(), machine())
+	}
+	if r.Client.Connected && !*yes {
+		return usagef("this %s uses %s; add --yes to switch to %s (it pairs with %s first, and keeps %s if that fails)", machine(), r.Client.HostName, pos[0], pos[0], r.Client.HostName)
 	}
 	var answer struct {
 		Client struct {
@@ -133,11 +185,19 @@ func runConnect(c *ctx, args []string) error {
 			Address  string `json:"address"`
 		} `json:"client"`
 	}
-	body := map[string]any{"address": pos[0], "port": *port, "code": *code}
+	body := map[string]any{"address": pos[0], "port": *port, "code": *code, "switch": r.Client.Connected}
 	if err := c.cl.call(http.MethodPost, "/api/remote/connect", body, &answer); err != nil {
+		var refused *apiError
+		if errors.As(err, &refused) && refused.NeedsCode {
+			return fmt.Errorf("%s\nShow a code on the other %s with: switcher share code, then run: switcher connect %s --code CODE", err, machine(), pos[0])
+		}
 		return err
 	}
-	c.result(answer, fmt.Sprintf("Connected to %s. This %s now uses its accounts.", answer.Client.HostName, machine()))
+	previous := ""
+	if r.Client.Connected && r.Client.HostName != answer.Client.HostName {
+		previous = fmt.Sprintf(" It no longer uses %s.", r.Client.HostName)
+	}
+	c.result(answer, fmt.Sprintf("Connected to %s. This %s now uses its accounts.%s", answer.Client.HostName, machine(), previous))
 	return nil
 }
 
@@ -180,7 +240,7 @@ func runUseHost(c *ctx, args []string) error {
 			return err
 		}
 		if !r.Client.Connected {
-			return errors.New("this Switcher is not paired with another one; pair with: switcher connect <address> --code CODE")
+			return errors.New("this Switcher is not paired with another one; pair with: switcher connect <address>")
 		}
 		if err := c.cl.call(http.MethodPost, "/api/remote/use-host", map[string]bool{"enabled": pos[0] == "on"}, nil); err != nil {
 			return err
@@ -267,6 +327,7 @@ func runDiscover(c *ctx, args []string) error {
 			Name    string `json:"name"`
 			Address string `json:"address"`
 			Port    int    `json:"port"`
+			Tailnet string `json:"tailnet,omitempty"`
 		} `json:"hosts"`
 	}
 	if err := c.cl.call(http.MethodGet, "/api/remote/discover", nil, &answer); err != nil {
@@ -282,9 +343,13 @@ func runDiscover(c *ctx, args []string) error {
 	}
 	var rows [][]string
 	for _, h := range answer.Hosts {
-		rows = append(rows, []string{h.Name, h.Address})
+		row := []string{h.Name, h.Address}
+		if h.Tailnet != "" {
+			row = append(row, "Tailscale: "+h.Tailnet)
+		}
+		rows = append(rows, row)
 	}
-	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address> --code <code from the other "+machine()+">")
+	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address>. Your own devices on Tailscale need no code; others need --code <code from the other "+machine()+">.")
 	return nil
 }
 

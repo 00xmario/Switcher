@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -248,6 +249,9 @@ func TestOnlyTheFixedActionsAreReachable(t *testing.T) {
 		{http.MethodPost, "/api/accounts/codex-a/use/x"},
 		{http.MethodPost, "/api/login"},
 		{http.MethodGet, "/api/remote"},
+		// The phone reads the state when its page shows; it holds no
+		// connection open waiting for changes.
+		{http.MethodGet, "/api/state/changes"},
 		{http.MethodGet, "/api/phone"},
 		{http.MethodPost, "/api/phone/approve"},
 		{http.MethodGet, "/v0/management/auth-files"},
@@ -403,6 +407,7 @@ func TestTheAPIRouterAdmitsOnlyThePhoneRoutes(t *testing.T) {
 		{http.MethodPatch, "/api/accounts/codex-a"},
 		{http.MethodPost, "/api/accounts/codex-a/recheck"},
 		{http.MethodGet, "/api/remote"},
+		{http.MethodGet, "/api/state/changes"},
 	} {
 		if status, _ := x.h.call(r, tc.method, tc.path, nil); status < 400 {
 			t.Errorf("%s %s: %d", tc.method, tc.path, status)
@@ -413,5 +418,29 @@ func TestTheAPIRouterAdmitsOnlyThePhoneRoutes(t *testing.T) {
 	}
 	if status, _ := x.h.call(r, http.MethodPost, "/api/accounts/codex-a/use-reset", []byte(`{}`)); status != http.StatusOK || len(x.calls) != 1 {
 		t.Fatalf("a phone route was refused: %d", status)
+	}
+}
+
+// The page's scripts import their modules from this listener, which serves
+// only the listed assets; a module missing from the list breaks the page.
+func TestThePageGetsEveryModuleItImports(t *testing.T) {
+	served := map[string]bool{}
+	for _, name := range assets {
+		served[name] = true
+	}
+	imports := regexp.MustCompile(`(?m)^\s*(?:import|export)\b[^'"]*from\s+'\./([^']+)'`)
+	for _, script := range []string{"phone.js", "account-cards.js"} {
+		if !served[script] {
+			t.Fatalf("%s is not served", script)
+		}
+		source, err := os.ReadFile(filepath.Join("..", "..", "web", script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range imports.FindAllStringSubmatch(string(source), -1) {
+			if !served[m[1]] {
+				t.Errorf("%s imports %s, which the phone listener does not serve", script, m[1])
+			}
+		}
 	}
 }

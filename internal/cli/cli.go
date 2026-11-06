@@ -78,8 +78,8 @@ func init() {
 		{name: "remove", args: "<account> --yes", summary: "Remove an account from Switcher", run: runRemove},
 		{name: "refresh", args: "[account]", summary: "Refresh usage for one or all accounts", run: runRefresh},
 		{name: "reset", args: "<account|provider> --yes", summary: "Spend a banked reset (Codex) on an account", help: resetHelp, run: runReset},
-		{name: "share", args: "[on|off|code|devices|revoke <id> --yes]", summary: "Share this Mac's accounts with your other Macs", help: shareHelp, run: runShare},
-		{name: "connect", args: "<address> --code CODE", summary: "Use the accounts of a Switcher that shares them", run: runConnect},
+		{name: "share", args: "[on|off|code|devices|revoke <id> --yes|tailnet on|off]", summary: "Share this Mac's accounts with your other Macs", help: shareHelp, run: runShare},
+		{name: "connect", args: "<address> [--code CODE] [--yes]", summary: "Use the accounts of a Switcher that shares them; no code for your own Tailscale devices", help: connectHelp, run: runConnect},
 		{name: "disconnect", args: "--yes", summary: "Stop using another Switcher", run: runDisconnect},
 		{name: "use-host", args: "[on|off]", summary: "Use the paired host, or work without it and stay paired", help: useHostHelp, run: runUseHost},
 		{name: "update-host", args: "[--yes]", summary: "Show the paired host's Switcher version; update it with --yes", help: updateHostHelp, run: runUpdateHost},
@@ -199,6 +199,7 @@ Examples:
   switcher use work@example.com
   switcher share on && switcher share code
   switcher connect studio.local --code K7QF-M2XP
+  switcher connect switcher-studio.tail1234.ts.net   # your own Tailscale device: no code
 `)
 }
 

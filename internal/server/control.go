@@ -21,8 +21,15 @@ func controlRequests(next http.Handler, timeout time.Duration) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// A screen waiting for state changes holds its request open for up to
+		// stateChangesWait. A passing read deadline also ends the request's
+		// context, which would cut that wait off, so it gets room beyond it.
+		limit := timeout
+		if r.URL.Path == "/api/state/changes" {
+			limit += stateChangesWait
+		}
 		controller := http.NewResponseController(w)
-		_ = controller.SetReadDeadline(time.Now().Add(timeout))
+		_ = controller.SetReadDeadline(time.Now().Add(limit))
 		defer func() {
 			// Close while the deadline is still set. net/http may otherwise
 			// drain an unfinished body indefinitely after a rejected request.

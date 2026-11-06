@@ -90,6 +90,9 @@ type API struct {
 	creditsMu     sync.Mutex
 	creditsCache  map[string]creditsEntry
 	creditsSerial uint64
+
+	watchOnce sync.Once
+	changes   *stateWatch
 }
 
 type creditsEntry struct {
@@ -110,6 +113,7 @@ func (a *API) Register(mux *http.ServeMux) {
 		a.creditsCache = map[string]creditsEntry{}
 	}
 	mux.HandleFunc("GET /api/state", a.handleState)
+	mux.HandleFunc("GET /api/state/changes", a.handleStateChanges)
 	a.registerRemoteRoutes(mux)
 	a.registerPhoneRoutes(mux)
 	mux.HandleFunc("POST /api/claude/sync", a.handleClaudeSync)
@@ -122,17 +126,17 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login", a.handleLoginStart)
 	a.registerAuthRoutes(mux)
 	a.registerDesktopRelayRoutes(mux)
-	mux.HandleFunc("POST /api/login/import", a.handleLoginImport)
+	mux.HandleFunc("POST /api/login/import", a.changing(a.handleLoginImport))
 	mux.HandleFunc("GET /api/login/{state}", a.handleLoginPoll)
-	mux.HandleFunc("POST /api/accounts/{id}/activate", a.handleActivate)
-	mux.HandleFunc("POST /api/accounts/{id}/refresh", a.handleRefreshUsage)
-	mux.HandleFunc("POST /api/accounts/{id}/recheck", a.handleRecheckAccount)
-	mux.HandleFunc("POST /api/usage/refresh", a.handleRefreshAll)
+	mux.HandleFunc("POST /api/accounts/{id}/activate", a.changing(a.handleActivate))
+	mux.HandleFunc("POST /api/accounts/{id}/refresh", a.changing(a.handleRefreshUsage))
+	mux.HandleFunc("POST /api/accounts/{id}/recheck", a.changing(a.handleRecheckAccount))
+	mux.HandleFunc("POST /api/usage/refresh", a.changing(a.handleRefreshAll))
 	mux.HandleFunc("GET /api/tokens", a.handleUsage)
 	mux.HandleFunc("POST /api/tokens/refresh", a.handleUsageRefresh)
-	mux.HandleFunc("POST /api/accounts", a.handleAddKey)
-	mux.HandleFunc("POST /api/accounts/{id}/use-reset", a.handleUseReset)
-	mux.HandleFunc("PATCH /api/accounts/{id}", a.handleAccountPatch)
+	mux.HandleFunc("POST /api/accounts", a.changing(a.handleAddKey))
+	mux.HandleFunc("POST /api/accounts/{id}/use-reset", a.changing(a.handleUseReset))
+	mux.HandleFunc("PATCH /api/accounts/{id}", a.changing(a.handleAccountPatch))
 	mux.HandleFunc("GET /api/update", a.handleUpdateState)
 	mux.HandleFunc("POST /api/update", a.handleUpdate)
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
@@ -140,10 +144,10 @@ func (a *API) Register(mux *http.ServeMux) {
 	a.registerHandbackRoutes(mux)
 	a.registerAutostartRoutes(mux)
 	mux.HandleFunc("POST /api/quit", a.handleQuit)
-	mux.HandleFunc("PATCH /api/providers/order", a.handleProviderOrder)
-	mux.HandleFunc("POST /api/providers/{id}/hide", a.handleProviderHide)
-	mux.HandleFunc("POST /api/providers/{id}/show", a.handleProviderShow)
-	mux.HandleFunc("DELETE /api/accounts/{id}", a.handleDelete)
+	mux.HandleFunc("PATCH /api/providers/order", a.changing(a.handleProviderOrder))
+	mux.HandleFunc("POST /api/providers/{id}/hide", a.changing(a.handleProviderHide))
+	mux.HandleFunc("POST /api/providers/{id}/show", a.changing(a.handleProviderShow))
+	mux.HandleFunc("DELETE /api/accounts/{id}", a.changing(a.handleDelete))
 }
 
 func (a *API) cliSetupPath() string {
@@ -592,10 +596,16 @@ func (a *API) cachedResetCredits(rc provider.ResetCreditProvider, acc store.Acco
 }
 
 func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
+	status, state := a.stateView(r)
+	writeJSON(w, status, state)
+}
+
+// stateView is the answer to GET /api/state: the status and the body. The
+// change watcher compares the same answer, so both always agree.
+func (a *API) stateView(r *http.Request) (int, any) {
 	accounts, err := a.Store.List()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list accounts"})
-		return
+		return http.StatusInternalServerError, map[string]string{"error": "could not list accounts"}
 	}
 	views := make([]accountView, 0, len(accounts))
 	preferences := a.preferenceSnapshot()
@@ -621,7 +631,7 @@ func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 	for k, v := range a.LocalStateFields(r) {
 		state[k] = v
 	}
-	writeJSON(w, http.StatusOK, state)
+	return http.StatusOK, state
 }
 
 // LocalStateFields are the parts of /api/state that belong to this Mac even
@@ -751,7 +761,7 @@ func (a *API) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/disable", a.handleAuthDisable)
 	mux.HandleFunc("POST /api/auth/rotate-device-token", a.handleRotateDeviceToken)
 	mux.HandleFunc("GET /api/settings", a.handleSettingsGet)
-	mux.HandleFunc("PATCH /api/settings", a.handleSettingsPatch)
+	mux.HandleFunc("PATCH /api/settings", a.changing(a.handleSettingsPatch))
 }
 
 // loopbackOnly refuses requests that did not arrive on a loopback socket.

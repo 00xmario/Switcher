@@ -76,6 +76,13 @@ func (f *fakeSwitcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"status":"ok","approved":{"name":"marios-iphone"}}`)
 	case "DELETE /api/phone/devices/p1":
 		io.WriteString(w, `{"status":"ok"}`)
+	case "POST /api/remote/host/tailnet":
+		var body map[string]bool
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.calls = append(f.calls, "tailnet="+strconv.FormatBool(body["enabled"]))
+		f.mu.Unlock()
+		io.WriteString(w, `{"host":{"enabled":true,"tailnet_pairing":false}}`)
 	case "POST /api/cli-setup/codex/test":
 		io.WriteString(w, `{"outcome":"quota_or_rate_limit"}`)
 	case "POST /api/login":
@@ -360,6 +367,90 @@ func TestDisruptiveCommandsNeedYes(t *testing.T) {
 	}
 	if f.called("POST /api/remote/disconnect") || f.called("DELETE /api/remote/host/devices/d1") || f.called("POST /api/remote/tailnet/remove") {
 		t.Fatal("a disruptive command ran without --yes")
+	}
+}
+
+func TestShareTailnetLetsOwnDevicesConnectWithoutACode(t *testing.T) {
+	f, url := fake(t)
+	if code, _, errOut := run(t, url, "", "share", "tailnet", "off"); code != 0 || !f.called("tailnet=false") {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	if code, _, _ := run(t, url, "", "share", "tailnet", "maybe"); code != exitUsage {
+		t.Fatalf("a wrong choice: %d", code)
+	}
+	if code, out, _ := run(t, url, "", "share"); code != 0 || !strings.Contains(out, "Every "+machine()+" needs a code") {
+		t.Fatalf("%d %s", code, out)
+	}
+	// A host that shared before it existed is told once how to turn it on.
+	upgraded := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"host":{"enabled":true,"tailnet_pairing":false,"tailnet_notice":true,"devices":[]},"client":{"connected":false}}`)
+	}))
+	defer upgraded.Close()
+	if code, out, _ := run(t, upgraded.URL, "", "share"); code != 0 || !strings.Contains(out, "It is off here because this "+machine()+" shared before; turn it on with: switcher share tailnet on") {
+		t.Fatalf("%d %s", code, out)
+	}
+}
+
+// connect tries without a code first, says how to get one when the host
+// asks for it, and switches hosts only with --yes.
+func TestConnectTriesWithoutACodeAndSwitchesOnlyWithYes(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []map[string]any
+	paired, needsCode := false, false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/remote":
+			if paired {
+				io.WriteString(w, `{"client":{"connected":true,"host_name":"Studio"}}`)
+			} else {
+				io.WriteString(w, `{"client":{"connected":false}}`)
+			}
+		case "POST /api/remote/connect":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			bodies = append(bodies, body)
+			if needsCode {
+				w.WriteHeader(http.StatusBadRequest)
+				io.WriteString(w, `{"error":"air.tail1.ts.net did not let this computer in without a code. Enter the code shown on it.","needs_code":true}`)
+				return
+			}
+			io.WriteString(w, `{"client":{"host_name":"Air","address":"air.tail1.ts.net"}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	last := func() map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return bodies[len(bodies)-1]
+	}
+	if code, out, errOut := run(t, srv.URL, "", "connect", "air.tail1.ts.net"); code != 0 || !strings.Contains(out, "Connected to Air") || last()["code"] != "" || last()["switch"] != false {
+		t.Fatalf("%d %s %s %v", code, out, errOut, last())
+	}
+	set := func(code, host bool) {
+		mu.Lock()
+		needsCode, paired = code, host
+		mu.Unlock()
+	}
+	asked := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(bodies)
+	}
+	set(true, false)
+	if code, _, errOut := run(t, srv.URL, "", "connect", "air.tail1.ts.net"); code != exitFail || !strings.Contains(errOut, "switcher share code") || !strings.Contains(errOut, "--code CODE") {
+		t.Fatalf("a host that wants a code: %d %s", code, errOut)
+	}
+	set(false, true)
+	before := asked()
+	if code, _, errOut := run(t, srv.URL, "", "connect", "air.tail1.ts.net"); code != exitUsage || !strings.Contains(errOut, "--yes") || asked() != before {
+		t.Fatalf("switching without --yes: %d %s", code, errOut)
+	}
+	if code, out, _ := run(t, srv.URL, "", "connect", "air.tail1.ts.net", "--yes"); code != 0 || last()["switch"] != true || !strings.Contains(out, "no longer uses Studio") {
+		t.Fatalf("switching: %d %s %v", code, out, last())
 	}
 }
 

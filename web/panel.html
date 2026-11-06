@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Switcher</title>
+  <link rel="icon" href="/favicon.png">
+  <link rel="stylesheet" href="/phone.css">
+  <link rel="stylesheet" href="/panel.css">
+</head>
+<body class="desktop">
+  <header class="top">
+    <span class="top-mark" id="top-mark"></span>
+    <div class="top-title"><strong>Switcher</strong><span id="top-sub"></span></div>
+    <button type="button" class="icon-button" id="refresh" aria-label="Refresh usage" title="Refresh usage" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 3v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </header>
+  <main id="view" aria-live="polite"></main>
+  <div class="sheet-backdrop" id="sheet" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <h2 id="sheet-title"></h2>
+      <p id="sheet-text"></p>
+      <div class="sheet-actions">
+        <button type="button" class="button" id="sheet-cancel">Cancel</button>
+        <button type="button" class="button primary" id="sheet-confirm"></button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script type="module" src="/panel.js"></script>
+</body>
+</html>

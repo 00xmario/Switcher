@@ -167,6 +167,9 @@ button.row-main:active .use { background: var(--surface-2); }
   align-items: center; column-gap: 9px; row-gap: 1px;
   margin-top: 5px; font-size: 13px; line-height: 20px;
 }
+/* Without bars, as the menu draws them when bars are off in Settings. */
+.lines.no-bars { grid-template-columns: fit-content(42%) max-content 1fr; }
+.lines.no-bars .bar { display: none; }
 .line { display: contents; }
 .line-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
 .bar { display: block; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
