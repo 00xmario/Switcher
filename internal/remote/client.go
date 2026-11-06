@@ -461,9 +461,16 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	// Whatever listens on this computer is no host to trust without a
 	// code: any account here could run it.
 	c.mu.Lock()
-	ownTailnet := c.ownTailnet
+	ownTailnet, system := c.ownTailnet, c.system
 	c.mu.Unlock()
 	if own, err := ownTailnet(); err != nil || hasAddress(own, id.Peer.Addr) {
+		return nil, &NeedsCodeError{fmt.Sprintf("%s needs a pairing code: that is this computer itself.", address)}
+	}
+	// So is the Tailscale app's node here, also without a network interface
+	// (userspace networking). If Tailscale is here but cannot say, no.
+	if app, err := system.isAppNode(ctx, id.Peer); err != nil {
+		return nil, &NeedsCodeError{fmt.Sprintf("Tailscale on this computer could not confirm who %s is, so it needs a pairing code.", address)}
+	} else if app {
 		return nil, &NeedsCodeError{fmt.Sprintf("%s needs a pairing code: that is this computer itself.", address)}
 	}
 	// A name must lead to the device of that name, whatever answered for

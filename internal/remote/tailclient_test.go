@@ -22,11 +22,45 @@ func tailnetClient(t *testing.T, addons *fakeAddons) *Client {
 	client.identified = addons.dialIdentified
 	client.tailnet = addons.dial
 	client.ownTailnet = func() ([]string, error) { return nil, nil }
-	client.system = &systemTailscale{run: func(context.Context, int, ...string) ([]byte, error) {
-		t.Error("the Tailscale app was asked while the add-on answers")
-		return nil, errNoTailscale
-	}}
+	client.system = noTailscaleApp(t)
 	return client
+}
+
+// The client too trusts a host only when it is certain the host is not the
+// Tailscale app's node on this very computer.
+func TestClientFailsClosedWhenItCannotRuleOutItsOwnTailscaleApp(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		system  func(t *testing.T) *systemTailscale
+		paired  bool
+		message string
+	}{
+		{"a Tailscale daemon that cannot be asked", func(*testing.T) *systemTailscale {
+			return &systemTailscale{run: failingRun(errNoTailscale), present: func() bool { return true }}
+		}, false, "could not confirm"},
+		{"the host is this computer's own Tailscale app", func(*testing.T) *systemTailscale {
+			return fakeSystem(t, "", new([]string)) // its node is the Studio's, the host
+		}, false, "this computer itself"},
+		{"no Tailscale app here", noTailscaleApp, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addons := newFakeAddons()
+			host := tailnetHost(t, addons)
+			client := tailnetClient(t, addons)
+			client.system = tc.system(t)
+			_, err := client.ConnectTailnet(context.Background(), studio, host.Status().Port, "Air")
+			if tc.paired {
+				if err != nil || !client.Paired() {
+					t.Fatalf("not paired: %v", err)
+				}
+				return
+			}
+			var needsCode *NeedsCodeError
+			if !errors.As(err, &needsCode) || !strings.Contains(err.Error(), tc.message) || addons.lookups.Load() != 0 || client.Paired() {
+				t.Fatalf("error %v, %d lookups", err, addons.lookups.Load())
+			}
+		})
+	}
 }
 
 // Whatever answers on this computer's own Tailscale address, or under
@@ -160,6 +194,7 @@ func TestSwitchingHostsKeepsTheOldPairingWhenTheNewOneFails(t *testing.T) {
 	client.UseTailnet(addons.dial)
 	client.identified = addons.dialIdentified
 	client.ownTailnet = func() ([]string, error) { return nil, nil }
+	client.system = noTailscaleApp(t)
 	next := tailnetHost(t, addons)
 	keepsOld := func(when string) {
 		t.Helper()
