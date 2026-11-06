@@ -38,7 +38,7 @@ so rewriting the login loses them. The card then says **Use this account**, and
 
 ## Set up once
 
-1. Open Switcher on this Mac (localhost) and go to **Settings → Claude Desktop**.
+1. Open Switcher on this computer (localhost) and go to **Settings → Claude Desktop**.
 2. Click **Connect Claude Desktop**. This starts the relay, creates its profile,
    backs up `~/.claude/settings.json` (or the file in `CLAUDE_CONFIG_DIR`) and
    adds `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS` to its `env`, plus the local
@@ -46,7 +46,10 @@ so rewriting the login loses them. The card then says **Use this account**, and
    reached directly. Other
    settings stay as they are. No system trust root or Keychain item is added.
 3. When your current work is done, click **Restart Claude Desktop** and confirm.
-   Switcher never restarts Desktop on its own.
+   Switcher never restarts Desktop on its own, and doesn't keep reminding you:
+   `switcher status` shows no restart as outstanding. On Linux this needs the
+   `claude-desktop` package and a desktop session (see
+   [Switcher on Linux](linux.md#restarting-claude-desktop)).
 
 The relay listens on `127.0.0.1:8789` (`--desktop-relay-port` changes it). The
 shared settings file also affects new terminal `claude` sessions, which then go
@@ -110,7 +113,12 @@ Errors and rate limits are Anthropic's own, with four exceptions:
 **Settings → Claude Desktop → Disconnect** restores the previous `HTTPS_PROXY`
 and `NODE_EXTRA_CA_CERTS` values and keeps other edits. Restart Desktop
 afterwards. **Advanced** shows the relay status, lets you stop it once Desktop
-is disconnected, and manages manual profiles for other apps.
+is disconnected, and manages manual profiles for other apps. Its count of
+requests in flight, like the one in `switcher status`, covers model requests
+only: connections that stay open for Remote Control sessions aren't in it.
+Stopping the relay still asks first while any request to Anthropic is open.
+It doesn't count connections to other hosts, such as a web fetch or a remote
+MCP server reached through the relay, and stopping cuts those off too.
 
 ## Still worth verifying live
 

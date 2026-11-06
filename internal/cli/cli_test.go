@@ -50,7 +50,7 @@ func (f *fakeSwitcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `{"error":"desktop relay control authority required"}`)
 			return
 		}
-		io.WriteString(w, `{"status":{"listening":true,"in_flight":1},"setup":{"configured":true,"condition":"configured"}}`)
+		io.WriteString(w, `{"status":{"listening":true,"in_flight":1},"setup":{"configured":true,"condition":"configured","restart_required":true}}`)
 	case "POST /api/accounts/c2/activate":
 		io.WriteString(w, `{"status":"ok","active":"c2","native":{"changed":true}}`)
 	case "POST /api/accounts/x1/use-reset":
@@ -158,6 +158,25 @@ func TestStatusShowsAccountsSharingAndDesktop(t *testing.T) {
 		if strings.HasSuffix(line, " ") {
 			t.Errorf("trailing space: %q", line)
 		}
+	}
+	// restart_required only means Switcher changed the settings; it stays on
+	// after a restart, so it must not read as something still to do.
+	if strings.Contains(out, "restart") {
+		t.Errorf("status presents a restart as outstanding:\n%s", out)
+	}
+}
+
+func TestDesktopStatusJSONDoesNotClaimARestartIsNeeded(t *testing.T) {
+	_, url := fake(t)
+	code, out, errOut := run(t, url, "", "desktop", "status", "--json")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, `"in_flight": 1`) && !strings.Contains(out, `"in_flight":1`) {
+		t.Errorf("no in_flight in %s", out)
+	}
+	if strings.Contains(out, "restart") {
+		t.Errorf("status presents a restart as outstanding: %s", out)
 	}
 }
 

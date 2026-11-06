@@ -101,12 +101,17 @@ type Config struct {
 type Status struct {
 	Enabled   bool `json:"enabled"`
 	Listening bool `json:"listening"`
-	// InFlight counts requests currently being relayed.
-	InFlight   uint64 `json:"in_flight"`
-	Address    string `json:"address"`
-	CAPath     string `json:"ca_path"`
-	Condition  string `json:"condition"`
-	Validation string `json:"validation"`
+	// InFlight counts model requests being relayed. Other traffic isn't in it:
+	// a Remote Control session keeps a connection open for as long as it lives.
+	InFlight uint64 `json:"in_flight"`
+	// OpenRequests counts every request being relayed to Anthropic, model or
+	// not. Stopping the relay cuts them off. It also cuts tunnels to other
+	// hosts and plain proxy requests, which no count here includes.
+	OpenRequests uint64 `json:"open_requests"`
+	Address      string `json:"address"`
+	CAPath       string `json:"ca_path"`
+	Condition    string `json:"condition"`
+	Validation   string `json:"validation"`
 }
 
 // ReplyStatus is an alias for management integrations that use reply type names.

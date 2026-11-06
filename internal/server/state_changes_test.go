@@ -571,7 +571,7 @@ func TestTheChangesTagLeavesOutSecretsAndRelayActivity(t *testing.T) {
 	if strings.Contains(body, "management-secret") || !strings.HasPrefix(body, "200{") {
 		t.Fatalf("the watcher compares the management key: %s", body)
 	}
-	busy := leaveOutActivity(map[string]any{"desktop_relay": desktoprelay.Status{Listening: true, InFlight: 3}})
+	busy := leaveOutActivity(map[string]any{"desktop_relay": desktoprelay.Status{Listening: true, InFlight: 3, OpenRequests: 5}})
 	quiet := map[string]any{"desktop_relay": desktoprelay.Status{Listening: true}}
 	if b, q := mustJSON(t, busy), mustJSON(t, quiet); b != q {
 		t.Fatalf("replies in flight change the tag: %s against %s", b, q)

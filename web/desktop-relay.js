@@ -255,7 +255,7 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     markSeq = 0;
     const context = getContext();
     if (context.locked || context.loggingOut) return '';
-    if (!context.loopback) return `<div class="settings-card"><p class="settings-sub">Open Switcher on this Mac (localhost) to manage Claude Desktop.</p></div>`;
+    if (!context.loopback) return `<div class="settings-card"><p class="settings-sub">Open Switcher on this ${escape(context.machine || 'Mac')} (localhost) to manage Claude Desktop.</p></div>`;
     const status = snapshot?.status || {}, setup = snapshot?.setup || {};
     const doing = kind => busy?.kind === kind;
     const disabled = !access() || !!busy;
@@ -369,7 +369,7 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     return run('start', `${base}/start`, 'POST', {}, 'Relay started.');
   }
   function stop() {
-    const inFlight = count(snapshot?.status?.in_flight);
+    const inFlight = count(snapshot?.status?.open_requests);
     return run('stop', `${base}/stop`, 'POST', {}, 'Relay stopped.', inFlight ? () => confirmStop({ inFlight }) : null);
   }
   function revoke(scope) {

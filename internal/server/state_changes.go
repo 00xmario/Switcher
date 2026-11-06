@@ -391,7 +391,7 @@ func (a *API) watchedState(ctx context.Context, read bool) []byte {
 func leaveOutActivity(state any) any {
 	if fields, ok := state.(map[string]any); ok {
 		if relay, ok := fields["desktop_relay"].(desktoprelay.Status); ok {
-			relay.InFlight = 0
+			relay.InFlight, relay.OpenRequests = 0, 0
 			fields["desktop_relay"] = relay
 		}
 	}

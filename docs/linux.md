@@ -27,8 +27,9 @@ Over SSH, forward it with `ssh -L 8787:127.0.0.1:8787` first.
 | Claude Code login | Keychain (`Claude Code-credentials`) | `~/.claude/.credentials.json` (0600), as Claude Code keeps it on Linux |
 | Codex | `~/.codex/config.toml` | the same; Codex's own login stays in `auth.json` or, with `cli_auth_credentials_store`, the Secret Service keyring |
 | Copilot import | `~/Library/Application Support/github-copilot/apps.json` | `$XDG_CONFIG_HOME/github-copilot/apps.json` |
-| Claude Desktop routing | yes | the same `~/.claude/settings.json` mechanism; Anthropic ships no Linux Desktop, so this applies to community builds |
-| Desktop restart and session sync | yes | no: restart Desktop yourself; sync needs macOS |
+| Claude Desktop routing | yes | the same `~/.claude/settings.json` mechanism |
+| Desktop restart | yes | yes, for the `claude-desktop` package in a systemd user session (see below) |
+| Desktop session sync | yes | no: sync needs macOS |
 | Finding other Switchers | Bonjour (`dns-sd`) | Avahi (`avahi-browse`, `avahi-publish-service` from `avahi-utils`); without them, pair by address |
 | Away from home (Tailscale add-on) | yes | yes, `switcher-tailnet_<version>_linux_<arch>` |
 | Pairing without a code (your own Tailscale devices) | the add-on, or the Tailscale app's command line | the add-on, or the system `tailscale` command (`tailscaled`) |
@@ -45,6 +46,18 @@ distributions make your files group-writable for a group of your own (umask
 002); Switcher treats that like a private file, so **Connect Claude Desktop**
 works on `~/.claude` as Ubuntu creates it. Write access for a shared group or
 for everyone is still refused.
+
+## Restarting Claude Desktop
+
+**Restart Claude Desktop** in the dashboard and `switcher desktop restart --yes`
+ask Desktop's main process to quit (SIGTERM), wait up to 15 seconds for it to
+exit, and start it again as a user unit of its own, so it keeps running when
+Switcher restarts. Before closing anything, Switcher checks that it can reopen
+Desktop: it needs the program, and a systemd user session that knows a display.
+Over SSH with nobody logged in to the desktop, it refuses and leaves Desktop as
+it is. A build that runs under another program name than `claude-desktop` isn't
+recognized, so Switcher can't close it or confirm that it opened, and says so.
+Restart that one yourself.
 
 ## The tray
 
@@ -141,5 +154,7 @@ a desktop is needed. Check them once on the real machine:
   computer stays awake; polkit may refuse inhibitor locks to a session that
   is not active (for example SSH only).
 - The systemd user service at your next login.
+- **Restart Claude Desktop**: that the app closes cleanly and comes back with
+  your conversations.
 - Desktop notifications for reset alerts.
 - Avahi discovery between this computer and your Macs.
