@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -203,19 +202,26 @@ func decodeOne(r io.Reader, limit int64, v any) error {
 // errNoTailscale says the Tailscale app or daemon is not on this computer.
 var errNoTailscale = errors.New("the Tailscale app is not installed on this computer")
 
-// tailscalePaths are where the Tailscale command line lives when it is not
-// on PATH: Linux packages, the macOS command line integration, and the
-// macOS app itself, which runs as the command line when given arguments.
+// tailscalePaths are where the Tailscale command line lives: Linux packages,
+// the macOS command line integration, and the macOS app itself, which runs
+// as the command line when given arguments.
 var tailscalePaths = []string{"/usr/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"}
 
+// findTailscale prefers the fixed places over PATH, and takes a command
+// line only where no other account can have put or changed it (see
+// trustedBinary): its answers decide who may pair.
 func findTailscale() string {
-	if p, err := exec.LookPath("tailscale"); err == nil && filepath.IsAbs(p) {
-		return p
-	}
-	for _, p := range tailscalePaths {
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+	return findTailscaleIn(tailscalePaths, func() (string, error) { return exec.LookPath("tailscale") }, trustedBinary)
+}
+
+func findTailscaleIn(fixed []string, lookPath func() (string, error), trusted func(string) bool) string {
+	for _, p := range fixed {
+		if trusted(p) {
 			return p
 		}
+	}
+	if p, err := lookPath(); err == nil && filepath.IsAbs(p) && trusted(p) {
+		return p
 	}
 	return ""
 }
