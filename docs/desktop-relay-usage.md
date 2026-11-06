@@ -116,8 +116,9 @@ afterwards. **Advanced** shows the relay status, lets you stop it once Desktop
 is disconnected, and manages manual profiles for other apps. Its count of
 requests in flight, like the one in `switcher status`, covers model requests
 only: connections that stay open for Remote Control sessions aren't in it.
-Stopping the relay still asks first while any request to Anthropic is open;
-it doesn't count what a manual profile sends to other hosts.
+Stopping the relay still asks first while any request to Anthropic is open.
+It doesn't count connections to other hosts, such as a web fetch or a remote
+MCP server reached through the relay, and stopping cuts those off too.
 
 ## Still worth verifying live
 
