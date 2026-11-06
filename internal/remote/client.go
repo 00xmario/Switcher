@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -61,6 +62,7 @@ type Client struct {
 	lastErr       string
 	checkedAt     time.Time
 	hostState     map[string]any
+	hostRead      bool // the last read of hostState succeeded
 	onChange      func(bool)
 	refreshedAt   time.Time
 	tailnet       func(ctx context.Context, address string) (net.Conn, bool, error)
@@ -104,7 +106,7 @@ func (c *Client) usingHostLocked() bool { return c.cfg != nil && !c.cfg.LocalOnl
 func (c *Client) setLocked(cfg *clientFile) {
 	c.cfg = cfg
 	c.transport = nil
-	c.hostState = nil
+	c.hostState, c.hostRead = nil, false
 	c.lastGood = ""
 	if cfg != nil {
 		c.transport = c.newTransport(cfg)
@@ -660,7 +662,9 @@ func (c *Client) Inference(ctx context.Context, account string, r *http.Request,
 }
 
 // forwardedPaths go to the host while connected; everything else, including
-// this Mac's settings, CLI setup and usage logs, stays local.
+// this Mac's settings, CLI setup and usage logs, stays local. So does
+// waiting for /api/state to change: this Mac's state merges its own settings
+// into the host's, so this Switcher watches it itself.
 var forwardedPaths = []string{"/api/accounts/", "/api/usage/refresh", "/api/providers/", "/v0/management/",
 	"/codex/", "/claude/", "/grok/", "/opencode/", "/antigravity/", "/gemini/", "/copilot/"}
 
@@ -748,7 +752,13 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 // serveState shows the host's accounts with this Mac's own settings. While the
 // host is unreachable the last host state is shown with a warning.
 func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalState) {
-	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	writeJSONResponse(w, http.StatusOK, c.State(r, local, true))
+}
+
+// readHostState asks the host for its state and keeps it for State. On a
+// failure it answers the last state read, and false.
+func (c *Client) readHostState(ctx context.Context) (map[string]any, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://switcher-host/api/state", nil)
 	var state map[string]any
@@ -776,9 +786,24 @@ func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalS
 	} else {
 		state = c.hostState
 	}
+	c.hostRead = err == nil
 	c.mu.Unlock()
 	if err == nil {
 		go c.refreshAddresses()
+	}
+	return state, err == nil
+}
+
+// State is /api/state as this Switcher shows it while it uses its host: the
+// host's accounts with this Mac's own settings. With read false it reuses the
+// host state read last, for a watcher the host itself tells about changes;
+// it still asks the host when it has read nothing yet.
+func (c *Client) State(r *http.Request, local LocalState, read bool) map[string]any {
+	c.mu.Lock()
+	state, ok := c.hostState, c.hostRead
+	c.mu.Unlock()
+	if read || state == nil {
+		state, ok = c.readHostState(r.Context())
 	}
 	if state == nil {
 		state = map[string]any{"accounts": []any{}, "active": map[string]any{}}
@@ -813,9 +838,50 @@ func (c *Client) serveState(w http.ResponseWriter, r *http.Request, local LocalS
 		}
 	}
 	status := c.Status()
-	merged["remote"] = map[string]any{"role": "client", "host": status.HostName, "address": status.Address, "connected": err == nil, "error": status.Error,
+	merged["remote"] = map[string]any{"role": "client", "host": status.HostName, "address": status.Address, "connected": ok, "error": status.Error,
 		"host_update": hostUpdate}
-	writeJSONResponse(w, http.StatusOK, merged)
+	return merged
+}
+
+// ErrHostCannotWait means the host is a Switcher from before it could say
+// when its accounts change; this Switcher then reads its state now and then.
+var ErrHostCannotWait = errors.New("the host cannot say when its accounts change")
+
+// WaitHostChange waits until the host's state differs from since, the etag
+// it answered last ("" for none), or until the host's own limit of about 25
+// seconds, and answers the host's etag. A wait says nothing about routing to
+// the host, so it marks the host neither reachable nor unreachable; reading
+// its state does that.
+func (c *Client) WaitHostChange(ctx context.Context, since string) (string, bool, error) {
+	if !c.Connected() {
+		return "", false, errors.New("this Switcher does not use a host")
+	}
+	// A host that never answers cannot hold the wait forever.
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://switcher-host/api/state/changes?since="+url.QueryEscape(since), nil)
+	if err != nil {
+		return "", false, err
+	}
+	resp, err := c.send(req, true)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return "", false, ErrHostCannotWait
+	case resp.StatusCode != http.StatusOK:
+		return "", false, fmt.Errorf("the host answered %d", resp.StatusCode)
+	}
+	var answer struct {
+		ETag    string `json:"etag"`
+		Changed bool   `json:"changed"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&answer) != nil || answer.ETag == "" || len(answer.ETag) > 128 {
+		return "", false, errors.New("the host sent an invalid answer")
+	}
+	return answer.ETag, answer.Changed, nil
 }
 
 // sanitizeHostState runs once, before the host's state is shared with other

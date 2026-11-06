@@ -272,14 +272,17 @@ func (h *Host) Status() HostStatus {
 	return s
 }
 
-// remotePaths are the routes a paired device may use: account views and
+// remotePaths are the route prefixes a paired device may use: account
 // actions, provider proxies, the T3 Code hub and Claude inference.
-var remotePaths = []string{"/remote/", "/api/state", "/api/accounts/", "/api/usage/refresh", "/api/providers/", "/v0/management/",
+var remotePaths = []string{"/remote/", "/api/accounts/", "/api/usage/refresh", "/api/providers/", "/v0/management/",
 	"/codex/", "/claude/", "/grok/", "/opencode/", "/antigravity/", "/gemini/", "/copilot/"}
 
-// remoteExactPaths are single routes a paired device may use: checking for
-// and installing an update of this Switcher, an official release only.
-var remoteExactPaths = []string{"/api/update", "/api/update/check"}
+// remoteExactPaths are single routes a paired device may use: the state, and
+// waiting for it to change, which answers only an opaque tag and whether the
+// state changed, so a paired Mac learns at once of a switch made elsewhere;
+// and checking for and installing an update of this Switcher, an official
+// release only.
+var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check"}
 
 func allowedRemotePath(path string) bool {
 	if slices.Contains(remoteExactPaths, path) {
