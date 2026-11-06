@@ -244,6 +244,47 @@ func TestAKeptLoginNotKnownYetAnswersWithItself(t *testing.T) {
 	}
 }
 
+func TestAnAutomaticSwitchWaitsForALoginNotKnownYet(t *testing.T) {
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
+	if err := m.Activate("c"); err != nil {
+		t.Fatal(err)
+	}
+	routed(m)
+	native.status = claudecode.Status{Condition: "unavailable"}
+	m.setUsage("c", windows(100, 40))
+	m.setUsage("b", windows(10, 10))
+	m.AutoSwitchNative()
+	if m.ActiveID("claude") != "c" || len(native.switched) != 0 {
+		t.Fatalf("active %q, switched %v", m.ActiveID("claude"), native.switched)
+	}
+}
+
+// Some logins are never known, such as an API key beside OAuth: the selection
+// on the screen applies after a while instead of never.
+func TestASelectionDoesNotWaitForeverForALogin(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	if err := m.Activate("b"); err != nil {
+		t.Fatal(err)
+	}
+	routed(m)
+	native.status = claudecode.Status{Condition: "unavailable"}
+	source := NewDesktopCredentialSource(m)
+	if got := source.Selected(); got != "" {
+		t.Fatalf("right away the relay uses %q", got)
+	}
+	m.mu.Lock()
+	m.keptLoginWaiting = time.Now().Add(-keptLoginWait)
+	m.mu.Unlock()
+	if got := source.Selected(); got != "b" {
+		t.Fatalf("after the wait the relay uses %q, want the selection", got)
+	}
+	// Known later, it no longer moves the selection.
+	native.status = claudecode.Status{Condition: "ready", ActiveID: "a"}
+	if got := source.Selected(); got != "b" {
+		t.Fatalf("relay uses %q", got)
+	}
+}
+
 func TestAKeptSelectionThatStopsWorkingIsShownMoving(t *testing.T) {
 	m, _ := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
 	routed(m)

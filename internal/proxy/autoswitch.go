@@ -198,6 +198,10 @@ func (m *Manager) AutoSwitchNative() {
 		// With the login kept the selection is what moves: it is the account
 		// Claude Code's requests use.
 		kept := m.NativeLoginKept(providerID)
+		// Not the selection yet: the login answers, and it is not known.
+		if kept && m.selectionWaitsForLogin(providerID) {
+			continue
+		}
 		status := native.NativeStatus()
 		if !kept && status.Condition != "ready" {
 			continue

@@ -123,7 +123,7 @@ func TestCachedForChecksOncePerPeriod(t *testing.T) {
 
 func TestClaudeCodeRoutedKeepsTheLastAnswerWhenItCannotTell(t *testing.T) {
 	var status desktoprelay.SetupStatus
-	routed := claudeCodeRouted(func() desktoprelay.SetupStatus { return status })
+	routed := claudeCodeRouted(0, func() desktoprelay.SetupStatus { return status })
 	for _, step := range []struct {
 		name   string
 		status desktoprelay.SetupStatus
@@ -146,15 +146,48 @@ func TestClaudeCodeRoutedKeepsTheLastAnswerWhenItCannotTell(t *testing.T) {
 	}
 }
 
+// An editor saving the settings can look like a change for a moment, and a
+// switch in that moment would rewrite the login. A disconnect stays immediate.
+func TestClaudeCodeRoutedWaitsOutABriefChange(t *testing.T) {
+	var status desktoprelay.SetupStatus
+	grace := time.Hour
+	routed := claudeCodeRouted(grace, func() desktoprelay.SetupStatus { return status })
+	connected := desktoprelay.SetupStatus{Condition: "configured", Routed: true}
+	changed := desktoprelay.SetupStatus{Condition: "changed"}
+	status = changed
+	if routed() {
+		t.Fatal("a change counted as routed before it ever was")
+	}
+	status = connected
+	if !routed() {
+		t.Fatal("connected")
+	}
+	status = changed
+	if !routed() {
+		t.Fatal("a brief change moved the answer")
+	}
+	status = desktoprelay.SetupStatus{Condition: "not_configured"}
+	if routed() {
+		t.Fatal("a disconnect must be immediate")
+	}
+	lasting := claudeCodeRouted(0, func() desktoprelay.SetupStatus { return status })
+	status = connected
+	lasting()
+	status = changed
+	if lasting() {
+		t.Fatal("a change that lasts must count")
+	}
+}
+
 // A restart that cannot read the settings yet goes by the setup Switcher made.
 func TestClaudeCodeRoutedStartsFromTheSetupItMade(t *testing.T) {
-	made := claudeCodeRouted(func() desktoprelay.SetupStatus {
+	made := claudeCodeRouted(0, func() desktoprelay.SetupStatus {
 		return desktoprelay.SetupStatus{Condition: "unavailable", ScopeID: "scope"}
 	})
 	if !made() {
 		t.Fatal("a setup Switcher made did not count")
 	}
-	none := claudeCodeRouted(func() desktoprelay.SetupStatus {
+	none := claudeCodeRouted(0, func() desktoprelay.SetupStatus {
 		return desktoprelay.SetupStatus{Condition: "unavailable"}
 	})
 	if none() {
@@ -189,7 +222,7 @@ func TestClaudeCodeRoutedFollowsTheRealSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close(ctx) })
-	routed := claudeCodeRouted(func() desktoprelay.SetupStatus { return m.SetupStatus(settings) })
+	routed := claudeCodeRouted(0, func() desktoprelay.SetupStatus { return m.SetupStatus(settings) })
 	if routed() {
 		t.Fatal("routed before connecting")
 	}
@@ -210,7 +243,7 @@ func TestClaudeCodeRoutedFollowsTheRealSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = resumed.Close(ctx) })
-	routed = claudeCodeRouted(func() desktoprelay.SetupStatus { return resumed.SetupStatus(settings) })
+	routed = claudeCodeRouted(0, func() desktoprelay.SetupStatus { return resumed.SetupStatus(settings) })
 	if !routed() {
 		t.Fatal("not routed after a restart")
 	}

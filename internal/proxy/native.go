@@ -14,6 +14,10 @@ import (
 	"switcher/internal/store"
 )
 
+// keptLoginWait is how long the selection waits to start at a login not known
+// yet before it applies as it is.
+const keptLoginWait = 2 * time.Minute
+
 // ErrAccountUnusable refuses a switch to an account whose credential does not
 // work: with the login kept nothing else would say so, and another account
 // would answer instead.
@@ -72,7 +76,22 @@ func (m *Manager) alignKeptLogin(providerID string, status claudecode.Status) {
 		return
 	}
 	if status.Condition != "ready" && status.Condition != "unmanaged" {
-		return // Not known yet.
+		// Not known yet. Some logins stay that way, such as an API key beside
+		// OAuth, and the selection on the screen must not wait for them forever.
+		if m.keptLoginAligned {
+			return
+		}
+		if m.keptLoginWaiting.IsZero() {
+			m.keptLoginWaiting = time.Now()
+		}
+		if time.Since(m.keptLoginWaiting) < keptLoginWait || time.Now().Before(m.keptLoginRetry) {
+			return
+		}
+		if err := m.mutateStateLocked(func() { m.keptLoginAligned = true }); err != nil {
+			m.keptLoginRetry = time.Now().Add(time.Minute)
+			log.Printf("proxy: save routing state: %v", err)
+		}
+		return
 	}
 	id := status.ActiveID
 	if id != "" {
@@ -107,6 +126,7 @@ func (m *Manager) alignKeptLogin(providerID string, status claudecode.Status) {
 func (m *Manager) RestartSelectionAtLogin() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.keptLoginWaiting = time.Time{}
 	return m.mutateStateLocked(func() { m.keptLoginAligned = false })
 }
 

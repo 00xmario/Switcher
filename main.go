@@ -212,14 +212,27 @@ func executablePath() string {
 // claudeCodeRouted reports whether Claude Code's settings send it through the
 // relay, also while the relay is down: its requests then fail, but its login
 // must not move. What cannot be read right now keeps the last answer; before
-// there is one, a setup Switcher made counts, as after a restart.
-func claudeCodeRouted(setup func() desktoprelay.SetupStatus) func() bool {
+// there is one, a setup Switcher made counts, as after a restart. So do settings
+// that changed for less than grace, as an editor saving them can look like. A
+// disconnect is immediate.
+func claudeCodeRouted(grace time.Duration, setup func() desktoprelay.SetupStatus) func() bool {
 	var last, known bool
+	var changed time.Time
 	return func() bool {
 		s := setup()
+		if s.Condition != "changed" {
+			changed = time.Time{}
+		}
 		switch {
 		case s.Routed:
 			last, known = true, true
+		case s.Condition == "changed" && last:
+			if changed.IsZero() {
+				changed = time.Now()
+			}
+			if time.Since(changed) >= grace {
+				last = false
+			}
 		case s.Condition != "unavailable" && s.Condition != "pending":
 			last, known = false, true
 		case !known:
@@ -342,7 +355,7 @@ func run(port, desktopRelayPort int) {
 	proxyManager.SetClaudeAutoSwitch(settingsStore.AutoSwitchClaude)
 	// Once Claude Code's requests go through the Desktop relay, a switch
 	// leaves its login alone, and with it its Remote Control sessions.
-	proxyManager.SetClaudeCodeRouted(cachedFor(time.Second, claudeCodeRouted(func() desktoprelay.SetupStatus {
+	proxyManager.SetClaudeCodeRouted(cachedFor(time.Second, claudeCodeRouted(5*time.Second, func() desktoprelay.SetupStatus {
 		if desktopRelay == nil {
 			return desktoprelay.SetupStatus{Condition: "not_configured"}
 		}

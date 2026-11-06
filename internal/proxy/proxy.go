@@ -105,6 +105,7 @@ type Manager struct {
 	claudeCodeRouted   func() bool
 	keptLoginAligned   bool
 	keptLoginRetry     time.Time
+	keptLoginWaiting   time.Time
 	autoSwitching      atomic.Bool
 	autoSwitchAt       map[string]time.Time
 	manualHold         map[string]time.Time
