@@ -12,7 +12,11 @@ import (
 // The Tailscale command line decides who may pair, so only one that no
 // other account can have planted or changed is run.
 func TestOnlyATailscaleNobodyElseCanChangeIsRun(t *testing.T) {
+	// The folder's mode follows the umask, which may let the group write.
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	write := func(name string, mode os.FileMode) string {
 		p := filepath.Join(dir, name)
 		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o700); err != nil {
@@ -27,6 +31,11 @@ func TestOnlyATailscaleNobodyElseCanChangeIsRun(t *testing.T) {
 	if !trustedBinary(good) {
 		t.Fatal("this user's own program, writable only by them, was refused")
 	}
+	os.Chmod(dir, 0o770)
+	if trustedBinary(good) {
+		t.Fatal("trusted a program in a folder its group can change")
+	}
+	os.Chmod(dir, 0o700)
 	for name, mode := range map[string]os.FileMode{"group-writable": 0o775, "world-writable": 0o757} {
 		if trustedBinary(write(name, mode)) {
 			t.Errorf("a %s program was trusted", name)
