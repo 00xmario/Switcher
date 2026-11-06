@@ -249,6 +249,9 @@ func TestOnlyTheFixedActionsAreReachable(t *testing.T) {
 		{http.MethodPost, "/api/accounts/codex-a/use/x"},
 		{http.MethodPost, "/api/login"},
 		{http.MethodGet, "/api/remote"},
+		// The phone reads the state when its page shows; it holds no
+		// connection open waiting for changes.
+		{http.MethodGet, "/api/state/changes"},
 		{http.MethodGet, "/api/phone"},
 		{http.MethodPost, "/api/phone/approve"},
 		{http.MethodGet, "/v0/management/auth-files"},
@@ -404,6 +407,7 @@ func TestTheAPIRouterAdmitsOnlyThePhoneRoutes(t *testing.T) {
 		{http.MethodPatch, "/api/accounts/codex-a"},
 		{http.MethodPost, "/api/accounts/codex-a/recheck"},
 		{http.MethodGet, "/api/remote"},
+		{http.MethodGet, "/api/state/changes"},
 	} {
 		if status, _ := x.h.call(r, tc.method, tc.path, nil); status < 400 {
 			t.Errorf("%s %s: %d", tc.method, tc.path, status)

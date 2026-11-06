@@ -7,6 +7,7 @@ import { createHandback, remoteBannerHTML as hostBannerHTML, handbackBannerHTML,
 import { createPhoneSettings } from './phone-settings.js';
 import { switcherMark, playMark } from './brand.js';
 import { mergeInstallProgress, installProgressHTML, paintInstallProgress } from './update-progress.js';
+import { createLiveState } from './live-state.js';
 import { SECTIONS, navHTML, sectionHeadHTML, accountLayout, LAYOUTS, layoutChooserHTML, menuPreviewHTML, ladderHTML, securityHeroHTML } from './settings-visuals.js';
 
 const providersEl = document.getElementById('providers');
@@ -1592,6 +1593,20 @@ ensureAuthReady().then(() => pollState()).catch(error => {
 window.addEventListener('pageshow', (event) => {
   if (event.persisted && !authState.loggingOut) location.reload();
 });
+
+// Between polls, the page waits for Switcher to say its state changed and
+// then reads it at once, so a switch made on another computer shows now. A
+// hidden page holds no wait open; shown again, it polls at once and waits.
+const liveState = createLiveState({
+  request: (path, options) => api(path, { ...options, timeoutMs: 35000 }),
+  onChange: () => refreshState(),
+  active: () => !document.hidden && !authState.locked,
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) liveState.stop();
+  else liveState.start();
+});
+ensureAuthReady().then(() => liveState.start(), () => liveState.start());
 
 
 /* ================= Usage page (cost + tokens) ================= */

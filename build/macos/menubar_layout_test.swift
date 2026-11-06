@@ -565,6 +565,68 @@ func runHostAndHandBackFixtures() {
     print("Paired host and hand-back switches: OK")
 }
 
+// Live state: the menu waits for Switcher to say its state changed, reads it
+// then, and falls back to its timers on an older server or errors.
+func runLiveStateFixtures() {
+    func response(_ status: Int) -> HTTPURLResponse {
+        HTTPURLResponse(url: URL(string: "https://fixture.invalid/changes")!, statusCode: status,
+            httpVersion: nil, headerFields: nil)!
+    }
+    func since(_ request: URLRequest) -> String? {
+        guard request.url?.path == "/api/state/changes", let url = request.url,
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        return items.first(where: { $0.name == "since" })?.value
+    }
+    var requests: [URLRequest] = []
+    var completions: [(Data?, URLResponse?, Error?) -> Void] = []
+    var tasks: [(TimeInterval, () -> Void)] = []
+    var runtime = MenuRuntime()
+    runtime.request = { request, completion in requests.append(request); completions.append(completion) }
+    runtime.schedule = { delay, task in tasks.append((delay, task)) }
+    runtime.deviceToken = { "fixture-device-token" }
+    func runTask(_ delay: TimeInterval) {
+        guard let index = tasks.firstIndex(where: { $0.0 == delay }) else { fail("Missing scheduled task after \(delay)s") }
+        tasks.remove(at: index).1()
+    }
+    let delegate = AppDelegate(runtime: runtime)
+    delegate.watchStateChanges()
+    guard requests.count == 1, since(requests[0]) == "", requests[0].timeoutInterval > 25,
+          requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+        fail("The menu must wait for changes with its device token and a deadline past the server's wait")
+    }
+    completions[0](Data(#"{"etag":"tag-1","changed":true}"#.utf8), response(200), nil)
+    guard requests.count == 3, requests[1].url?.path == "/api/state", since(requests[2]) == "tag-1" else {
+        fail("A change must read the state and wait again from the new tag")
+    }
+    let state = AppState(accounts: [], order: [], hidden: [], version: "fixture-live",
+        update: nil, menu_usage_bars: true, reset_notifications: false)
+    completions[1](try! JSONEncoder().encode(state), response(200), nil)
+    guard delegate.cachedState?.version == "fixture-live" else { fail("The read after a change must reach the cache") }
+    completions[2](Data(#"{"etag":"tag-1","changed":false}"#.utf8), response(200), nil)
+    guard requests.count == 4, since(requests[3]) == "tag-1" else {
+        fail("A wait that timed out must wait again without reading the state")
+    }
+    completions[3](Data("404 page not found".utf8), response(404), nil)
+    guard requests.count == 4, tasks.contains(where: { $0.0 == 300 }) else {
+        fail("An older server must leave the menu to its timers for a while")
+    }
+    runTask(300)
+    guard requests.count == 5, since(requests[4]) == "tag-1" else { fail("The route must be tried again later") }
+    completions[4](nil, nil, URLError(.cannotConnectToHost))
+    runTask(1)
+    completions[5](Data("{}".utf8), response(500), nil)
+    guard tasks.contains(where: { $0.0 == 2 }) else { fail("Errors must back off") }
+    runTask(2)
+    guard requests.count == 7 else { fail("The wait must resume after its backoff") }
+    // After a wake a fresh wait replaces the one that may hang.
+    delegate.watchStateChanges()
+    completions[6](Data(#"{"etag":"stale","changed":true}"#.utf8), response(200), nil)
+    guard requests.count == 8, delegate.liveEtag == "tag-1" else { fail("The replaced wait's answer must be ignored") }
+    completions[7](Data(#"{"etag":"tag-2","changed":false}"#.utf8), response(200), nil)
+    guard delegate.liveEtag == "tag-2", requests.count == 9 else { fail("The fresh wait must carry on") }
+    print("Live state wait, older server and backoff: OK")
+}
+
 @main
 struct MenuBarLayoutTest {
     static func main() {
@@ -573,6 +635,7 @@ struct MenuBarLayoutTest {
         runUpdateBadgeAndProgressFixtures()
         runKeepAwakeFixtures()
         runHostAndHandBackFixtures()
+        runLiveStateFixtures()
         guard planNames["free"] == "Free" else { fail("Free accounts must not display a paid tier") }
         guard planLabel("go") == "Go", planLabel("plus") == "Plus", planLabel("team") == "Team",
               planLabel("business") == "Business", planLabel("self_serve_business") == "Self Serve Business",

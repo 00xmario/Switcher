@@ -53,6 +53,11 @@ without the add-on.
   Keychain is locked), the account still switches and the client says why
   Claude Code did not follow. Accounts are added and signed in again on the
   host.
+- A switch shows everywhere at once. The host's dashboard and menu bar show a
+  switch made on a client right away, also while the menu is open, and a
+  client shows one made on the host, on another client or by automatic
+  switching just as fast. A host that runs an older Switcher cannot say when
+  it changes; its clients then read its accounts every few seconds.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the
@@ -103,8 +108,9 @@ not take updates from its clients yet: update it on the host once.
   trust it. Five wrong codes invalidate a code, and a network address that
   keeps guessing is refused for ten minutes.
 - Only paired Macs are served, with their own revocable token, and only for
-  account views and actions, provider proxies, the hub, Claude inference and
-  updating the host. An update installs only the newest official release,
+  account views and actions, waiting for the accounts to change, provider
+  proxies, the hub, Claude inference and updating the host. The wait answers
+  only an opaque tag and whether the accounts changed. An update installs only the newest official release,
   checked against its published SHA-256 (and its signature on a Mac), and a
   host never waits on a password prompt for it. Tokens are never sent to
   clients.
@@ -122,6 +128,9 @@ a token-protected loopback CONNECT proxy and status endpoint. It exits when
 Switcher closes its stdin. The client's server forwards
 `/api/accounts/…`, `/api/providers/…`, `/api/usage/refresh`, provider paths and
 `/v0/management/…`, merges `/api/state` with its local fields, and gives the
-Desktop relay a remote inference hook. The host serves `/remote/anthropic/…`
+Desktop relay a remote inference hook. It answers its own
+`/api/state/changes`, since its state includes its own fields: it compares
+them every two seconds and reads the host's state again when the host's
+`/api/state/changes` says that changed. The host serves `/remote/anthropic/…`
 through `desktoprelay.Manager.ServeAccount` and adds its own management key to
 hub requests.

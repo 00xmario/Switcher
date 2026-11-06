@@ -354,10 +354,6 @@ func run(port, desktopRelayPort int) {
 	// An update's restart keeps a running keep awake going.
 	updater.BeforeRestart, updater.RestartFailed = keepAwake.KeepThroughRestart, keepAwake.CancelRestart
 
-	// Background usage sync: the server owns freshness, so the web UI and
-	// the menu bar always agree without waiting for a client to poll.
-	// A Mac that uses another Switcher's accounts leaves token refreshes and
-	// usage polling to that host, so the same account is never refreshed twice.
 	remoteClient := remote.NewClient(filepath.Join(config.Dir(), "remote"), managementKey)
 	// Handing the tools back to their providers, before Switcher is removed.
 	// A Switcher that was handed back stays off its accounts from here on,
@@ -385,18 +381,6 @@ func run(port, desktopRelayPort int) {
 			},
 		},
 	})
-	go func() {
-		if !remoteClient.Connected() {
-			proxyManager.RefreshUsageAll(context.Background())
-		}
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			if !remoteClient.Connected() {
-				proxyManager.RefreshUsageAll(context.Background())
-			}
-		}
-	}()
 	usageService := usage.NewService(config.Dir(), nil)
 	// Cost/token usage: rescan the common windows periodically in the
 	// background so the API always has a recent summary ready.
@@ -422,6 +406,25 @@ func run(port, desktopRelayPort int) {
 		// the login service not to restart it.
 		Quit: func() { _ = syscall.Kill(os.Getpid(), syscall.SIGTERM) },
 	}
+	// Background usage sync: the server owns freshness, so the web UI and
+	// the menu bar always agree without waiting for a client to poll.
+	// A Mac that uses another Switcher's accounts leaves token refreshes and
+	// usage polling to that host, so the same account is never refreshed twice.
+	go func() {
+		refresh := func() {
+			if !remoteClient.Connected() {
+				proxyManager.RefreshUsageAll(context.Background())
+				// Screens waiting for a change see the new usage now.
+				api.StateChanged()
+			}
+		}
+		refresh()
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			refresh()
+		}
+	}()
 
 	// Each provider with a browser redirect has its own callback listener;
 	// the ports are fixed by the OAuth clients' registered redirect URIs.
