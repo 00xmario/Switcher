@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -32,11 +33,15 @@ const (
 	phoneOriginHeader = "X-Switcher-Phone-Origin"
 )
 
-// selfInfo is what the gate needs to know about this node.
+// selfInfo is what the gate, and pairing without a code, need to know
+// about this node.
 type selfInfo struct {
 	user    tailcfg.UserID
 	tagged  bool
 	dnsName string // MagicDNS name without the trailing dot
+	id      tailcfg.StableNodeID
+	suffix  string // the tailnet's MagicDNS suffix
+	ips     []netip.Addr
 }
 
 // owner reports whether a peer belongs to the Tailscale user this node was
