@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,7 +31,7 @@ func TestMain(m *testing.M) {
 
 func fakeAddon() {
 	token := os.Getenv("SWITCHER_TAILNET_TOKEN")
-	var phoneOn atomic.Bool
+	var phoneOn, forwarding atomic.Bool
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Switcher-Tailnet") != token {
@@ -46,6 +47,14 @@ func fakeAddon() {
 			// What the add-on was started with, for the phone tests.
 			json.NewEncoder(w).Encode(map[string]any{"forward": os.Getenv("SWITCHER_TAILNET_PHONE"),
 				"key": os.Getenv("SWITCHER_TAILNET_PHONE_KEY"), "args": os.Args[1:], "on": phoneOn.Load()})
+			return
+		case "/forwarding":
+			if r.Method == http.MethodPost {
+				forwarding.Store(r.URL.Query().Get("on") == "1")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"on": forwarding.Load()})
 			return
 		case "/whois":
 			// One live forwarded connection, from one loopback port.
@@ -268,6 +277,56 @@ func TestTailnetAddonVouchesForItsOwnConnections(t *testing.T) {
 	conn.Close()
 	if decodeIdentityHeader("not base64!") != nil || decodeIdentityHeader(base64.RawURLEncoding.EncodeToString([]byte(`{"self":{}}`))) != nil {
 		t.Fatal("a malformed identity header was taken")
+	}
+}
+
+// The add-on stops forwarding to the host's port before the host frees it,
+// so another program that takes the port then never gets the user's
+// devices, nor a client's trust.
+func TestHostHasTheAddonStopForwardingBeforeItsPortIsFreed(t *testing.T) {
+	host, err := NewHost(t.TempDir(), 0, hostMux(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	host.SetEnabled(true)
+	port := strconv.Itoa(host.Status().Port)
+	tn := fakeTailnet(t, t.TempDir(), host.Status().Port)
+	if err := tn.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	forwarding := func() bool {
+		tn.mu.Lock()
+		control, token := tn.control, tn.token
+		tn.mu.Unlock()
+		req, _ := http.NewRequest(http.MethodGet, "http://"+control+"/forwarding", nil)
+		req.Header.Set("X-Switcher-Tailnet", token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var state struct{ On bool }
+		json.NewDecoder(resp.Body).Decode(&state)
+		return state.On
+	}
+	tn.ForwardWhen(host.Listening)
+	if !forwarding() {
+		t.Fatal("not forwarding while sharing")
+	}
+	var openWhenStopped, forwardingWhenClosed atomic.Bool
+	host.BeforeStop(func() {
+		if c, err := net.Dial("tcp", "127.0.0.1:"+port); err == nil {
+			openWhenStopped.Store(true)
+			c.Close()
+		}
+		tn.StopForwarding()
+		forwardingWhenClosed.Store(forwarding())
+	})
+	host.SetEnabled(false)
+	if !openWhenStopped.Load() || forwardingWhenClosed.Load() || forwarding() {
+		t.Fatalf("listener open when the add-on stopped: %v; forwarding as the port was freed: %v", openWhenStopped.Load(), forwardingWhenClosed.Load())
 	}
 }
 

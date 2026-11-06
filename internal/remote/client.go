@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,6 +72,8 @@ type Client struct {
 	identified func(ctx context.Context, address string) (net.Conn, *tailnetIdentity, bool, error)
 	system     *systemTailscale
 	dialDirect func(ctx context.Context, network, address string) (net.Conn, error)
+	// ownTailnet lists this computer's own Tailscale addresses.
+	ownTailnet func() ([]string, error)
 	// hostInstalling is set while this Mac waits on the host's install.
 	hostInstalling atomic.Bool
 }
@@ -87,6 +90,10 @@ func (c *Client) UseTailnet(dial func(ctx context.Context, address string) (net.
 func (c *Client) IdentifyThrough(t *Tailnet) {
 	c.mu.Lock()
 	c.identified = t.dialIdentified
+	c.ownTailnet = func() ([]string, error) {
+		ips, err := localTailnetIPs()
+		return append(ips, t.Addresses()...), err
+	}
 	c.mu.Unlock()
 }
 
@@ -94,7 +101,7 @@ func (c *Client) IdentifyThrough(t *Tailnet) {
 // Switcher's own T3 Code hub requests before they are forwarded.
 func NewClient(dir, managementKey string) *Client {
 	c := &Client{dir: dir, managementKey: managementKey, system: newSystemTailscale(),
-		dialDirect: (&net.Dialer{Timeout: 5 * time.Second}).DialContext}
+		dialDirect: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ownTailnet: localTailnetIPs}
 	var cfg clientFile
 	if err := readJSON(c.path(), &cfg); err == nil && cfg.Token != "" && cfg.Fingerprint != "" && len(cfg.Addresses) > 0 {
 		c.setLocked(&cfg)
@@ -450,6 +457,19 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	defer raw.Close()
 	if why := notOwnDevice(*id); why != "" {
 		return nil, &NeedsCodeError{fmt.Sprintf("%s needs a pairing code: %s.", address, why)}
+	}
+	// Whatever listens on this computer is no host to trust without a
+	// code: any account here could run it.
+	c.mu.Lock()
+	ownTailnet := c.ownTailnet
+	c.mu.Unlock()
+	if own, err := ownTailnet(); err != nil || hasAddress(own, id.Peer.Addr) {
+		return nil, &NeedsCodeError{fmt.Sprintf("%s needs a pairing code: that is this computer itself.", address)}
+	}
+	// A name must lead to the device of that name, whatever answered for
+	// it in DNS.
+	if _, err := netip.ParseAddr(address); err != nil && !strings.EqualFold(strings.TrimSuffix(address, "."), id.Peer.Name) {
+		return nil, &NeedsCodeError{fmt.Sprintf("%s answered as %s on Tailscale, so it needs a pairing code.", address, id.Peer.Name)}
 	}
 	// TLS on this same connection: its certificate is the one pinned.
 	var fp string

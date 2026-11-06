@@ -122,7 +122,9 @@ type Host struct {
 	// lists this computer's own Tailscale addresses. Tests replace them.
 	addonWhois func(ctx context.Context, conn, from string) (tailnetIdentity, error)
 	system     *systemTailscale
-	ownTailnet func() []string
+	ownTailnet func() ([]string, error)
+	// beforeStop runs before the listener closes, under the lock.
+	beforeStop func()
 }
 
 // NewHost loads the host state from dir. next serves the routes paired devices
@@ -206,9 +208,21 @@ func (h *Host) stopLocked() {
 		h.advertising = nil
 	}
 	if h.srv != nil {
+		if h.beforeStop != nil {
+			h.beforeStop()
+		}
 		h.srv.Close()
 		h.srv, h.listening = nil, false
 	}
+}
+
+// BeforeStop runs fn before the listener closes, such as having the
+// Tailscale add-on stop forwarding to the port that is about to be freed,
+// which another program could take. fn must not call back into the host.
+func (h *Host) BeforeStop(fn func()) {
+	h.mu.Lock()
+	h.beforeStop = fn
+	h.mu.Unlock()
 }
 
 // Close stops serving without changing the saved preference.

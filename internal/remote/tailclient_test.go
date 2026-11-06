@@ -21,11 +21,38 @@ func tailnetClient(t *testing.T, addons *fakeAddons) *Client {
 	client := NewClient(t.TempDir(), "")
 	client.identified = addons.dialIdentified
 	client.tailnet = addons.dial
+	client.ownTailnet = func() ([]string, error) { return nil, nil }
 	client.system = &systemTailscale{run: func(context.Context, int, ...string) ([]byte, error) {
 		t.Error("the Tailscale app was asked while the add-on answers")
 		return nil, errNoTailscale
 	}}
 	return client
+}
+
+// Whatever answers on this computer's own Tailscale address, or under
+// another name than the one asked for, is no host to trust without a code.
+func TestClientRefusesItselfAndHostsThatAnswerUnderAnotherName(t *testing.T) {
+	for _, tc := range []struct {
+		name, address string
+		own           []string
+		ownErr        error
+	}{
+		{"this computer's own address", studio, []string{"100.101.2.3"}, nil},
+		{"unknown own addresses", studio, nil, errors.New("no interfaces")},
+		{"another name", "switcher-mini.tail1234.ts.net", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addons := newFakeAddons()
+			host := tailnetHost(t, addons)
+			client := tailnetClient(t, addons)
+			client.ownTailnet = func() ([]string, error) { return tc.own, tc.ownErr }
+			_, err := client.ConnectTailnet(context.Background(), tc.address, host.Status().Port, "Air")
+			var needsCode *NeedsCodeError
+			if !errors.As(err, &needsCode) || addons.lookups.Load() != 0 || client.Paired() {
+				t.Fatalf("error %v, %d lookups", err, addons.lookups.Load())
+			}
+		})
+	}
 }
 
 func inference(t *testing.T, client *Client) (string, error) {
@@ -132,6 +159,7 @@ func TestSwitchingHostsKeepsTheOldPairingWhenTheNewOneFails(t *testing.T) {
 	addons := newFakeAddons()
 	client.UseTailnet(addons.dial)
 	client.identified = addons.dialIdentified
+	client.ownTailnet = func() ([]string, error) { return nil, nil }
 	next := tailnetHost(t, addons)
 	keepsOld := func(when string) {
 		t.Helper()
@@ -195,6 +223,7 @@ func tcpAddr(s string) net.Addr {
 // from this computer's own Tailscale address.
 func TestClientAsksTheTailscaleAppAboutTheAddressItReached(t *testing.T) {
 	client := NewClient(t.TempDir(), "")
+	client.ownTailnet = func() ([]string, error) { return nil, nil }
 	var calls []string
 	// The Tailscale app here is the Studio's; the host is the Air.
 	client.system = fakeSystem(t, airWhois, &calls)

@@ -135,12 +135,19 @@ func onTailnetIP(addr netip.Addr) bool {
 }
 
 // localTailnetIPs are this computer's own Tailscale addresses, from its
-// network interfaces: the Tailscale app's or daemon's, if it runs.
-func localTailnetIPs() []string {
+// network interfaces: the Tailscale app's or daemon's, if it runs. An
+// error means they are unknown, and callers refuse.
+func localTailnetIPs() ([]string, error) {
 	var out []string
-	ifaces, _ := net.Interfaces()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
 	for _, iface := range ifaces {
-		addrs, _ := iface.Addrs()
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok {
 				if ip, ok := netip.AddrFromSlice(ipnet.IP); ok && onTailnetIP(ip) {
@@ -149,7 +156,7 @@ func localTailnetIPs() []string {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 var (

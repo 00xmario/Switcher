@@ -155,6 +155,32 @@ func (t *Tailnet) SyncForwarding() {
 	}
 }
 
+// StopForwarding has a running add-on stop passing tailnet connections on,
+// and waits for its answer, before the host listener closes: once the port
+// is free another program could take it, and the add-on must not hand it
+// the user's devices. The host calls it under its lock, so it asks nothing
+// of the host.
+func (t *Tailnet) StopForwarding() {
+	t.mu.Lock()
+	control, token := t.control, t.token
+	t.mu.Unlock()
+	if control == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+control+"/forwarding?on=0", nil)
+	req.Header.Set("X-Switcher-Tailnet", token)
+	if resp, err := t.client.Do(req); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent {
+			t.mu.Lock()
+			t.sentForward = control + "0"
+			t.mu.Unlock()
+		}
+	}
+}
+
 // ServePhone hands the add-on Switcher's phone listener and asks it to serve
 // the phone dashboard while on reports true. Call it before Start.
 func (t *Tailnet) ServePhone(addr string, on func() bool) {

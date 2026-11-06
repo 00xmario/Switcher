@@ -96,8 +96,9 @@ const (
 	tailnetTriesAll = 120
 )
 
-// allowTailnet counts one code-free pairing attempt against each key and
-// reports whether all of them are still within their limit.
+// allowTailnet reports whether one more code-free pairing attempt stays
+// within the limit of every key, and counts it against all of them only
+// then: a source already refused cannot use up the limit others share.
 func (h *Host) allowTailnet(keys ...string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -111,8 +112,8 @@ func (h *Host) allowTailnet(keys ...string) bool {
 		}
 		h.tailnetTries = kept
 	}
-	allowed := true
-	for _, k := range keys {
+	counts := make([]failure, len(keys))
+	for i, k := range keys {
 		f := h.tailnetTries[k]
 		if now.Sub(f.since) > codeTTL {
 			f = failure{since: now}
@@ -122,12 +123,15 @@ func (h *Host) allowTailnet(keys ...string) bool {
 			limit = tailnetTriesAll
 		}
 		if f.count >= limit {
-			allowed = false
+			return false
 		}
 		f.count++
-		h.tailnetTries[k] = f
+		counts[i] = f
 	}
-	return allowed
+	for i, k := range keys {
+		h.tailnetTries[k] = counts[i]
+	}
+	return true
 }
 
 // pairTailnet pairs one of the user's own Tailscale devices without a code.
@@ -155,7 +159,8 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	id, ok := h.identify(ctx, r)
-	if !ok || !hostAdmits(id, h.ownTailnet()) {
+	own, err := h.ownTailnet()
+	if !ok || err != nil || !hostAdmits(id, own) {
 		writeError(w, http.StatusForbidden, pairFailed)
 		return
 	}
@@ -168,7 +173,7 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, pairFailed)
 		return
 	}
-	err := h.addDeviceLocked(d)
+	err = h.addDeviceLocked(d)
 	h.mu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save the pairing")
@@ -207,7 +212,18 @@ func (h *Host) identify(ctx context.Context, r *http.Request) (tailnetIdentity, 
 		if !ok || !onTailnetIP(peer) {
 			return tailnetIdentity{}, false
 		}
-		return id, h.allowTailnet("src:"+peer.String(), "node:"+id.Peer.ID)
+		if !h.allowTailnet("src:"+peer.String(), "node:"+id.Peer.ID) {
+			return tailnetIdentity{}, false
+		}
+		// The Tailscale app on this computer is another way in for any
+		// account here, also one without a network interface (userspace
+		// networking): its node is this computer too.
+		if h.system != nil {
+			if app, err := h.system.selfNode(ctx); err == nil && (app.ID == id.Peer.ID || hasAddress(app.IPs, id.Peer.Addr)) {
+				return tailnetIdentity{}, false
+			}
+		}
+		return id, true
 	case onTailnetIP(remote):
 		if !h.allowTailnet("src:"+remote.String(), "all") {
 			return tailnetIdentity{}, false

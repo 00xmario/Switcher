@@ -146,10 +146,14 @@ func tailnetHost(t *testing.T, addons *fakeAddons) *Host {
 	}
 	host.Quiet = true
 	host.addresses = func() ([]string, []string) { return nil, nil }
-	host.ownTailnet = func() []string { return nil }
+	host.ownTailnet = func() ([]string, error) { return nil, nil }
 	host.addonWhois = addons.whois
-	host.system = &systemTailscale{run: func(context.Context, int, ...string) ([]byte, error) {
-		t.Error("the Tailscale app was asked about a connection through the add-on")
+	// No Tailscale app here; it is never asked who is behind a connection
+	// that came through the add-on.
+	host.system = &systemTailscale{run: func(_ context.Context, _ int, args ...string) ([]byte, error) {
+		if args[0] == "whois" {
+			t.Error("the Tailscale app was asked about a connection through the add-on")
+		}
 		return nil, errNoTailscale
 	}}
 	t.Cleanup(host.Close)
@@ -470,6 +474,34 @@ func TestPairingFromTheTailscaleAppIsRateLimitedPerSource(t *testing.T) {
 	}
 	if whois != tailnetTries {
 		t.Fatalf("asked Tailscale %d times for one source, want %d", whois, tailnetTries)
+	}
+	// A source already refused does not use up what all sources share.
+	if all := host.tailnetTries["all"].count; all != tailnetTries {
+		t.Fatalf("the shared limit counted %d attempts, want %d", all, tailnetTries)
+	}
+}
+
+// Through the add-on, the Tailscale app on the host's own computer is
+// another way in for any account there, also when it has no network
+// interface: its node is the host itself.
+func TestHostRefusesItsOwnTailscaleAppThroughTheAddon(t *testing.T) {
+	addons := newFakeAddons()
+	addons.client.Self.ID, addons.client.Self.IPs = "nStudioAddon11CNTRL", []string{"100.101.2.10"}
+	addons.client.Peer = tailnetPeer{ID: "nStudio11CNTRL", Name: "studio.tail1234.ts.net", User: me, IPs: []string{"100.101.2.3"}, Addr: "100.101.2.3:4000"}
+	host := tailnetHost(t, addons)
+	var calls []string
+	host.system = fakeSystem(t, "", &calls)
+	if status, _ := pairViaAddon(t, host, addons); status != http.StatusForbidden {
+		t.Fatalf("the host's own Tailscale app paired: %d", status)
+	}
+}
+
+func TestHostFailsClosedWithoutItsOwnAddresses(t *testing.T) {
+	addons := newFakeAddons()
+	host := tailnetHost(t, addons)
+	host.ownTailnet = func() ([]string, error) { return nil, errors.New("no interfaces") }
+	if status, _ := pairViaAddon(t, host, addons); status != http.StatusForbidden {
+		t.Fatalf("paired without knowing this computer's own addresses: %d", status)
 	}
 }
 

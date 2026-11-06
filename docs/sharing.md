@@ -36,7 +36,8 @@ calling, never with anything the other Mac sends:
 - Both sides check. The host asks Tailscale which device is behind the
   connection; the client asks its own Tailscale which device it reached
   before it sends anything, and pins the certificate presented on that same
-  connection.
+  connection. The client also refuses its own computer, and a device that
+  answers under another Tailscale name than the one it asked for.
 - Only the same Tailscale user's own devices count, compared by Tailscale's
   stable user and device ids: not another user of a shared tailnet, not a
   tagged device (it belongs to no user), not a device shared in from another
@@ -46,6 +47,12 @@ calling, never with anything the other Mac sends:
   either: any account on that computer can make one.
 - Everything else uses the code, as before. A refusal looks exactly like a
   wrong code, and attempts are limited per device and per address.
+- Tailscale vouches for devices, not for the accounts and programs on them.
+  Anything that can send traffic as one of your devices (another account on
+  it, a container or virtual machine behind it) can pair from it, and
+  anything listening on port 8788 of one of your devices can pose as a host
+  to your other devices. If other people use one of your Tailscale devices,
+  turn this off on your hosts and pair with codes.
 
 On the host, **Let my own Tailscale devices connect without a code** (on by
 default, under **Share this Switcher**; `switcher share tailnet off`) turns
