@@ -285,6 +285,28 @@ func TestASelectionDoesNotWaitForeverForALogin(t *testing.T) {
 	}
 }
 
+// Nobody has looked yet, as on a Mac that uses a host: that is no reason to
+// give up on starting at the login once it is known.
+func TestASelectionKeepsWaitingForALoginNobodyLookedAt(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	if err := m.Activate("b"); err != nil {
+		t.Fatal(err)
+	}
+	routed(m)
+	native.status = claudecode.Status{Condition: "checking"}
+	m.mu.Lock()
+	m.keptLoginWaiting = time.Now().Add(-keptLoginWait)
+	m.mu.Unlock()
+	source := NewDesktopCredentialSource(m)
+	if got := source.Selected(); got != "" {
+		t.Fatalf("relay uses %q", got)
+	}
+	native.status = claudecode.Status{Condition: "ready", ActiveID: "a"}
+	if got := source.Selected(); got != "a" {
+		t.Fatalf("relay uses %q, want the login's a", got)
+	}
+}
+
 func TestAKeptSelectionThatStopsWorkingIsShownMoving(t *testing.T) {
 	m, _ := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
 	routed(m)

@@ -78,7 +78,8 @@ func (m *Manager) alignKeptLogin(providerID string, status claudecode.Status) {
 	if status.Condition != "ready" && status.Condition != "unmanaged" {
 		// Not known yet. Some logins stay that way, such as an API key beside
 		// OAuth, and the selection on the screen must not wait for them forever.
-		if m.keptLoginAligned {
+		// "checking" only means nobody has looked yet.
+		if m.keptLoginAligned || status.Condition != "unavailable" {
 			return
 		}
 		if m.keptLoginWaiting.IsZero() {
