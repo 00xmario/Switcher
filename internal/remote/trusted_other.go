@@ -2,5 +2,5 @@
 
 package remote
 
-// trustedBinary trusts no program where file ownership cannot be checked.
-func trustedBinary(string) bool { return false }
+// resolveTrusted trusts no program where file ownership cannot be checked.
+func resolveTrusted(string) (string, bool) { return "", false }

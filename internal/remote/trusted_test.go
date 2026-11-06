@@ -6,79 +6,123 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
+// A real system program resolves through the system's own links, and the
+// path returned is the program itself.
+func TestSystemProgramsResolveToThemselves(t *testing.T) {
+	resolved, ok := resolveTrusted("/bin/sh")
+	if !ok {
+		t.Fatal("/bin/sh is not trusted")
+	}
+	fi, err := os.Lstat(resolved)
+	if err != nil || !fi.Mode().IsRegular() || !filepath.IsAbs(resolved) {
+		t.Fatalf("resolved to %q, not a program", resolved)
+	}
+	for _, p := range []string{"bin/sh", "/", "/bin", "/no/such/program"} {
+		if _, ok := resolveTrusted(p); ok {
+			t.Errorf("%q was trusted", p)
+		}
+	}
+}
+
 // The Tailscale command line decides who may pair, so only one that no
-// other account can have planted or changed is run.
+// other account can have planted or changed, along the whole way to it, is
+// run, and the path run is the resolved one.
 func TestOnlyATailscaleNobodyElseCanChangeIsRun(t *testing.T) {
-	// The folder's mode follows the umask, which may let the group write.
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
+	// The temporary folder's ancestors, such as /tmp, count as trusted
+	// here; everything below it is checked. Its own mode follows the
+	// umask, which may let the group write.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	write := func(name string, mode os.FileMode) string {
-		p := filepath.Join(dir, name)
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	assumeTrusted = func(p string) bool { return p == "/" || p == root || strings.HasPrefix(root, p+"/") }
+	t.Cleanup(func() { assumeTrusted = nil })
+	dir := func(name string, mode os.FileMode) string {
+		p := filepath.Join(root, name)
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(p, mode)
+		t.Cleanup(func() { os.Chmod(p, 0o700) })
+		return p
+	}
+	program := func(p string, mode os.FileMode) string {
 		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(p, mode); err != nil {
+		os.Chmod(p, mode)
+		return p
+	}
+	link := func(p, target string) string {
+		if err := os.Symlink(target, p); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	good := write("good", 0o755)
-	if !trustedBinary(good) {
-		t.Fatal("this user's own program, writable only by them, was refused")
+	trusted := func(p string) bool { _, ok := resolveTrusted(p); return ok }
+
+	good := program(filepath.Join(root, "good"), 0o755)
+	if got, ok := resolveTrusted(good); !ok || got != good {
+		t.Fatalf("this user's own program: %q %v", got, ok)
 	}
-	os.Chmod(dir, 0o770)
-	if trustedBinary(good) {
-		t.Fatal("trusted a program in a folder its group can change")
+	if got, ok := resolveTrusted(link(filepath.Join(root, "link"), good)); !ok || got != good {
+		t.Fatalf("a link resolves to %q, %v; the program itself is what runs", got, ok)
 	}
-	os.Chmod(dir, 0o700)
-	for name, mode := range map[string]os.FileMode{"group-writable": 0o775, "world-writable": 0o757} {
-		if trustedBinary(write(name, mode)) {
-			t.Errorf("a %s program was trusted", name)
+	sub := dir("sub", 0o755)
+	if got, ok := resolveTrusted(link(filepath.Join(sub, "up"), "../good")); !ok || got != good {
+		t.Fatalf("a relative link: %q %v", got, ok)
+	}
+	for name, p := range map[string]string{
+		"a group-writable program":                  program(filepath.Join(root, "group"), 0o775),
+		"a world-writable program":                  program(filepath.Join(root, "world"), 0o757),
+		"a program in a folder its group can write": program(filepath.Join(dir("group-folder", 0o770), "tailscale"), 0o755),
+		"a program in a sticky shared folder":       program(filepath.Join(dir("sticky", 0o1777), "tailscale"), 0o755),
+		"a link in a folder anyone can write":       link(filepath.Join(dir("open-links", 0o777), "tailscale"), good),
+		"a link to a program in a folder anyone can write": link(filepath.Join(root, "to-open"),
+			program(filepath.Join(dir("open-target", 0o777), "tailscale"), 0o755)),
+		"a link loop":       link(filepath.Join(root, "loop"), filepath.Join(root, "loop")),
+		"a folder":          sub,
+		"a missing program": filepath.Join(root, "missing"),
+	} {
+		if trusted(p) {
+			t.Errorf("%s was trusted", name)
 		}
 	}
-	link := filepath.Join(dir, "link")
-	os.Symlink(good, link)
-	if !trustedBinary(link) {
-		t.Fatal("a link to a trusted program was refused")
-	}
-	badLink := filepath.Join(dir, "bad-link")
-	os.Symlink(write("bad", 0o777), badLink)
-	if trustedBinary(badLink) || trustedBinary(filepath.Join(dir, "missing")) || trustedBinary(dir) {
-		t.Fatal("trusted a link to a changeable program, a missing one or a folder")
-	}
-	open := filepath.Join(dir, "open")
-	os.Mkdir(open, 0o700)
-	inOpen := filepath.Join(open, "tailscale")
-	os.WriteFile(inOpen, nil, 0o755)
-	os.Chmod(open, 0o777)
-	defer os.Chmod(open, 0o700)
-	if trustedBinary(inOpen) {
-		t.Fatal("trusted a program in a folder anyone can change")
-	}
 
-	// The fixed places come first; PATH counts only for a trusted program.
-	trusted := func(p string) bool { return p == "/fixed/b" || p == "/path/tailscale" }
-	onPath := func() (string, error) { return "/path/tailscale", nil }
-	if got := findTailscaleIn([]string{"/fixed/a", "/fixed/b"}, onPath, trusted); got != "/fixed/b" {
-		t.Fatalf("found %q before the trusted fixed place", got)
+	// The fixed places come first; PATH counts only for a trusted program;
+	// what is returned is the resolved path.
+	fake := func(p string) (string, bool) {
+		switch p {
+		case "/fixed/b":
+			return "/real/b", true
+		case "/path/tailscale":
+			return "/real/path", true
+		}
+		return "", false
 	}
-	if got := findTailscaleIn([]string{"/fixed/a"}, onPath, trusted); got != "/path/tailscale" {
+	onPath := func() (string, error) { return "/path/tailscale", nil }
+	if got := findTailscaleIn([]string{"/fixed/a", "/fixed/b"}, onPath, fake); got != "/real/b" {
+		t.Fatalf("found %q", got)
+	}
+	if got := findTailscaleIn([]string{"/fixed/a"}, onPath, fake); got != "/real/path" {
 		t.Fatalf("found %q", got)
 	}
 	untrustedPath := func() (string, error) { return "/home/other/bin/tailscale", nil }
-	if got := findTailscaleIn([]string{"/fixed/a"}, untrustedPath, trusted); got != "" {
+	if got := findTailscaleIn([]string{"/fixed/a"}, untrustedPath, fake); got != "" {
 		t.Fatalf("ran %q from PATH", got)
 	}
 	relative := func() (string, error) { return "tailscale", nil }
-	if got := findTailscaleIn(nil, relative, func(string) bool { return true }); got != "" {
+	if got := findTailscaleIn(nil, relative, func(p string) (string, bool) { return p, true }); got != "" {
 		t.Fatalf("ran a relative %q", got)
 	}
-	if got := findTailscaleIn(nil, func() (string, error) { return "", errors.New("none") }, trusted); got != "" {
+	if got := findTailscaleIn(nil, func() (string, error) { return "", errors.New("none") }, fake); got != "" {
 		t.Fatalf("found %q", got)
 	}
 }
