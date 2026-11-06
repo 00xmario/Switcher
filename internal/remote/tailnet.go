@@ -84,6 +84,7 @@ type Tailnet struct {
 	client          *http.Client
 	forwarding      func() bool
 	sentForward     string
+	forwardMu       sync.Mutex  // one forwarding update at a time, in order
 	phoneAddr       string      // Switcher's phone listener
 	phoneOn         func() bool // phone access is on
 	sentPhone       string
@@ -126,33 +127,17 @@ func (t *Tailnet) ForwardWhen(hosting func() bool) {
 }
 
 // SyncForwarding passes the current hosting state to a running add-on.
+// Updates go one at a time, each reading the hosting state only once it
+// has its turn, so one that was on its way cannot land after StopForwarding
+// and turn forwarding on again. hosting must take no lock the host holds
+// while stopping.
 func (t *Tailnet) SyncForwarding() {
+	t.forwardMu.Lock()
+	defer t.forwardMu.Unlock()
 	t.mu.Lock()
-	control, token, hosting := t.control, t.token, t.forwarding
+	hosting := t.forwarding
 	t.mu.Unlock()
-	if control == "" {
-		return
-	}
-	on := "0"
-	if hosting != nil && hosting() {
-		on = "1"
-	}
-	t.mu.Lock()
-	if t.sentForward == control+on {
-		t.mu.Unlock()
-		return
-	}
-	t.mu.Unlock()
-	req, _ := http.NewRequest(http.MethodPost, "http://"+control+"/forwarding?on="+on, nil)
-	req.Header.Set("X-Switcher-Tailnet", token)
-	if resp, err := t.client.Do(req); err == nil {
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusNoContent {
-			t.mu.Lock()
-			t.sentForward = control + on
-			t.mu.Unlock()
-		}
-	}
+	t.sendForwardingLocked(hosting != nil && hosting(), false)
 }
 
 // StopForwarding has a running add-on stop passing tailnet connections on,
@@ -161,21 +146,33 @@ func (t *Tailnet) SyncForwarding() {
 // the user's devices. The host calls it under its lock, so it asks nothing
 // of the host.
 func (t *Tailnet) StopForwarding() {
+	t.forwardMu.Lock()
+	defer t.forwardMu.Unlock()
+	t.sendForwardingLocked(false, true)
+}
+
+// sendForwardingLocked tells the add-on to forward or not, unless it was
+// told so already; always resends it.
+func (t *Tailnet) sendForwardingLocked(forward, always bool) {
 	t.mu.Lock()
-	control, token := t.control, t.token
+	control, token, sent := t.control, t.token, t.sentForward
 	t.mu.Unlock()
-	if control == "" {
+	on := "0"
+	if forward {
+		on = "1"
+	}
+	if control == "" || !always && sent == control+on {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+control+"/forwarding?on=0", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+control+"/forwarding?on="+on, nil)
 	req.Header.Set("X-Switcher-Tailnet", token)
 	if resp, err := t.client.Do(req); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusNoContent {
 			t.mu.Lock()
-			t.sentForward = control + "0"
+			t.sentForward = control + on
 			t.mu.Unlock()
 		}
 	}

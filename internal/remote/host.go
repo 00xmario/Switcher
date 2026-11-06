@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -132,7 +133,7 @@ type Host struct {
 	failures      map[string]failure
 	tailnetTries  map[string]failure
 	srv           *http.Server
-	listening     bool
+	listening     atomic.Bool
 	listenErr     string
 	advertising   func()
 	// Quiet skips the Bonjour advertisement (tests).
@@ -180,12 +181,9 @@ func (h *Host) AlsoReachableAt(extra func() []string) {
 	}
 }
 
-// Listening reports whether the host listener is serving.
-func (h *Host) Listening() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.listening
-}
+// Listening reports whether the host listener is serving. It takes no lock,
+// so the add-on's forwarding can follow it from inside the stop hook.
+func (h *Host) Listening() bool { return h.listening.Load() }
 
 // Fingerprint identifies the host certificate.
 func (h *Host) Fingerprint() string { return h.fp }
@@ -214,12 +212,14 @@ func (h *Host) listenLocked() {
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute, ErrorLog: log.New(io.Discard, "", 0),
 		TLSConfig:   &tls.Config{Certificates: []tls.Certificate{h.cert}, MinVersion: tls.VersionTLS12},
 		ConnContext: withLoopbackConn}
-	h.srv, h.listening = srv, true
+	h.srv = srv
+	h.listening.Store(true)
 	go func() {
 		srv.ServeTLS(ln, "", "")
 		h.mu.Lock()
 		if h.srv == srv {
-			h.srv, h.listening = nil, false
+			h.srv = nil
+			h.listening.Store(false)
 		}
 		h.mu.Unlock()
 	}()
@@ -234,11 +234,14 @@ func (h *Host) stopLocked() {
 		h.advertising = nil
 	}
 	if h.srv != nil {
+		// No longer listening before the hook runs, so a forwarding update
+		// that comes after it cannot turn forwarding on again.
+		h.listening.Store(false)
 		if h.beforeStop != nil {
 			h.beforeStop()
 		}
 		h.srv.Close()
-		h.srv, h.listening = nil, false
+		h.srv = nil
 	}
 }
 
@@ -344,7 +347,7 @@ func (h *Host) Status() HostStatus {
 	lan, tailscale := h.addresses()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	s := HostStatus{Enabled: h.state.Enabled, TailnetPairing: h.state.tailnetPairing(), TailnetNotice: h.state.TailnetNotice, Listening: h.listening, Name: h.name, Port: h.port,
+	s := HostStatus{Enabled: h.state.Enabled, TailnetPairing: h.state.tailnetPairing(), TailnetNotice: h.state.TailnetNotice, Listening: h.listening.Load(), Name: h.name, Port: h.port,
 		LAN: lan, Tailscale: tailscale, Devices: []DeviceView{}, Error: h.listenErr}
 	for _, d := range h.state.Devices {
 		s.Devices = append(s.Devices, DeviceView{ID: d.ID, Name: d.Name, CreatedAt: d.CreatedAt, LastSeen: d.LastSeen, Tailscale: d.TailscaleName})
