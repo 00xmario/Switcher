@@ -77,9 +77,9 @@ type State struct {
 	HiddenProviders    []string          `json:"hidden_providers,omitempty"`
 	ManagementKey      string            `json:"management_key,omitempty"`
 	NativeClaudeCommit string            `json:"native_claude_commit,omitempty"`
-	// ClaudeLoginKept: a switch leaves Claude Code's login alone, and the
-	// selection already started from that login.
-	ClaudeLoginKept bool `json:"claude_login_kept,omitempty"`
+	// KeptLoginAligned: with Claude Code's login kept (it goes through the
+	// Desktop relay), the selection already started at that login.
+	KeptLoginAligned bool `json:"kept_login_aligned,omitempty"`
 }
 
 // ErrNotFound is returned when an account ID does not exist.

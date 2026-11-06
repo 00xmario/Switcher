@@ -125,6 +125,9 @@ type record struct {
 // ErrBusy is returned while another hand-back or setup runs.
 var ErrBusy = errors.New("Switcher is already handing back or setting up; try again in a moment")
 
+// errLoginKept: asked for a login, Claude Code turned out to have one.
+var errLoginKept = errors.New("Claude Code keeps its login")
+
 // Manager owns the hand-back state.
 type Manager struct {
 	path string
@@ -302,6 +305,8 @@ func (m *Manager) HandBack(ctx context.Context) (Status, error) {
 		default:
 			email, err := c.UseSelected(ctx)
 			switch {
+			case errors.Is(err, errLoginKept):
+				note("claude-code", "unchanged", "Claude Code keeps its current login and refreshes it itself from now on.")
 			case err != nil:
 				return fail("claude-code", fmt.Errorf("could not give Claude Code a login: %w", err))
 			case email == "":

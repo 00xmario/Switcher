@@ -21,8 +21,9 @@ so rewriting the login loses them. The card then says **Use this account**, and
   moments, no restart needed (seen with Claude Code 2.1.318). One that has not
   yet keeps running on its login, and until then does not follow a switch.
 - A Claude Code with no login still gets one from a switch.
-- Connecting doesn't change which account is used: the selection starts at the
-  account Claude Code is signed in with, if Switcher has it.
+- Connecting doesn't change which account Claude Code uses: the selection starts
+  at the account it is signed in with, if Switcher has it. Other tools on the
+  Claude proxy, and Macs paired with this one, move to that account too.
 - A switch to an account whose sign-in no longer works is refused, instead of
   another account answering.
 - Features Claude Code decides from its own login, such as which models it
@@ -79,9 +80,9 @@ sessions, and message transcripts are never read.
 
 ## What the relay changes on a request
 
-Only `POST /v1/messages` and `/v1/messages/count_tokens` of a picked
-conversation are changed, and only so they look like Claude Code logged in to
-the picked account: its bearer token, the `oauth-2025-04-20` beta if missing,
+Only `POST /v1/messages` and `/v1/messages/count_tokens` that use a Switcher
+account (the selected one, or one picked for the conversation) are changed, and
+only so they look like Claude Code logged in to that account: its bearer token, the `oauth-2025-04-20` beta if missing,
 and `metadata.user_id`'s `account_uuid`. `X-Api-Key` is removed. Everything
 else, including model, tools, thinking and unknown fields, is passed through.
 Other traffic keeps the caller's credentials, and other hosts are tunneled

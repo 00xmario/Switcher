@@ -991,17 +991,26 @@ func (m *Manager) Settle(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) hasCredential(ctx context.Context) bool {
-	file, err := readPrivate(m.paths.CredentialsFile)
-	if err != nil || len(file.Data) != 0 {
-		return true
-	}
+	var data []byte
 	if m.paths.Keychain {
-		data, exists, err := m.keys.Read(ctx, m.paths.Service)
-		if err != nil || (exists && len(data) != 0) {
+		value, exists, err := m.keys.Read(ctx, m.paths.Service)
+		if err != nil {
 			return true
 		}
+		if exists {
+			data = value
+		}
 	}
-	return false
+	if data == nil {
+		file, err := readPrivate(m.paths.CredentialsFile)
+		if err != nil {
+			return true
+		}
+		data = file.Data
+	}
+	// The same file also holds MCP credentials, which are no login.
+	oauth, err := parseOAuth(data)
+	return err != nil || oauth.AccessToken != ""
 }
 
 // Switch changes Claude Code's actual login, and calls commit only after

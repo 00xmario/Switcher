@@ -753,6 +753,20 @@ func TestSettleKnowsWhetherThereIsALogin(t *testing.T) {
 	if loggedIn, err := h.manager.Settle(ctx); err != nil || !loggedIn {
 		t.Fatalf("logged in %v, err %v", loggedIn, err)
 	}
+	// MCP credentials in the same file are no login.
+	if err := writePrivate(h.paths.CredentialsFile, fileValue{Data: []byte(`{"mcpOAuth":{"s":"x"}}`), Exists: true}); err != nil {
+		t.Fatal(err)
+	}
+	if loggedIn, err := h.manager.Settle(ctx); err != nil || loggedIn {
+		t.Fatalf("MCP only: logged in %v, err %v", loggedIn, err)
+	}
+	// Only a certain absence counts.
+	if err := writePrivate(h.paths.CredentialsFile, fileValue{Data: []byte(`{not json`), Exists: true}); err != nil {
+		t.Fatal(err)
+	}
+	if loggedIn, err := h.manager.Settle(ctx); err != nil || !loggedIn {
+		t.Fatalf("unreadable: logged in %v, err %v", loggedIn, err)
+	}
 	if err := os.Remove(h.paths.CredentialsFile); err != nil {
 		t.Fatal(err)
 	}

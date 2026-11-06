@@ -2,7 +2,6 @@ package handback
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"switcher/internal/codexcfg"
@@ -148,7 +147,8 @@ func (c claudeNative) UseSelected(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if result == nil {
-		return "", errors.New("Claude Code's login did not change")
+		// It has a login after all, and goes through the relay: it keeps it.
+		return "", errLoginKept
 	}
 	return account.Email, nil
 }

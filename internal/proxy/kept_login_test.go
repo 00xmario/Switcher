@@ -206,14 +206,56 @@ func TestDisconnectingGoesBackToTheLogin(t *testing.T) {
 	if m.NativeLoginKept("claude") || m.SelectedID("claude") != "a" {
 		t.Fatalf("kept %v, selected %q", m.NativeLoginKept("claude"), m.SelectedID("claude"))
 	}
-	state, err := m.store.LoadState()
-	if err != nil || state.ClaudeLoginKept {
-		t.Fatalf("state %+v, err %v", state, err)
-	}
-	// Connecting again starts at the login again.
+	// A moment of settings that cannot be read, or an undone hand-back, moved
+	// nothing: the pick is still there.
 	on = true
+	if m.SelectedID("claude") != "b" {
+		t.Fatalf("selected %q, want the pick b", m.SelectedID("claude"))
+	}
+	// Connecting on purpose starts at the login again.
+	if err := m.RestartSelectionAtLogin(); err != nil {
+		t.Fatal(err)
+	}
 	if m.SelectedID("claude") != "a" || m.ActiveID("claude") != "a" {
 		t.Fatalf("selected %q, active %q", m.SelectedID("claude"), m.ActiveID("claude"))
+	}
+	state, err := m.store.LoadState()
+	if err != nil || !state.KeptLoginAligned {
+		t.Fatalf("state %+v, err %v", state, err)
+	}
+}
+
+// Without knowing the login, the relay leaves the caller's own token, which is
+// that login, rather than a stale account until the selection can start.
+func TestAKeptLoginNotKnownYetAnswersWithItself(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	if err := m.Activate("b"); err != nil {
+		t.Fatal(err)
+	}
+	routed(m)
+	native.status = claudecode.Status{Condition: "unavailable"}
+	source := NewDesktopCredentialSource(m)
+	if got := source.Selected(); got != "" {
+		t.Fatalf("relay uses %q while the login is unknown", got)
+	}
+	native.status = claudecode.Status{Condition: "ready", ActiveID: "a"}
+	if got := source.Selected(); got != "a" {
+		t.Fatalf("relay uses %q, want the login's a", got)
+	}
+}
+
+func TestAKeptSelectionThatStopsWorkingIsShownMoving(t *testing.T) {
+	m, _ := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	routed(m)
+	if _, err := m.ActivateForClient(context.Background(), "b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.deactivate("b"); err != nil {
+		t.Fatal(err)
+	}
+	event := m.LastAutoSwitch()
+	if m.ActiveID("claude") != "a" || event == nil || event.From != "b" || event.To != "a" {
+		t.Fatalf("active %q, event %+v", m.ActiveID("claude"), event)
 	}
 }
 

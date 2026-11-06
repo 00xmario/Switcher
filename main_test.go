@@ -146,6 +146,22 @@ func TestClaudeCodeRoutedKeepsTheLastAnswerWhenItCannotTell(t *testing.T) {
 	}
 }
 
+// A restart that cannot read the settings yet goes by the setup Switcher made.
+func TestClaudeCodeRoutedStartsFromTheSetupItMade(t *testing.T) {
+	made := claudeCodeRouted(func() desktoprelay.SetupStatus {
+		return desktoprelay.SetupStatus{Condition: "unavailable", ScopeID: "scope"}
+	})
+	if !made() {
+		t.Fatal("a setup Switcher made did not count")
+	}
+	none := claudeCodeRouted(func() desktoprelay.SetupStatus {
+		return desktoprelay.SetupStatus{Condition: "unavailable"}
+	})
+	if none() {
+		t.Fatal("no setup counted as routed")
+	}
+}
+
 // The real setup through connect, a stopped relay and disconnect.
 func TestClaudeCodeRoutedFollowsTheRealSetup(t *testing.T) {
 	previous := http.DefaultTransport

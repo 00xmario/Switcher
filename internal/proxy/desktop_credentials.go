@@ -112,6 +112,9 @@ func (s *DesktopCredentialSource) Selected() string {
 	if s == nil || s.manager == nil {
 		return ""
 	}
+	if s.manager.selectionWaitsForLogin("claude") {
+		return ""
+	}
 	return s.manager.ClaudeRoute(s.manager.SelectedID("claude"))
 }
 

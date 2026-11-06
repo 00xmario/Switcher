@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"switcher/internal/claudecode"
+	"switcher/internal/desktoprelay"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
 	"switcher/internal/settings"
@@ -165,6 +168,57 @@ func TestARoutedClaudeCodeKeepsItsLoginFiles(t *testing.T) {
 	api.handleCLISetup(cli, req)
 	if !strings.Contains(cli.Body.String(), "Remote Control keeps working") || !strings.Contains(cli.Body.String(), `"login_kept":true`) {
 		t.Fatalf("setup row does not say the login stays: %s", cli.Body.String())
+	}
+}
+
+// Connecting on purpose starts the selection at the login, which is what Claude
+// Code used until then. Connecting what is connected changes nothing.
+func TestConnectingStartsTheSelectionAtTheLogin(t *testing.T) {
+	blockDesktopControlEgress(t)
+	api, manager, _, _, _, p := nativeClaudeFixtureAPI(t)
+	p.statusOverride = &claudecode.Status{Condition: "ready", ActiveID: "claude-a"}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay, err := desktoprelay.New(desktoprelay.Config{DataRoot: filepath.Join(root, "relay"),
+		Source: &setupForbiddenSource{}, Transport: desktopControlBlockedTransport{},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("fixture forbids tunnel egress")
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = relay.Close(context.Background()) })
+	path := filepath.Join(root, "settings.json")
+	api.DesktopRelay, api.DesktopSettingsPath, api.ManagementKey = relay, path, "fixture-management-secret"
+	manager.SetClaudeCodeRouted(func() bool { return relay.SetupStatus(path).Routed })
+	mux := http.NewServeMux()
+	api.Register(mux)
+	post := func(suffix string) {
+		t.Helper()
+		if w := desktopControlRequest(t, mux, "POST", "/api/desktop-relay"+suffix, "{}", api.ManagementKey); w.Code != 200 {
+			t.Fatalf("%s: %d %s", suffix, w.Code, w.Body.String())
+		}
+	}
+	// Drifted: the proxy's account is not the login.
+	if err := manager.Activate("claude-b"); err != nil {
+		t.Fatal(err)
+	}
+	post("/configure")
+	if manager.SelectedID("claude") != "claude-a" || manager.ActiveID("claude") != "claude-a" {
+		t.Fatalf("selected %q, active %q, want the login", manager.SelectedID("claude"), manager.ActiveID("claude"))
+	}
+	if _, err := manager.ActivateForClient(context.Background(), "claude-b"); err != nil {
+		t.Fatal(err)
+	}
+	post("/configure")
+	if manager.SelectedID("claude") != "claude-b" {
+		t.Fatalf("connecting again took the pick away: %q", manager.SelectedID("claude"))
+	}
+	post("/restore")
+	if manager.SelectedID("claude") != "claude-a" {
+		t.Fatalf("after disconnecting %q, want the login", manager.SelectedID("claude"))
 	}
 }
 

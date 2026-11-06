@@ -211,15 +211,19 @@ func executablePath() string {
 
 // claudeCodeRouted reports whether Claude Code's settings send it through the
 // relay, also while the relay is down: its requests then fail, but its login
-// must not move. What cannot be read right now keeps the last answer.
+// must not move. What cannot be read right now keeps the last answer; before
+// there is one, a setup Switcher made counts, as after a restart.
 func claudeCodeRouted(setup func() desktoprelay.SetupStatus) func() bool {
-	var last bool
+	var last, known bool
 	return func() bool {
-		switch s := setup(); {
+		s := setup()
+		switch {
 		case s.Routed:
-			last = true
+			last, known = true, true
 		case s.Condition != "unavailable" && s.Condition != "pending":
-			last = false
+			last, known = false, true
+		case !known:
+			last = s.ScopeID != ""
 		}
 		return last
 	}
