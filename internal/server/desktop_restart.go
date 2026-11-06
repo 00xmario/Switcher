@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"os/exec"
 	"runtime"
@@ -53,10 +54,40 @@ func (a *API) handleDesktopRestart(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	if err := restart(ctx); err != nil {
-		writeDesktopRelayError(w, err)
+		writeDesktopRestartError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restart_requested"})
+}
+
+// desktopRestartError is a failed restart in words for the person who asked.
+// The text comes from this package; the cause only goes to the log.
+type desktopRestartError struct {
+	message string
+	cause   error
+}
+
+func (e *desktopRestartError) Error() string {
+	if e.cause == nil {
+		return e.message
+	}
+	return e.message + ": " + e.cause.Error()
+}
+
+func (e *desktopRestartError) Unwrap() error { return e.cause }
+
+func restartFailure(message string, cause error) error {
+	return &desktopRestartError{message: message, cause: cause}
+}
+
+func writeDesktopRestartError(w http.ResponseWriter, err error) {
+	message := "Claude Desktop could not be restarted. If it closed, open it yourself."
+	var failure *desktopRestartError
+	if errors.As(err, &failure) {
+		message = failure.message
+	}
+	log.Printf("desktop restart: %v", err)
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": message, "error_code": "desktop_restart_failed"})
 }
 
 type desktopRestartOperations struct {
@@ -66,8 +97,12 @@ type desktopRestartOperations struct {
 }
 
 func restartClaudeDesktop(ctx context.Context) error {
-	if runtime.GOOS != "darwin" {
-		return desktoprelay.ErrUnavailable
+	switch runtime.GOOS {
+	case "darwin":
+	case "linux":
+		return newLinuxDesktop().restart(ctx)
+	default:
+		return restartFailure("Switcher can restart Claude Desktop only on a Mac or on Linux.", nil)
 	}
 	return runDesktopRestart(ctx, desktopRestartOperations{
 		quit: func(ctx context.Context) error {
@@ -93,7 +128,7 @@ func runDesktopRestart(ctx context.Context, ops desktopRestartOperations) error 
 	err := ops.quit(quitCtx)
 	cancel()
 	if err != nil {
-		return err
+		return restartFailure("Claude Desktop could not be asked to quit, so it was left running.", err)
 	}
 	// After a successful quit request, finish waiting and reopening even if
 	// the client disconnects. A failed exit check still blocks open.
@@ -101,11 +136,14 @@ func runDesktopRestart(ctx context.Context, ops desktopRestartOperations) error 
 	err = waitDesktopExit(exitCtx, ops.running)
 	cancel()
 	if err != nil {
-		return err
+		return restartFailure("Claude Desktop did not quit in time, so it was not reopened. Close it yourself and open it again.", err)
 	}
 	reopenCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return ops.open(reopenCtx)
+	if err := ops.open(reopenCtx); err != nil {
+		return restartFailure("Claude Desktop closed but did not come back. Open it yourself.", err)
+	}
+	return nil
 }
 
 func waitDesktopExit(ctx context.Context, running func(context.Context) (bool, error)) error {

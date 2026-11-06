@@ -38,8 +38,12 @@ func (m *Manager) transport() http.RoundTripper {
 // other bytes pass through unchanged, and errors and rate limits are
 // Anthropic's answer, not the relay's.
 func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *http.Request) {
-	run.inFlight.Add(1)
-	defer run.inFlight.Add(-1)
+	message := r.Method == http.MethodPost && r.URL.Path == "/v1/messages"
+	model := message || (r.Method == http.MethodPost && r.URL.Path == "/v1/messages/count_tokens")
+	if model {
+		run.inFlight.Add(1)
+		defer run.inFlight.Add(-1)
+	}
 	if !m.scopeExists(scope) {
 		relayError(w, http.StatusForbidden, "permission_error", "This Switcher relay profile was revoked", "")
 		return
@@ -49,8 +53,7 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 		panic(http.ErrAbortHandler)
 	}
 	ctx := r.Context()
-	message := r.Method == http.MethodPost && r.URL.Path == "/v1/messages"
-	if !message && !(r.Method == http.MethodPost && r.URL.Path == "/v1/messages/count_tokens") {
+	if !model {
 		m.send(w, r, r.URL.Path, body, "", run.transport, nil, nil)
 		return
 	}

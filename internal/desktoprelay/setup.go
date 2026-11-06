@@ -17,12 +17,15 @@ import (
 // SetupStatus is safe for management JSON. Admission and original env values
 // remain in the private journal and never enter this reply.
 type SetupStatus struct {
-	Condition       string `json:"condition"`
-	SettingsPath    string `json:"settings_path"`
-	ScopeID         string `json:"scope_id"`
-	BackupPath      string `json:"backup_path,omitempty"`
-	RestartRequired bool   `json:"restart_required"`
-	Configured      bool   `json:"configured,omitempty"`
+	Condition    string `json:"condition"`
+	SettingsPath string `json:"settings_path"`
+	ScopeID      string `json:"scope_id"`
+	BackupPath   string `json:"backup_path,omitempty"`
+	// RestartRequired: Switcher changed this settings file, which is what
+	// allows the Restart action. It stays on after a restart, so it doesn't
+	// say that one is still outstanding.
+	RestartRequired bool `json:"restart_required"`
+	Configured      bool `json:"configured,omitempty"`
 	// Routed: the settings still send Claude Code here, whether or not the
 	// relay is listening right now.
 	Routed  bool   `json:"routed,omitempty"`

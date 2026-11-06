@@ -12,7 +12,6 @@ type desktop struct {
 	InFlight  int    `json:"in_flight"`
 	Condition string `json:"condition,omitempty"`
 	Settings  string `json:"settings_path,omitempty"`
-	Restart   bool   `json:"restart_required,omitempty"`
 }
 
 func (d desktop) text() string {
@@ -21,9 +20,6 @@ func (d desktop) text() string {
 		text := "connected"
 		if d.InFlight > 0 {
 			text += fmt.Sprintf(" · %d request%s in flight", d.InFlight, plural(d.InFlight))
-		}
-		if d.Restart {
-			text += " · restart Claude Desktop to finish"
 		}
 		return text
 	case d.Connected:
@@ -48,14 +44,13 @@ func (c *ctx) desktopStatus() (desktop, error) {
 			Configured bool   `json:"configured"`
 			Condition  string `json:"condition"`
 			Path       string `json:"settings_path"`
-			Restart    bool   `json:"restart_required"`
 		} `json:"setup"`
 	}
 	if err := c.cl.callWith(http.MethodGet, "/api/desktop-relay", nil, &answer, header); err != nil {
 		return desktop{}, err
 	}
 	return desktop{Connected: answer.Setup.Configured, Listening: answer.Status.Listening, InFlight: answer.Status.InFlight,
-		Condition: answer.Setup.Condition, Settings: answer.Setup.Path, Restart: answer.Setup.Restart}, nil
+		Condition: answer.Setup.Condition, Settings: answer.Setup.Path}, nil
 }
 
 func runDesktop(c *ctx, args []string) error {

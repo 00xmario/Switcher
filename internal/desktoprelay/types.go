@@ -101,7 +101,8 @@ type Config struct {
 type Status struct {
 	Enabled   bool `json:"enabled"`
 	Listening bool `json:"listening"`
-	// InFlight counts requests currently being relayed.
+	// InFlight counts model requests being relayed. Other traffic isn't in it:
+	// a Remote Control session keeps a connection open for as long as it lives.
 	InFlight   uint64 `json:"in_flight"`
 	Address    string `json:"address"`
 	CAPath     string `json:"ca_path"`

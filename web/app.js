@@ -2094,6 +2094,7 @@ settingsPage.desktopRelay = createDesktopRelay({
     locked: authState.locked, loggingOut: authState.loggingOut,
     authKind: authState.enabled ? 'cookie' : '',
     controllerKey: data.hub_management_key || '',
+    machine: machineWord(data.platform),
   }),
   copy: text => navigator.clipboard.writeText(text),
   confirmStop: ({ inFlight }) => confirmDialog({

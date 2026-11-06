@@ -53,7 +53,7 @@ test('loopback and activity helpers', () => {
   assert.equal(desktopRelayActivity('nonsense'), null);
 });
 
-function fixture({ loopback = true, failPost = false } = {}) {
+function fixture({ loopback = true, failPost = false, machine } = {}) {
   const calls = [];
   const relay = createDesktopRelay({
     api: async (path, options = {}) => {
@@ -65,7 +65,7 @@ function fixture({ loopback = true, failPost = false } = {}) {
       }
       return options.method && options.method !== 'GET' ? {} : body();
     },
-    getContext: () => ({ loopback, locked: false, loggingOut: false, authKind: '', controllerKey: 'key' }),
+    getContext: () => ({ loopback, locked: false, loggingOut: false, authKind: '', controllerKey: 'key', machine }),
     getAccounts: () => [{ id: 'claude-a', provider: 'claude', email: 'work@example.test' }, { id: 'claude-b', provider: 'claude', email: 'home@example.test' }, { id: 'codex-a', provider: 'codex', email: 'x@example.test' }],
     now: () => Date.parse(at(40)),
   });
@@ -130,6 +130,9 @@ test('a LAN dashboard never loads or offers controls', async () => {
   await relay.setActive(true);
   assert.equal(calls.length, 0);
   assert.match(relay.settingsHTML(), /Open Switcher on this Mac/);
+  const { relay: onLinux } = fixture({ loopback: false, machine: 'computer' });
+  await onLinux.setActive(true);
+  assert.match(onLinux.settingsHTML(), /Open Switcher on this computer/);
 });
 
 test('settings offer connect, restart behind confirmation, and disconnect', async () => {
