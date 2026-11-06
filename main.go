@@ -618,6 +618,10 @@ func registerWebRoutes(mux *http.ServeMux, static fs.FS, preferences *settings.S
 	mux.HandleFunc("GET /login", loginFile("login.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /login.css", loginFile("login.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /login.js", loginFile("login.js", "text/javascript; charset=utf-8"))
+	// The Linux tray's panel, for browsers on this computer only.
+	panel := server.Panel(static)
+	mux.Handle("GET /panel", panel)
+	mux.Handle("GET /panel.html", panel)
 	staticHandler := http.FileServerFS(static)
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Authenticated HTML must not linger as a back/forward cached page

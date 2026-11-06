@@ -102,6 +102,11 @@ func (a *authGate) gate(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		// The tray's panel comes back to itself after the login.
+		if r.URL.Path == "/panel" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			http.Redirect(w, r, "/login?next=/panel", http.StatusSeeOther)
+			return
+		}
 		w.Header().Set("WWW-Authenticate", `Bearer realm="switcher"`)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"auth_required": true})
 	})
