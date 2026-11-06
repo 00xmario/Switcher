@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"switcher/internal/fileperm"
 )
 
 const (
@@ -30,11 +32,12 @@ func (b *budget) active() bool {
 	return b.ctx.Err() == nil && b.entries > 0 && b.bytes > 0
 }
 
-func safeDirectory(st *unix.Stat_t, own bool) bool {
+// safeDirectory judges an open directory: fd is its descriptor.
+func safeDirectory(fd int, st *unix.Stat_t, own bool) bool {
 	uid := uint32(os.Getuid())
 	return st.Mode&unix.S_IFMT == unix.S_IFDIR &&
 		(st.Uid == uid || !own && st.Uid == 0) &&
-		(st.Mode&0022 == 0 || !own && st.Uid == 0 && st.Mode&unix.S_ISVTX != 0)
+		(!fileperm.OthersCanWrite(fd, st.Mode, st.Gid) || !own && st.Uid == 0 && st.Mode&unix.S_ISVTX != 0)
 }
 
 // Pin every path component without following symlinks. Root-owned sticky temp
@@ -64,7 +67,7 @@ func openRoot(path string, b *budget) (*os.File, bool) {
 		}
 		fd = next
 		var st unix.Stat_t
-		if unix.Fstat(fd, &st) != nil || !safeDirectory(&st, j == len(parts)-1) {
+		if unix.Fstat(fd, &st) != nil || !safeDirectory(fd, &st, j == len(parts)-1) {
 			unix.Close(fd)
 			return nil, false
 		}
@@ -89,7 +92,7 @@ func openChild(dir *os.File, name string) (*os.File, bool) {
 		return nil, false
 	}
 	var st unix.Stat_t
-	if unix.Fstat(fd, &st) != nil || !safeDirectory(&st, true) || st.Dev != named.Dev || st.Ino != named.Ino {
+	if unix.Fstat(fd, &st) != nil || !safeDirectory(fd, &st, true) || st.Dev != named.Dev || st.Ino != named.Ino {
 		unix.Close(fd)
 		return nil, false
 	}
@@ -144,8 +147,10 @@ func walkMetadata(path string, depth int, b *budget, accept func(string) bool, v
 	return walk(root, depth)
 }
 
-func safeFile(st *unix.Stat_t) bool {
-	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Uid == uint32(os.Getuid()) && st.Nlink == 1 && st.Mode&0022 == 0 && st.Size >= 0 && st.Size <= maxFile
+// safeFile judges a file through its open descriptor fd, or by name alone
+// with fd -1, in which case the same file is judged again once opened.
+func safeFile(fd int, st *unix.Stat_t) bool {
+	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Uid == uint32(os.Getuid()) && st.Nlink == 1 && !fileperm.OthersCanWrite(fd, st.Mode, st.Gid) && st.Size >= 0 && st.Size <= maxFile
 }
 
 func readMetadata(dir *os.File, name string, b *budget) []byte {
@@ -155,7 +160,7 @@ func readMetadata(dir *os.File, name string, b *budget) []byte {
 	// Check type before opening, then verify the opened descriptor. Nonblocking
 	// opens also protect against a file being replaced by a FIFO between checks.
 	var named unix.Stat_t
-	if unix.Fstatat(int(dir.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !safeFile(&named) {
+	if unix.Fstatat(int(dir.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !safeFile(-1, &named) {
 		return nil
 	}
 	if named.Size > b.bytes {
@@ -169,7 +174,7 @@ func readMetadata(dir *os.File, name string, b *budget) []byte {
 	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	var st unix.Stat_t
-	if unix.Fstat(fd, &st) != nil || !safeFile(&st) || st.Dev != named.Dev || st.Ino != named.Ino || st.Size > b.bytes {
+	if unix.Fstat(fd, &st) != nil || !safeFile(fd, &st) || st.Dev != named.Dev || st.Ino != named.Ino || st.Size > b.bytes {
 		return nil
 	}
 	before, err := f.Stat()
@@ -187,7 +192,7 @@ func readMetadata(dir *os.File, name string, b *budget) []byte {
 	}
 	after, err := f.Stat()
 	if err != nil || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) ||
-		unix.Fstatat(int(dir.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !safeFile(&named) || named.Dev != st.Dev || named.Ino != st.Ino {
+		unix.Fstatat(int(dir.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !safeFile(-1, &named) || named.Dev != st.Dev || named.Ino != st.Ino {
 		return nil
 	}
 	return data

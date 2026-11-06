@@ -310,6 +310,38 @@ func TestAddKeyReadsTheKeyFromStdin(t *testing.T) {
 	}
 }
 
+// The server answers an import or an added key with the same account view as
+// its state, where health and usage are objects.
+func TestImportAndAddKeyReadTheServersAccountView(t *testing.T) {
+	const view = `{"status":"ok","account":{"id":"%s","provider":"%s","email":"work@example.com","plan":"claude_max_20x","active":true,
+		"usage":{"windows":[{"label":"Weekly","used_percent":6}]},"health":{"condition":"usage_current","checked_at":1793900000}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/login/import":
+			io.WriteString(w, strings.ReplaceAll(strings.Replace(view, "%s", "c9", 1), "%s", "claude"))
+		case "/api/accounts":
+			io.WriteString(w, strings.ReplaceAll(strings.Replace(view, "%s", "o1", 1), "%s", "opencode"))
+		}
+	}))
+	defer srv.Close()
+	for _, args := range [][]string{{"login", "import", "claude", "--json"}, {"add-key", "opencode", "--key", "sk-secret", "--json"}} {
+		code, out, errOut := run(t, srv.URL, "", args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, errOut)
+		}
+		var answer struct {
+			Event   string  `json:"event"`
+			Account Account `json:"account"`
+		}
+		if err := json.Unmarshal([]byte(out), &answer); err != nil || answer.Event != "done" {
+			t.Fatalf("%v: %v %s", args, err, out)
+		}
+		if a := answer.Account; a.Health != "usage_current" || len(a.Usage) != 1 || a.Usage[0].UsedPercent != 6 {
+			t.Errorf("%v: account %+v", args, a)
+		}
+	}
+}
+
 func TestFlagsMayFollowArguments(t *testing.T) {
 	f, url := fake(t)
 	code, out, _ := run(t, url, "", "use", "home", "--json")

@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -41,6 +42,25 @@ func TestUsageAuthStatus(t *testing.T) {
 		if !errors.Is(err, provider.ErrUsageUnavailable) || errors.Is(err, provider.ErrUsageAuthRequired) != (s == http.StatusUnauthorized) || errors.Is(err, provider.ErrReloginRequired) || strings.Contains(err.Error(), "do-not-log") || strings.Contains(err.Error(), "secret-access") {
 			t.Fatalf("status %d: unexpected usage error: %v", s, err)
 		}
+	}
+}
+
+// An expired key says so, instead of only that usage needs authentication;
+// free text from OpenCode stays out of the error.
+func TestUsageNamesAnExpiredKey(t *testing.T) {
+	body := `{"error":{"type":"authentication_error","code":"api_key_expired","message":"private text"}}`
+	old := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: testTransport(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}
+	defer func() { http.DefaultClient = old }()
+	_, err := New().AddByKey(context.Background(), "sk-expired")
+	if !errors.Is(err, provider.ErrUsageAuthRequired) || !strings.Contains(err.Error(), "this API key has expired") || strings.Contains(err.Error(), "private text") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	body = `{"error":{"code":"Some <free> text that is not a code"}}`
+	if _, err := New().AddByKey(context.Background(), "sk-x"); err == nil || strings.Contains(err.Error(), "free") {
+		t.Fatalf("free text leaked: %v", err)
 	}
 }
 

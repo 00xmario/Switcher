@@ -39,6 +39,12 @@ both systems, the same trust model as the CLIs. On Linux Switcher needs no
 keyring of its own: Claude Code and Codex keep their logins in private files
 by default, and Switcher writes Claude Code's login where Claude Code reads it.
 
+Switcher only edits files that nobody else can change. Ubuntu and similar
+distributions make your files group-writable for a group of your own (umask
+002); Switcher treats that like a private file, so **Connect Claude Desktop**
+works on `~/.claude` as Ubuntu creates it. Write access for a shared group or
+for everyone is still refused.
+
 ## The tray
 
 `switcher tray` puts Switcher's icon in the desktop's tray, through the

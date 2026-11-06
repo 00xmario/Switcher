@@ -73,7 +73,9 @@ export function desktopRelayEntries(body) {
 export function createDesktopRelay({ api, getContext, getAccounts = () => [], copy = async () => {},
   confirmStop = async () => false, confirmRestart = async () => false, now = () => Date.now(), claudeLogo = '' }) {
   let active = false, snapshot = null, entries = [], loadedAt = 0, reading = null, epoch = 0;
-  let busy = null, message = '', failed = false, showAll = false, profile = null;
+  // loadFailed marks a message from loading the status, which the next good
+  // load clears; an action's error stays until the next action.
+  let busy = null, message = '', failed = false, loadFailed = false, showAll = false, profile = null;
   const rowErrors = new Map();
   const views = { settings: null };
   const rendered = { settings: null };
@@ -101,10 +103,10 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
         snapshot = { status: body.status || {}, setup: body.setup || {}, scopes: body.scopes || [] };
         entries = desktopRelayEntries(body);
         loadedAt = now();
-        if (!busy && failed && !message.startsWith('Could not')) { failed = false; message = ''; }
+        if (!busy && loadFailed) { failed = false; loadFailed = false; message = ''; }
         return true;
       } catch (error) {
-        if (version === epoch && access()) { failed = true; message = errorText(error, 'Could not load Claude Desktop status.'); }
+        if (version === epoch && access() && !busy) { failed = true; loadFailed = true; message = errorText(error, 'Could not load Claude Desktop status.'); }
         return false;
       } finally {
         reading = null;
@@ -118,6 +120,7 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     if (!access() || busy) return false;
     busy = { kind };
     failed = false;
+    loadFailed = false;
     message = '';
     render();
     try {
@@ -387,9 +390,11 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
       await copy(JSON.stringify(profile.env, null, 2));
       profile = null;
       failed = false;
+      loadFailed = false;
       message = 'Environment copied.';
     } catch {
       failed = true;
+      loadFailed = false;
       message = 'Could not copy. Select the text and copy it manually.';
     }
     render();
@@ -418,6 +423,7 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     busy = null;
     message = '';
     failed = false;
+    loadFailed = false;
     profile = null;
     rowErrors.clear();
     views.settings?.replaceChildren();

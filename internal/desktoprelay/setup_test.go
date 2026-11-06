@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"switcher/internal/desktoprelay"
+	"switcher/internal/fileperm"
 )
 
 func setupFixture(t *testing.T) (*desktoprelay.Manager, desktoprelay.Config, string) {
@@ -292,5 +294,60 @@ func TestSetupKeepsLocalServersOffTheRelayAndRestoresNoProxy(t *testing.T) {
 	json.Unmarshal(setupRead(t, path), &after)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("disconnect left %s", setupRead(t, path))
+	}
+}
+
+// Ubuntu's umask leaves the Claude folder and settings group-writable for the
+// user's private group. That is as private as 0700, so Connect works there;
+// group write for a shared group (a Mac's staff) is still refused.
+func TestSetupAcceptsGroupWriteOnlyForTheUsersPrivateGroup(t *testing.T) {
+	m, _, path := setupFixture(t)
+	dir := filepath.Dir(path)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"env":{"KEEP":"yes"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0664); err != nil {
+		t.Fatal(err)
+	}
+	// A setgid temp folder would hand the files its own group.
+	if err := os.Chown(dir, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(path, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	if fileperm.PrivateGroup(uint32(os.Getgid())) {
+		// An ACL entry for another user hides behind the same group bits.
+		if setfacl, err := exec.LookPath("setfacl"); err == nil {
+			if out, err := exec.Command(setfacl, "-m", "u:nobody:rw", path).CombinedOutput(); err == nil {
+				if _, err := m.Configure(context.Background(), path); err == nil {
+					t.Fatal("settings another user may write through an ACL were configured")
+				}
+				if out, err := exec.Command(setfacl, "-b", path).CombinedOutput(); err != nil {
+					t.Fatalf("setfacl -b: %v %s", err, out)
+				}
+			} else {
+				t.Logf("no ACLs here: %s", out)
+			}
+		}
+	}
+	_, err := m.Configure(context.Background(), path)
+	if fileperm.PrivateGroup(uint32(os.Getgid())) {
+		if err != nil {
+			t.Fatalf("private group: %v", err)
+		}
+		if setupEnv(t, path)["KEEP"] != "yes" {
+			t.Fatal("configure lost an existing setting")
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("settings writable by a shared group were configured")
 	}
 }

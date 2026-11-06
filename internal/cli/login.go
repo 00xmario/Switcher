@@ -281,15 +281,12 @@ func runLoginImport(c *ctx, args []string) error {
 		body["relogin_of"] = account.ID
 	}
 	var answer struct {
-		Account *Account `json:"account"`
+		Account *apiAccount `json:"account"`
 	}
 	if err := c.cl.call(http.MethodPost, "/api/login/import", body, &answer); err != nil {
 		return err
 	}
-	if answer.Account != nil && answer.Account.Usage == nil {
-		answer.Account.Usage = []Window{}
-	}
-	c.loginDone(answer.Account)
+	c.loginDone(answer.Account.added())
 	return nil
 }
 
@@ -319,15 +316,12 @@ func runAddKey(c *ctx, args []string) error {
 		return usagef("no key: pass --key or pipe it on stdin")
 	}
 	var answer struct {
-		Account *Account `json:"account"`
+		Account *apiAccount `json:"account"`
 	}
 	if err := c.cl.call(http.MethodPost, "/api/accounts", map[string]string{"provider": provider, "key": *key}, &answer); err != nil {
 		return err
 	}
-	if answer.Account != nil && answer.Account.Usage == nil {
-		answer.Account.Usage = []Window{}
-	}
-	c.loginDone(answer.Account)
+	c.loginDone(answer.Account.added())
 	return nil
 }
 

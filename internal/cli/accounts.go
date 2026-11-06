@@ -37,26 +37,53 @@ type serverState struct {
 		Latest    string `json:"latest"`
 		Available bool   `json:"update_available"`
 	} `json:"update"`
-	Order    []string `json:"order"`
-	Accounts []struct {
-		ID           string `json:"id"`
-		Provider     string `json:"provider"`
-		Email        string `json:"email"`
-		Plan         string `json:"plan"`
-		Active       bool   `json:"active"`
-		NativeActive bool   `json:"native_active"`
-		Usage        *struct {
-			Windows []Window `json:"windows"`
-		} `json:"usage"`
-		Health *struct {
-			Condition string `json:"condition"`
-		} `json:"health"`
-		ResetCredits *struct {
-			Count  int    `json:"count"`
-			NextID string `json:"next_id"`
-		} `json:"reset_credits"`
-	} `json:"accounts"`
+	Order        []string       `json:"order"`
+	Accounts     []apiAccount   `json:"accounts"`
 	DesktopRelay map[string]any `json:"desktop_relay"`
+}
+
+// apiAccount is one account as the server's API sends it: in the state, and
+// in the answers to a login import or an added key.
+type apiAccount struct {
+	ID           string `json:"id"`
+	Provider     string `json:"provider"`
+	Email        string `json:"email"`
+	Plan         string `json:"plan"`
+	Active       bool   `json:"active"`
+	NativeActive bool   `json:"native_active"`
+	Usage        *struct {
+		Windows []Window `json:"windows"`
+	} `json:"usage"`
+	Health *struct {
+		Condition string `json:"condition"`
+	} `json:"health"`
+	ResetCredits *struct {
+		Count  int    `json:"count"`
+		NextID string `json:"next_id"`
+	} `json:"reset_credits"`
+}
+
+func (a apiAccount) account() Account {
+	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, Usage: []Window{}}
+	if a.Usage != nil && a.Usage.Windows != nil {
+		account.Usage = a.Usage.Windows
+	}
+	if a.Health != nil {
+		account.Health = a.Health.Condition
+	}
+	if a.ResetCredits != nil {
+		account.BankedResets, account.nextReset = a.ResetCredits.Count, a.ResetCredits.NextID
+	}
+	return account
+}
+
+// added is the account a login import or an added key answers with, or nil.
+func (a *apiAccount) added() *Account {
+	if a == nil {
+		return nil
+	}
+	account := a.account()
+	return &account
 }
 
 func (c *ctx) state() (serverState, []Account, error) {
@@ -66,17 +93,7 @@ func (c *ctx) state() (serverState, []Account, error) {
 	}
 	accounts := make([]Account, 0, len(st.Accounts))
 	for _, a := range st.Accounts {
-		account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, Usage: []Window{}}
-		if a.Usage != nil && a.Usage.Windows != nil {
-			account.Usage = a.Usage.Windows
-		}
-		if a.Health != nil {
-			account.Health = a.Health.Condition
-		}
-		if a.ResetCredits != nil {
-			account.BankedResets, account.nextReset = a.ResetCredits.Count, a.ResetCredits.NextID
-		}
-		accounts = append(accounts, account)
+		accounts = append(accounts, a.account())
 	}
 	// Providers in the dashboard's order, active account first.
 	rank := func(p string) int {

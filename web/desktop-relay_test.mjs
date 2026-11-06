@@ -108,6 +108,23 @@ test('a failed switch is shown on that row', async () => {
   assert.match(relay.settingsHTML(), /class="dr-error" role="alert">desktop relay selection changed/);
 });
 
+test('a failed connect keeps its error after the status reloads', async () => {
+  const data = body();
+  data.setup = { condition: 'unavailable', configured: false };
+  const relay = createDesktopRelay({
+    api: async (path, options = {}) => {
+      if (options.method) throw { body: { error: 'desktop relay unavailable', error_code: 'setup_unavailable' } };
+      return data;
+    },
+    getContext: () => ({ loopback: true, authKind: 'cookie' }),
+  });
+  await relay.setActive(true);
+  assert.equal(await relay.configure(), false);
+  assert.match(relay.settingsHTML(), /class="dr-message error" role="alert">desktop relay unavailable/);
+  await relay.refresh();
+  assert.match(relay.settingsHTML(), /desktop relay unavailable/, 'a later status poll keeps it');
+});
+
 test('a LAN dashboard never loads or offers controls', async () => {
   const { relay, calls } = fixture({ loopback: false });
   await relay.setActive(true);
