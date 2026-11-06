@@ -517,6 +517,8 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	case http.StatusForbidden, http.StatusUnauthorized, http.StatusNotFound:
 		// Refused, or a Switcher from before pairing without a code.
 		return nil, &NeedsCodeError{fmt.Sprintf("%s did not let this computer in without a code. Enter the code shown on it.", address)}
+	case http.StatusConflict:
+		return nil, &NeedsCodeError{fmt.Sprintf("Too many Switchers on this device are paired with %s. Remove one there (Settings → Share between Macs), or enter a code shown on it.", address)}
 	default:
 		return nil, fmt.Errorf("pairing failed: the host answered %d", resp.StatusCode)
 	}

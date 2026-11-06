@@ -111,9 +111,11 @@ owned by root or you that no group or other user can change; both commands
 work for any user, so no `sudo` or operator setting is needed. A connection
 counts only when it reached this computer's own Tailscale address, and never
 one from this computer itself, so another account on a shared Linux machine
-cannot pair with the Switcher on it without a code. When `tailscaled` is
-there (its socket, or a Tailscale address on an interface) but its command
-line cannot answer, pairing without a code is refused. Tailscale vouches for
+cannot pair with the Switcher on it without a code. A stopped `tailscaled`,
+which its command line reports as not running, carries nobody's traffic and
+is fine; when `tailscaled` is there (its socket, or a Tailscale address on an
+interface) but its command line cannot say, pairing without a code is
+refused. Tailscale vouches for
 devices, not for the accounts on them: whatever can send traffic as one of
 your devices, such as another account or a container on it, or a machine
 joined with an untagged auth key (a CI runner, a container with

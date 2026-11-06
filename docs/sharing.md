@@ -64,7 +64,9 @@ keeps it off after the update, since its owner never chose it, and offers it
 once in that card (**Turn on** or **Not now**; `switcher share` says so too).
 Off, every Mac needs a code. A Mac paired this way is listed as **Paired via
 Tailscale** and is removed like any other. If the same Switcher on the same
-device pairs again, its new pairing replaces the old one.
+device pairs again, its new pairing replaces the old one. One device keeps up
+to eight such pairings; beyond that, a new one takes the place only of one
+unused for two weeks, else remove one on the host or pair with a code.
 
 ## Switching hosts
 

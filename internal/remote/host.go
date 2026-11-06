@@ -591,14 +591,31 @@ func newDevice(name string) (device, string) {
 	return device{ID: randomHex(8), Name: name, TokenHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now().UTC()}, token
 }
 
-// perNode bounds the pairings kept for one Tailscale device.
-const perNode = 8
+const (
+	// perNode bounds the pairings kept for one Tailscale device. A new one
+	// beyond it takes the place only of a pairing that has gone unused for
+	// staleAfter, so a stream of new Switchers on one device cannot push
+	// out one in use.
+	perNode    = 8
+	staleAfter = 14 * 24 * time.Hour
+)
+
+// errTooManyOnDevice refuses a pairing beyond perNode for one device.
+var errTooManyOnDevice = errors.New("too many Switchers on this device are paired")
+
+// lastUsed is when a paired device last used its token, or paired.
+func (d device) lastUsed() time.Time {
+	if d.LastSeen.After(d.CreatedAt) {
+		return d.LastSeen
+	}
+	return d.CreatedAt
+}
 
 // addDeviceLocked saves a new pairing. One from the same Switcher on the
 // same Tailscale device replaces that Switcher's earlier pairing, whose
 // token stops working; another Switcher behind the same device, such as
 // another account's sharing its Tailscale, keeps its own. One device keeps
-// at most perNode pairings, the oldest going first.
+// at most perNode pairings (see staleAfter).
 func (h *Host) addDeviceLocked(d device) error {
 	previous := h.state.Devices
 	kept := make([]device, 0, len(previous)+1)
@@ -613,13 +630,16 @@ func (h *Host) addDeviceLocked(d device) error {
 		kept = append(kept, old)
 	}
 	for ; d.TailscaleNode != "" && sameNode >= perNode; sameNode-- {
-		oldest := -1
+		unused := -1
 		for i, old := range kept {
-			if old.TailscaleNode == d.TailscaleNode && (oldest < 0 || old.CreatedAt.Before(kept[oldest].CreatedAt)) {
-				oldest = i
+			if old.TailscaleNode == d.TailscaleNode && (unused < 0 || old.lastUsed().Before(kept[unused].lastUsed())) {
+				unused = i
 			}
 		}
-		kept = append(kept[:oldest], kept[oldest+1:]...)
+		if time.Since(kept[unused].lastUsed()) < staleAfter {
+			return errTooManyOnDevice
+		}
+		kept = append(kept[:unused], kept[unused+1:]...)
 	}
 	h.state.Devices = append(kept, d)
 	if err := writeJSON(h.path(), h.state); err != nil {

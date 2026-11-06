@@ -202,7 +202,7 @@ func pairThroughAs(t *testing.T, conn net.Conn, name, install string) (int, pair
 	var paired pairResponse
 	raw, _ := io.ReadAll(resp.Body)
 	json.Unmarshal(raw, &paired)
-	if resp.StatusCode != http.StatusOK && !strings.Contains(string(raw), pairFailed) {
+	if resp.StatusCode == http.StatusForbidden && !strings.Contains(string(raw), pairFailed) {
 		t.Errorf("a refusal said more than a wrong code would: %s", raw)
 	}
 	return resp.StatusCode, paired
@@ -249,21 +249,41 @@ func TestPairingAgainReplacesOnlyTheSameSwitchersPairing(t *testing.T) {
 		t.Fatalf("a malformed id replaced a pairing: %+v", host.Status().Devices)
 	}
 
+}
+
+// A device keeps at most perNode pairings. Beyond that, a new Switcher on
+// it is refused, however many it brings within the rate limit, unless one
+// of the device's pairings has gone unused for staleAfter; then that one
+// makes room.
+func TestNewSwitchersOnADeviceCannotPushOutOneInUse(t *testing.T) {
 	many := newFakeAddons()
 	crowded := tailnetHost(t, many)
 	var tokens []string
-	for i := 0; i < perNode+1; i++ {
+	for i := 0; i < perNode; i++ {
 		_, p := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", i+1))
 		tokens = append(tokens, p.Token)
 	}
-	if n := len(crowded.Status().Devices); n != perNode {
-		t.Fatalf("%d pairings kept for one device", n)
+	if status, _ := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", 100)); status != http.StatusConflict {
+		t.Fatalf("one more Switcher on a full device: %d", status)
 	}
-	if _, ok := crowded.authenticate(tokens[0]); ok {
-		t.Fatal("the oldest pairing was kept over the newest")
+	for i, token := range tokens {
+		if _, ok := crowded.authenticate(token); !ok {
+			t.Fatalf("pairing %d was pushed out", i)
+		}
 	}
-	if _, ok := crowded.authenticate(tokens[perNode]); !ok {
-		t.Fatal("the newest pairing is gone")
+	// One that has gone unused for two weeks makes room; the others stay.
+	crowded.mu.Lock()
+	crowded.state.Devices[3].CreatedAt = time.Now().Add(-30 * 24 * time.Hour)
+	crowded.state.Devices[3].LastSeen = time.Now().Add(-20 * 24 * time.Hour)
+	crowded.mu.Unlock()
+	status, newest := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", 101))
+	if status != http.StatusOK || len(crowded.Status().Devices) != perNode {
+		t.Fatalf("with an unused pairing: %d, %d pairings", status, len(crowded.Status().Devices))
+	}
+	for i, token := range append(tokens, newest.Token) {
+		if _, ok := crowded.authenticate(token); ok == (i == 3) {
+			t.Fatalf("pairing %d: kept %v", i, ok)
+		}
 	}
 }
 
@@ -619,6 +639,11 @@ func TestHostRefusesItsOwnTailscaleAppThroughTheAddon(t *testing.T) {
 	}
 }
 
+// exited is a command line that exited with a failure, saying said.
+func exited(said string) error {
+	return &exitedError{command: "status", err: errors.New("exit status 1"), stderr: "tailscale: " + said + "\n"}
+}
+
 // failingRun is a Tailscale command line that fails with err.
 func failingRun(err error) func(context.Context, int, ...string) ([]byte, error) {
 	return func(context.Context, int, ...string) ([]byte, error) { return nil, err }
@@ -652,6 +677,15 @@ func TestHostFailsClosedWhenItCannotRuleOutItsOwnTailscaleApp(t *testing.T) {
 		{"an app that says it is not connected", appSaying("Stopped"), true, http.StatusOK},
 		{"an app that is starting", appSaying("Starting"), true, http.StatusForbidden},
 		{"an app running another node", appSaying("Running"), true, http.StatusOK},
+		// The command line says for certain that no daemon runs: down, safe.
+		{"no daemon and no socket", failingRun(exited("failed to connect to local tailscaled; it doesn't appear to be running (sudo systemctl start tailscaled ?)")), true, http.StatusOK},
+		{"the Mac app not running", failingRun(exited("failed to connect to local Tailscale service; is Tailscale running?")), true, http.StatusOK},
+		{"a stale socket nobody listens on", failingRun(exited("failed to connect to local tailscaled (no tailscaled process found): dial unix /var/run/tailscale/tailscaled.sock: connect: connection refused")), true, http.StatusOK},
+		// Anything less certain is no.
+		{"a daemon that runs but does not answer", failingRun(exited("failed to connect to local tailscaled (which appears to be running as /usr/sbin/tailscaled, pid 41). Got error: dial unix: connect: connection refused")), true, http.StatusForbidden},
+		{"no process found, but another failure", failingRun(exited("failed to connect to local tailscaled (no tailscaled process found): dial unix /var/run/tailscale/tailscaled.sock: connect: permission denied")), true, http.StatusForbidden},
+		{"some other failure", failingRun(exited("unexpected state")), true, http.StatusForbidden},
+		{"the message without a failed exit", failingRun(errors.New("failed to connect to local tailscaled; it doesn't appear to be running")), true, http.StatusForbidden},
 		{"garbled output", func(context.Context, int, ...string) ([]byte, error) { return []byte(`{"BackendState":`), nil }, true, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
