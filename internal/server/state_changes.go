@@ -32,6 +32,12 @@ const (
 	// running a little after the last one left.
 	stateWatchLinger     = 10 * time.Second
 	stateWatchMaxWaiters = 64
+	// Paired devices reach the host's waits too, and one may be another
+	// person's Mac. Each holds at most a couple, and all callers from
+	// elsewhere together leave a share for this computer's own menu bar,
+	// dashboard and tray.
+	stateWatchPerDevice    = 2
+	stateWatchLocalReserve = 16
 	// An older host cannot say when it changes; it is asked again after a
 	// while, since it may have been updated.
 	stateWatchOldHostRetry = 5 * time.Minute
@@ -53,9 +59,9 @@ type stateWatch struct {
 	// waitHost waits until the host's own state changes; nil without one.
 	waitHost func(ctx context.Context, since string) (string, bool, error)
 
-	hostEvery, clientEvery, linger time.Duration
-	oldHostRetry, hostBackoff      time.Duration
-	maxWaiters                     int
+	hostEvery, clientEvery, linger      time.Duration
+	oldHostRetry, hostBackoff           time.Duration
+	maxWaiters, perDevice, localReserve int
 
 	nudge chan struct{}
 
@@ -64,8 +70,27 @@ type stateWatch struct {
 	ready     bool          // etag was read since the watcher started
 	changed   chan struct{} // closed, and replaced, when etag changes or gets ready
 	waiters   int
+	away      int            // waiters that are not on this computer
+	devices   map[string]int // waiters per paired device
 	idleSince time.Time
 	running   bool
+}
+
+// waiter says who waits: a caller on this computer, a paired device by its
+// id, or neither, such as a browser on the LAN listener.
+type waiter struct {
+	local  bool
+	device string
+}
+
+// waiterOf tells who made a request. A paired device's requests arrive
+// through the host listener, which marks them and never as from this
+// computer, also when they come over the Tailscale add-on's loopback.
+func waiterOf(r *http.Request) waiter {
+	if id, ok := remote.PairedDeviceID(r); ok {
+		return waiter{device: id}
+	}
+	return waiter{local: isLoopbackRequest(r)}
 }
 
 func newStateWatch(render func(context.Context, bool) []byte, client func() bool,
@@ -73,7 +98,45 @@ func newStateWatch(render func(context.Context, bool) []byte, client func() bool
 	return &stateWatch{render: render, client: client, waitHost: waitHost,
 		hostEvery: stateWatchHostEvery, clientEvery: stateWatchClientEvery, linger: stateWatchLinger,
 		oldHostRetry: stateWatchOldHostRetry, hostBackoff: stateWatchHostBackoff, maxWaiters: stateWatchMaxWaiters,
-		nudge: make(chan struct{}, 1), changed: make(chan struct{})}
+		perDevice: stateWatchPerDevice, localReserve: stateWatchLocalReserve,
+		nudge: make(chan struct{}, 1), changed: make(chan struct{}), devices: map[string]int{}}
+}
+
+// admitLocked counts a new waiter in, or refuses it: over the overall bound,
+// over a paired device's own share, or, from elsewhere, into the share kept
+// for this computer.
+func (s *stateWatch) admitLocked(who waiter) bool {
+	switch {
+	case s.waiters >= s.maxWaiters:
+		return false
+	case who.local:
+	case s.away >= s.maxWaiters-s.localReserve:
+		return false
+	case who.device != "" && s.devices[who.device] >= s.perDevice:
+		return false
+	}
+	s.waiters++
+	if !who.local {
+		s.away++
+	}
+	if who.device != "" {
+		s.devices[who.device]++
+	}
+	return true
+}
+
+func (s *stateWatch) leaveLocked(who waiter) {
+	if s.waiters--; s.waiters == 0 {
+		s.idleSince = time.Now()
+	}
+	if !who.local {
+		s.away--
+	}
+	if who.device != "" {
+		if s.devices[who.device]--; s.devices[who.device] <= 0 {
+			delete(s.devices, who.device)
+		}
+	}
 }
 
 // stateTag is the opaque tag of one answer of /api/state.
@@ -84,13 +147,12 @@ func stateTag(answer []byte) string {
 
 // wait answers the state's tag as soon as it differs from since, or since
 // and false once timeout passes without a change.
-func (s *stateWatch) wait(ctx context.Context, since string, timeout time.Duration) (string, bool, error) {
+func (s *stateWatch) wait(ctx context.Context, who waiter, since string, timeout time.Duration) (string, bool, error) {
 	s.mu.Lock()
-	if s.waiters >= s.maxWaiters {
+	if !s.admitLocked(who) {
 		s.mu.Unlock()
 		return "", false, errTooManyWaiters
 	}
-	s.waiters++
 	if !s.running {
 		s.running, s.ready = true, false
 		go s.run()
@@ -98,9 +160,7 @@ func (s *stateWatch) wait(ctx context.Context, since string, timeout time.Durati
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		if s.waiters--; s.waiters == 0 {
-			s.idleSince = time.Now()
-		}
+		s.leaveLocked(who)
 		s.mu.Unlock()
 	}()
 	timer := time.NewTimer(timeout)
@@ -342,7 +402,7 @@ func leaveOutActivity(state any) any {
 // state differs from ?since (at once when since is empty or stale), or
 // unchanged with the same etag after about 25 seconds.
 func (a *API) handleStateChanges(w http.ResponseWriter, r *http.Request) {
-	etag, changed, err := a.watch().wait(r.Context(), r.URL.Query().Get("since"), stateChangesWait)
+	etag, changed, err := a.watch().wait(r.Context(), waiterOf(r), r.URL.Query().Get("since"), stateChangesWait)
 	switch {
 	case errors.Is(err, errTooManyWaiters):
 		w.Header().Set("Retry-After", "5")

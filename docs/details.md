@@ -245,7 +245,9 @@ required; OpenCode Go uses its own API key.
   compares `/api/state` as a paired device would see it, without the
   relay's count of replies in flight, every half second, and at once after
   a change made on that Switcher. The route is guarded like `/api/state`;
-  paired Macs may use the host's, the phone page may not. The dashboard
+  paired Macs may use the host's, the phone page may not. At most 64 waits
+  run at once; each paired Mac holds at most two, and callers from elsewhere
+  together leave 16 for the host's own menu bar, dashboard and tray. The dashboard
   keeps polling every four seconds and the menu every minute, which also
   covers an older server; a hidden tab holds no wait open.
 - **Menu bar app**: the macOS app supervises the server, shows every

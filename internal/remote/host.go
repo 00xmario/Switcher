@@ -297,11 +297,19 @@ func allowedRemotePath(path string) bool {
 }
 
 type deviceKey struct{}
+type deviceIDKey struct{}
 
 // PairedDevice reports which paired device made a request, if any.
 func PairedDevice(r *http.Request) (string, bool) {
 	name, ok := r.Context().Value(deviceKey{}).(string)
 	return name, ok
+}
+
+// PairedDeviceID reports the id of the paired device that made a request.
+// Unlike the name, which the device chose, it is unique to one pairing.
+func PairedDeviceID(r *http.Request) (string, bool) {
+	id, ok := r.Context().Value(deviceIDKey{}).(string)
+	return id, ok
 }
 
 func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +337,8 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONResponse(w, http.StatusOK, hello{Name: h.name, Addresses: append(lan, tailscale...)})
 		return
 	}
-	h.next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), deviceKey{}, d.Name)))
+	ctx := context.WithValue(context.WithValue(r.Context(), deviceKey{}, d.Name), deviceIDKey{}, d.ID)
+	h.next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func (h *Host) authenticate(token string) (device, bool) {
