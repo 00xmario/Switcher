@@ -84,6 +84,8 @@ install_linux() {
 
 	bin="$HOME/.local/bin"
 	mkdir -p "$bin"
+	# Stopping Switcher also closes its tray; remember to bring it back.
+	tray_running=$(pgrep -u "$(id -u)" -x -a switcher 2>/dev/null | grep -c ' tray' || true)
 	stop_linux
 	# Into place in one step, so a half-copied binary never runs.
 	cp "$tmp/$asset" "$bin/.switcher.new"
@@ -93,6 +95,11 @@ install_linux() {
 	"$bin/switcher" start
 	if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
 		nohup "$bin/switcher" tray >/dev/null 2>&1 &
+	elif [ "${tray_running:-0}" != 0 ] && command -v systemd-run >/dev/null 2>&1 &&
+		systemctl --user show-environment 2>/dev/null | grep -qE '^(WAYLAND_DISPLAY|DISPLAY)='; then
+		# Over SSH the tray that was open on the desktop comes back there:
+		# the login's service manager knows the desktop session.
+		systemd-run --user --collect --quiet "$bin/switcher" tray >/dev/null 2>&1 || true
 	fi
 	echo
 	echo "Switcher $version is installed as $bin/switcher and starts when you log in."
