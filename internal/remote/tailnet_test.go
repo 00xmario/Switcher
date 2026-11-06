@@ -50,6 +50,10 @@ func fakeAddon() {
 			return
 		case "/forwarding":
 			if r.Method == http.MethodPost {
+				// A slow add-on, for the test that updates cannot overtake.
+				if r.URL.Query().Get("on") == "1" && os.Getenv("SWITCHER_TAILNET_FAKE_SLOW_ON") == "1" {
+					time.Sleep(300 * time.Millisecond)
+				}
 				forwarding.Store(r.URL.Query().Get("on") == "1")
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -280,6 +284,57 @@ func TestTailnetAddonVouchesForItsOwnConnections(t *testing.T) {
 	}
 }
 
+// addonForwards asks the fake add-on whether it forwards.
+func addonForwards(t *testing.T, tn *Tailnet) bool {
+	t.Helper()
+	tn.mu.Lock()
+	control, token := tn.control, tn.token
+	tn.mu.Unlock()
+	req, _ := http.NewRequest(http.MethodGet, "http://"+control+"/forwarding", nil)
+	req.Header.Set("X-Switcher-Tailnet", token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var state struct{ On bool }
+	json.NewDecoder(resp.Body).Decode(&state)
+	return state.On
+}
+
+// A forwarding update already on its way when the host stops, such as one
+// a status poll started, cannot land after StopForwarding and turn
+// forwarding on again.
+func TestForwardingUpdatesCannotOvertakeStopForwarding(t *testing.T) {
+	t.Setenv("SWITCHER_TAILNET_FAKE_SLOW_ON", "1")
+	tn := fakeTailnet(t, t.TempDir(), 1)
+	if err := tn.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var hosting atomic.Bool
+	tn.ForwardWhen(hosting.Load)
+	// The updates the start sent on their way are done before this one.
+	time.Sleep(50 * time.Millisecond)
+	tn.SyncForwarding()
+	hosting.Store(true)
+	done := make(chan struct{})
+	go func() {
+		tn.SyncForwarding() // turning forwarding on, slowly
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	hosting.Store(false)
+	tn.StopForwarding()
+	<-done
+	if addonForwards(t, tn) {
+		t.Fatal("an earlier update turned forwarding on after the host stopped")
+	}
+	tn.SyncForwarding()
+	if addonForwards(t, tn) {
+		t.Fatal("forwarding on again while not hosting")
+	}
+}
+
 // The add-on stops forwarding to the host's port before the host frees it,
 // so another program that takes the port then never gets the user's
 // devices, nor a client's trust.
@@ -296,21 +351,7 @@ func TestHostHasTheAddonStopForwardingBeforeItsPortIsFreed(t *testing.T) {
 	if err := tn.Enable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	forwarding := func() bool {
-		tn.mu.Lock()
-		control, token := tn.control, tn.token
-		tn.mu.Unlock()
-		req, _ := http.NewRequest(http.MethodGet, "http://"+control+"/forwarding", nil)
-		req.Header.Set("X-Switcher-Tailnet", token)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		var state struct{ On bool }
-		json.NewDecoder(resp.Body).Decode(&state)
-		return state.On
-	}
+	forwarding := func() bool { return addonForwards(t, tn) }
 	tn.ForwardWhen(host.Listening)
 	if !forwarding() {
 		t.Fatal("not forwarding while sharing")

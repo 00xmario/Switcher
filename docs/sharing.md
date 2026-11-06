@@ -51,14 +51,20 @@ calling, never with anything the other Mac sends:
   Anything that can send traffic as one of your devices (another account on
   it, a container or virtual machine behind it) can pair from it, and
   anything listening on port 8788 of one of your devices can pose as a host
-  to your other devices. If other people use one of your Tailscale devices,
-  turn this off on your hosts and pair with codes.
+  to your other devices. Devices added with an untagged auth key are yours
+  too: a CI runner, or a Docker container started with `TS_AUTHKEY`, can
+  pair without a code. Give such devices a tag (for example `tag:ci`), which
+  takes them out. If other people use one of your Tailscale devices, turn
+  this off on your hosts and pair with codes.
 
-On the host, **Let my own Tailscale devices connect without a code** (on by
-default, under **Share this Switcher**; `switcher share tailnet off`) turns
-this off: then every Mac needs a code. A Mac paired this way is listed as
-**Paired via Tailscale** and is removed like any other. If it pairs again,
-its new pairing replaces the old one.
+On the host, **Let my own Tailscale devices connect without a code** (under
+**Share this Switcher**; `switcher share tailnet on|off`) decides. It is on
+for a Mac that starts sharing with this version. A Mac that shared before
+keeps it off after the update, since its owner never chose it, and offers it
+once in that card (**Turn on** or **Not now**; `switcher share` says so too).
+Off, every Mac needs a code. A Mac paired this way is listed as **Paired via
+Tailscale** and is removed like any other. If the same Switcher on the same
+device pairs again, its new pairing replaces the old one.
 
 ## Switching hosts
 

@@ -17,7 +17,8 @@ const shareHelp = `One Mac (the host) keeps the accounts; your other Macs use th
   switcher share revoke <id|name> --yes
   switcher share tailnet on|off
                            let your own Tailscale devices connect without a
-                           code (on by default), or make them use one
+                           code, or make them use one (on for a Mac that
+                           starts sharing now, off for one that shared before)
   switcher share off
 
 On the other Mac: switcher connect <host address>. Over Tailscale, your own
@@ -130,10 +131,13 @@ func runShare(c *ctx, args []string) error {
 		if len(addresses) > 0 {
 			lines = append(lines, "Reachable at "+strings.Join(addresses, ", "))
 		}
-		if r.Host.TailnetPairing {
+		switch {
+		case r.Host.TailnetPairing:
 			lines = append(lines, "Your own Tailscale devices connect without a code (switcher share tailnet off to require one)")
-		} else {
-			lines = append(lines, "Every Mac needs a code, also your own Tailscale devices (switcher share tailnet on to change that)")
+		case r.Host.TailnetNotice:
+			lines = append(lines, "New: your own Tailscale devices can connect without a code. It is off here because this "+machine()+" shared before; turn it on with: switcher share tailnet on")
+		default:
+			lines = append(lines, "Every "+machine()+" needs a code, also your own Tailscale devices (switcher share tailnet on to change that)")
 		}
 		for _, d := range r.Host.Devices {
 			via := ""

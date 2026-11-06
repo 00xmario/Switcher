@@ -378,7 +378,15 @@ func TestShareTailnetLetsOwnDevicesConnectWithoutACode(t *testing.T) {
 	if code, _, _ := run(t, url, "", "share", "tailnet", "maybe"); code != exitUsage {
 		t.Fatalf("a wrong choice: %d", code)
 	}
-	if code, out, _ := run(t, url, "", "share"); code != 0 || !strings.Contains(out, "Every Mac needs a code") {
+	if code, out, _ := run(t, url, "", "share"); code != 0 || !strings.Contains(out, "Every "+machine()+" needs a code") {
+		t.Fatalf("%d %s", code, out)
+	}
+	// A host that shared before it existed is told once how to turn it on.
+	upgraded := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"host":{"enabled":true,"tailnet_pairing":false,"tailnet_notice":true,"devices":[]},"client":{"connected":false}}`)
+	}))
+	defer upgraded.Close()
+	if code, out, _ := run(t, upgraded.URL, "", "share"); code != 0 || !strings.Contains(out, "It is off here because this "+machine()+" shared before; turn it on with: switcher share tailnet on") {
 		t.Fatalf("%d %s", code, out)
 	}
 }

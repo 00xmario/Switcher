@@ -218,6 +218,21 @@ test('a connected Mac offers its other Switchers and switches only once confirme
   assert.deepEqual(server.connects()[1], { address: 'switcher-mini.tail1.ts.net', port: 8788, code: 'K7QF-M2XP', switch: true });
 });
 
+test('a Mac that shared before is offered pairing without a code once, off until it answers', async () => {
+  const server = remoteAPI({ host: host({ enabled: true, tailnet_pairing: false, tailnet_notice: true }), client: { connected: false } }, []);
+  const remote = createRemote({ api: server.api, now: () => now });
+  await remote.load();
+  let html = remote.html();
+  assert.match(html, /New: your own Tailscale devices can connect without a code/);
+  assert.match(html, /It is off on this Mac, which shared before it existed/);
+  assert.match(html, /data-remote-action="tailnet-notice-on"[^>]*>Turn on</);
+  assert.match(html, /data-remote-action="tailnet-notice-off"[^>]*>Not now</);
+  assert.match(html, /data-remote-action="tailnet-pairing" aria-label="Let my own Tailscale devices connect without a code" (?!checked)/);
+  server.state.status = { host: host({ enabled: true, tailnet_pairing: false }), client: { connected: false } };
+  await remote.load();
+  assert.doesNotMatch(remote.html(), /New: your own Tailscale devices/, 'answered, it is gone');
+});
+
 test('a sharing Mac lets its own Tailscale devices in without a code and says why it uses no other host', async () => {
   const server = remoteAPI({ host: host({ enabled: true, listening: true, tailnet_pairing: true,
     devices: [{ id: 'd1', name: 'MacBook Air', tailscale: 'switcher-air.tail1.ts.net', last_seen: '2026-10-07T11:55:00Z' }, { id: 'd2', name: 'Mini' }] }), client: { connected: false } }, []);

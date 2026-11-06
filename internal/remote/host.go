@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,18 +51,39 @@ type device struct {
 	CreatedAt time.Time `json:"created_at"`
 	LastSeen  time.Time `json:"last_seen"`
 	// A device paired without a code, by its Tailscale identity, keeps that
-	// node's stable id and name; a new pairing from it replaces this one.
-	TailscaleNode string `json:"tailscale_node,omitempty"`
-	TailscaleName string `json:"tailscale_name,omitempty"`
+	// node's stable id and name, and the random id of the Switcher there
+	// that paired. A new pairing from the same Switcher on the same node
+	// replaces this one.
+	TailscaleNode    string `json:"tailscale_node,omitempty"`
+	TailscaleName    string `json:"tailscale_name,omitempty"`
+	TailscaleInstall string `json:"tailscale_install,omitempty"`
 }
 
 type hostFile struct {
 	Enabled bool     `json:"enabled"`
 	Devices []device `json:"devices"`
-	// TailnetPairingOff stops the user's own Tailscale devices from pairing
-	// without a code, which is on unless turned off.
-	TailnetPairingOff bool `json:"tailnet_pairing_off,omitempty"`
+	// TailnetPairing lets the user's own Tailscale devices pair without a
+	// code. A host that first shares with this version has it on; one that
+	// shared before keeps it off, since other accounts and machines on the
+	// user's devices would otherwise start pairing unannounced, and
+	// TailnetNotice offers it once.
+	TailnetPairing *bool `json:"tailnet_pairing,omitempty"`
+	TailnetNotice  bool  `json:"tailnet_notice,omitempty"`
 }
+
+// settleTailnetPairing decides pairing without a code for a host file from
+// before it existed: off, with the notice, for a host that has shared, and
+// on for one that never has.
+func (f *hostFile) settleTailnetPairing() {
+	if f.TailnetPairing != nil {
+		return
+	}
+	shared := f.Enabled || len(f.Devices) > 0
+	on := !shared
+	f.TailnetPairing, f.TailnetNotice = &on, shared
+}
+
+func (f *hostFile) tailnetPairing() bool { return f.TailnetPairing != nil && *f.TailnetPairing }
 
 // DeviceView is a paired device as the UI shows it. Tailscale is the
 // Tailscale name of a device that paired without a code.
@@ -80,10 +102,12 @@ type PairingView struct {
 }
 
 // HostStatus describes this Switcher as a host. TailnetPairing lets the
-// user's own Tailscale devices pair without a code.
+// user's own Tailscale devices pair without a code; TailnetNotice offers
+// it, once, to a host that shared before it existed.
 type HostStatus struct {
 	Enabled        bool         `json:"enabled"`
 	TailnetPairing bool         `json:"tailnet_pairing"`
+	TailnetNotice  bool         `json:"tailnet_notice,omitempty"`
 	Listening      bool         `json:"listening"`
 	Name           string       `json:"name"`
 	Port           int          `json:"port"`
@@ -109,7 +133,7 @@ type Host struct {
 	failures      map[string]failure
 	tailnetTries  map[string]failure
 	srv           *http.Server
-	listening     bool
+	listening     atomic.Bool
 	listenErr     string
 	advertising   func()
 	// Quiet skips the Bonjour advertisement (tests).
@@ -139,6 +163,9 @@ func NewHost(dir string, port int, next http.Handler) (*Host, error) {
 	if err := readJSON(h.path(), &h.state); err != nil && !errors.Is(err, io.EOF) && !isNotExist(err) {
 		return nil, err
 	}
+	// Kept with the next change to the file; until then every start
+	// decides the same.
+	h.state.settleTailnetPairing()
 	return h, nil
 }
 
@@ -154,12 +181,9 @@ func (h *Host) AlsoReachableAt(extra func() []string) {
 	}
 }
 
-// Listening reports whether the host listener is serving.
-func (h *Host) Listening() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.listening
-}
+// Listening reports whether the host listener is serving. It takes no lock,
+// so the add-on's forwarding can follow it from inside the stop hook.
+func (h *Host) Listening() bool { return h.listening.Load() }
 
 // Fingerprint identifies the host certificate.
 func (h *Host) Fingerprint() string { return h.fp }
@@ -188,12 +212,14 @@ func (h *Host) listenLocked() {
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute, ErrorLog: log.New(io.Discard, "", 0),
 		TLSConfig:   &tls.Config{Certificates: []tls.Certificate{h.cert}, MinVersion: tls.VersionTLS12},
 		ConnContext: withLoopbackConn}
-	h.srv, h.listening = srv, true
+	h.srv = srv
+	h.listening.Store(true)
 	go func() {
 		srv.ServeTLS(ln, "", "")
 		h.mu.Lock()
 		if h.srv == srv {
-			h.srv, h.listening = nil, false
+			h.srv = nil
+			h.listening.Store(false)
 		}
 		h.mu.Unlock()
 	}()
@@ -208,11 +234,14 @@ func (h *Host) stopLocked() {
 		h.advertising = nil
 	}
 	if h.srv != nil {
+		// No longer listening before the hook runs, so a forwarding update
+		// that comes after it cannot turn forwarding on again.
+		h.listening.Store(false)
 		if h.beforeStop != nil {
 			h.beforeStop()
 		}
 		h.srv.Close()
-		h.srv, h.listening = nil, false
+		h.srv = nil
 	}
 }
 
@@ -252,14 +281,14 @@ func (h *Host) SetEnabled(enabled bool) error {
 }
 
 // SetTailnetPairing lets the user's own Tailscale devices pair without a
-// code (on, the default) or not, and remembers the choice.
+// code, or not, and remembers the choice. Either choice answers the notice.
 func (h *Host) SetTailnetPairing(on bool) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	previous := h.state.TailnetPairingOff
-	h.state.TailnetPairingOff = !on
+	previous, notice := h.state.TailnetPairing, h.state.TailnetNotice
+	h.state.TailnetPairing, h.state.TailnetNotice = &on, false
 	if err := writeJSON(h.path(), h.state); err != nil {
-		h.state.TailnetPairingOff = previous
+		h.state.TailnetPairing, h.state.TailnetNotice = previous, notice
 		return err
 	}
 	return nil
@@ -318,7 +347,7 @@ func (h *Host) Status() HostStatus {
 	lan, tailscale := h.addresses()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	s := HostStatus{Enabled: h.state.Enabled, TailnetPairing: !h.state.TailnetPairingOff, Listening: h.listening, Name: h.name, Port: h.port,
+	s := HostStatus{Enabled: h.state.Enabled, TailnetPairing: h.state.tailnetPairing(), TailnetNotice: h.state.TailnetNotice, Listening: h.listening.Load(), Name: h.name, Port: h.port,
 		LAN: lan, Tailscale: tailscale, Devices: []DeviceView{}, Error: h.listenErr}
 	for _, d := range h.state.Devices {
 		s.Devices = append(s.Devices, DeviceView{ID: d.ID, Name: d.Name, CreatedAt: d.CreatedAt, LastSeen: d.LastSeen, Tailscale: d.TailscaleName})
@@ -562,15 +591,35 @@ func newDevice(name string) (device, string) {
 	return device{ID: randomHex(8), Name: name, TokenHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now().UTC()}, token
 }
 
-// addDeviceLocked saves a new pairing. One from a Tailscale device replaces
-// that device's earlier pairing, whose token stops working.
+// perNode bounds the pairings kept for one Tailscale device.
+const perNode = 8
+
+// addDeviceLocked saves a new pairing. One from the same Switcher on the
+// same Tailscale device replaces that Switcher's earlier pairing, whose
+// token stops working; another Switcher behind the same device, such as
+// another account's sharing its Tailscale, keeps its own. One device keeps
+// at most perNode pairings, the oldest going first.
 func (h *Host) addDeviceLocked(d device) error {
 	previous := h.state.Devices
 	kept := make([]device, 0, len(previous)+1)
+	sameNode := 0
 	for _, old := range previous {
-		if d.TailscaleNode == "" || old.TailscaleNode != d.TailscaleNode {
-			kept = append(kept, old)
+		if d.TailscaleNode != "" && old.TailscaleNode == d.TailscaleNode {
+			if old.TailscaleInstall == d.TailscaleInstall {
+				continue
+			}
+			sameNode++
 		}
+		kept = append(kept, old)
+	}
+	for ; d.TailscaleNode != "" && sameNode >= perNode; sameNode-- {
+		oldest := -1
+		for i, old := range kept {
+			if old.TailscaleNode == d.TailscaleNode && (oldest < 0 || old.CreatedAt.Before(kept[oldest].CreatedAt)) {
+				oldest = i
+			}
+		}
+		kept = append(kept[:oldest], kept[oldest+1:]...)
 	}
 	h.state.Devices = append(kept, d)
 	if err := writeJSON(h.path(), h.state); err != nil {

@@ -203,19 +203,26 @@ func decodeOne(r io.Reader, limit int64, v any) error {
 // errNoTailscale says the Tailscale app or daemon is not on this computer.
 var errNoTailscale = errors.New("the Tailscale app is not installed on this computer")
 
-// tailscalePaths are where the Tailscale command line lives when it is not
-// on PATH: Linux packages, the macOS command line integration, and the
-// macOS app itself, which runs as the command line when given arguments.
+// tailscalePaths are where the Tailscale command line lives: Linux packages,
+// the macOS command line integration, and the macOS app itself, which runs
+// as the command line when given arguments.
 var tailscalePaths = []string{"/usr/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"}
 
+// findTailscale prefers the fixed places over PATH, and takes a command
+// line only where no other account can have put or changed it (see
+// trustedBinary): its answers decide who may pair.
 func findTailscale() string {
-	if p, err := exec.LookPath("tailscale"); err == nil && filepath.IsAbs(p) {
-		return p
-	}
-	for _, p := range tailscalePaths {
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+	return findTailscaleIn(tailscalePaths, func() (string, error) { return exec.LookPath("tailscale") }, trustedBinary)
+}
+
+func findTailscaleIn(fixed []string, lookPath func() (string, error), trusted func(string) bool) string {
+	for _, p := range fixed {
+		if trusted(p) {
 			return p
 		}
+	}
+	if p, err := lookPath(); err == nil && filepath.IsAbs(p) && trusted(p) {
+		return p
 	}
 	return ""
 }
@@ -261,14 +268,67 @@ func runTailscale(ctx context.Context, limit int, args ...string) ([]byte, error
 // computer through its command line, read-only (status and whois), so that
 // Switcher itself needs no Tailscale code.
 type systemTailscale struct {
-	// run runs one Tailscale command; tests replace it.
-	run    func(ctx context.Context, limit int, args ...string) ([]byte, error)
-	mu     sync.Mutex
-	self   tailnetSelf
-	selfAt time.Time
+	// run runs one Tailscale command; present reports whether Tailscale is
+	// on this computer at all, whether or not a command line answers for
+	// it. Tests replace both.
+	run     func(ctx context.Context, limit int, args ...string) ([]byte, error)
+	present func() bool
+	mu      sync.Mutex
+	self    tailnetSelf
+	selfErr error
+	selfAt  time.Time
 }
 
-func newSystemTailscale() *systemTailscale { return &systemTailscale{run: runTailscale} }
+func newSystemTailscale() *systemTailscale {
+	return &systemTailscale{run: runTailscale, present: tailscalePresent}
+}
+
+// errTailscaleDown says the Tailscale app or daemon here reports its node
+// is not connected, so the node carries nobody's traffic.
+var errTailscaleDown = errors.New("Tailscale is not connected on this computer")
+
+// downStates are the states in which Tailscale's node carries no traffic.
+// Others, such as Starting, may already carry some.
+var downStates = map[string]bool{"NoState": true, "Stopped": true, "NeedsLogin": true, "NeedsMachineAuth": true}
+
+// tailscaleSockets are where Tailscale's daemon listens for its command
+// line: Linux packages, the snap, and tailscaled on macOS.
+var tailscaleSockets = []string{"/var/run/tailscale/tailscaled.sock", "/run/tailscale/tailscaled.sock",
+	"/var/snap/tailscale/common/socket/tailscaled.sock", "/var/run/tailscaled.socket"}
+
+// tailscalePresent reports whether Tailscale's daemon or app is on this
+// computer: its socket, the macOS app, or a Tailscale address on a network
+// interface. Anything it cannot rule out counts as present.
+func tailscalePresent() bool {
+	for _, p := range append(append([]string{}, tailscaleSockets...), "/Applications/Tailscale.app") {
+		if _, err := os.Lstat(p); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+	}
+	ips, err := localTailnetIPs()
+	return err != nil || len(ips) > 0
+}
+
+// isAppNode reports whether peer is the node of the Tailscale app or daemon
+// on this computer, which any account here can send traffic through. It
+// says no only when that is certain: the node is another one, or there is
+// no connected Tailscale here. When Tailscale is here but cannot be asked,
+// it returns an error, and callers refuse.
+func (s *systemTailscale) isAppNode(ctx context.Context, peer tailnetPeer) (bool, error) {
+	if s == nil {
+		return false, errNoTailscale
+	}
+	app, err := s.selfNode(ctx)
+	switch {
+	case err == nil:
+		return app.ID == peer.ID || hasAddress(app.IPs, peer.Addr), nil
+	case errors.Is(err, errTailscaleDown):
+		return false, nil
+	case errors.Is(err, errNoTailscale) && s.present != nil && !s.present():
+		return false, nil
+	}
+	return false, err
+}
 
 type statusSelf struct {
 	ID           string
@@ -301,21 +361,37 @@ func (s *systemTailscale) status(ctx context.Context, peers bool, limit int) (st
 	if err := decodeOne(bytes.NewReader(out), int64(limit), &st); err != nil {
 		return statusAnswer{}, fmt.Errorf("read Tailscale's status: %w", err)
 	}
-	if st.BackendState != "Running" || st.Self == nil {
-		return statusAnswer{}, errors.New("Tailscale is not connected on this computer")
+	switch {
+	case st.BackendState == "Running" && st.Self != nil:
+		return st, nil
+	case downStates[st.BackendState]:
+		return statusAnswer{}, errTailscaleDown
 	}
-	return st, nil
+	return statusAnswer{}, errors.New("Tailscale on this computer is starting or in an unknown state")
 }
 
-// selfNode is this computer's node in the Tailscale app, kept for ten seconds.
+// selfNode is this computer's node in the Tailscale app. The answer, or the
+// failure, is kept for ten seconds, so callers cannot make the command line
+// run more often than that.
 func (s *systemTailscale) selfNode(ctx context.Context) (tailnetSelf, error) {
 	s.mu.Lock()
 	if time.Since(s.selfAt) < 10*time.Second {
-		self := s.self
+		self, err := s.self, s.selfErr
 		s.mu.Unlock()
-		return self, nil
+		return self, err
 	}
 	s.mu.Unlock()
+	self, err := s.readSelf(ctx)
+	// A caller that gave up says nothing about Tailscale.
+	if ctx.Err() == nil {
+		s.mu.Lock()
+		s.self, s.selfErr, s.selfAt = self, err, time.Now()
+		s.mu.Unlock()
+	}
+	return self, err
+}
+
+func (s *systemTailscale) readSelf(ctx context.Context) (tailnetSelf, error) {
 	st, err := s.status(ctx, false, 1<<20)
 	if err != nil {
 		return tailnetSelf{}, err
@@ -329,9 +405,6 @@ func (s *systemTailscale) selfNode(ctx context.Context) (tailnetSelf, error) {
 			self.IPs = append(self.IPs, a.String())
 		}
 	}
-	s.mu.Lock()
-	s.self, s.selfAt = self, time.Now()
-	s.mu.Unlock()
 	return self, nil
 }
 

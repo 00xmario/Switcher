@@ -463,9 +463,16 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	// Whatever listens on this computer is no host to trust without a
 	// code: any account here could run it.
 	c.mu.Lock()
-	ownTailnet := c.ownTailnet
+	ownTailnet, system := c.ownTailnet, c.system
 	c.mu.Unlock()
 	if own, err := ownTailnet(); err != nil || hasAddress(own, id.Peer.Addr) {
+		return nil, &NeedsCodeError{fmt.Sprintf("%s needs a pairing code: that is this computer itself.", address)}
+	}
+	// So is the Tailscale app's node here, also without a network interface
+	// (userspace networking). If Tailscale is here but cannot say, no.
+	if app, err := system.isAppNode(ctx, id.Peer); err != nil {
+		return nil, &NeedsCodeError{fmt.Sprintf("Tailscale on this computer could not confirm who %s is, so it needs a pairing code.", address)}
+	} else if app {
 		return nil, &NeedsCodeError{fmt.Sprintf("%s needs a pairing code: that is this computer itself.", address)}
 	}
 	// A name must lead to the device of that name, whatever answered for
@@ -489,7 +496,11 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	if err := conn.HandshakeContext(ctx); err != nil || fp == "" {
 		return nil, fmt.Errorf("could not reach a Switcher at %s: is sharing turned on there?", address)
 	}
-	body, _ := json.Marshal(map[string]string{"name": deviceName})
+	install, err := c.installID()
+	if err != nil {
+		return nil, err
+	}
+	body, _ := json.Marshal(map[string]string{"name": deviceName, "install": install})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://switcher-host/remote/pair/tailnet", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Close = true
@@ -527,6 +538,27 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 }
 
 var tokenShape = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// installID is this Switcher's own random id, kept across pairings. A host
+// replaces a pairing without a code only when the same Switcher on the same
+// Tailscale device pairs again, so two Switchers behind one device, such as
+// two accounts sharing the computer's Tailscale, keep both of theirs.
+func (c *Client) installID() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	path := filepath.Join(c.dir, "install.json")
+	var f struct {
+		ID string `json:"id"`
+	}
+	if readJSON(path, &f) == nil && installShape.MatchString(f.ID) {
+		return f.ID, nil
+	}
+	f.ID = randomHex(16)
+	if err := writeJSON(path, f); err != nil {
+		return "", fmt.Errorf("could not save this Switcher's id: %w", err)
+	}
+	return f.ID, nil
+}
 
 // dialVerified connects to target over Tailscale and returns what this
 // computer's own Tailscale says about the node the connection reached:

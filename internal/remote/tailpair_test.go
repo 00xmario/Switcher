@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,10 +138,26 @@ func (f *fakeAddons) whois(_ context.Context, conn, from string) (tailnetIdentit
 	return f.client, nil
 }
 
+// noTailscaleApp is a computer without the Tailscale app: asked for its own
+// node, it has none, and it is never asked who is behind a connection.
+func noTailscaleApp(t *testing.T) *systemTailscale {
+	return &systemTailscale{present: func() bool { return false }, run: func(_ context.Context, _ int, args ...string) ([]byte, error) {
+		if args[0] == "whois" {
+			t.Error("the Tailscale app was asked about a connection through the add-on")
+		}
+		return nil, errNoTailscale
+	}}
+}
+
 // tailnetHost is a sharing host whose add-on is fake.
 func tailnetHost(t *testing.T, addons *fakeAddons) *Host {
 	t.Helper()
-	host, err := NewHost(t.TempDir(), 0, hostMux(t))
+	return tailnetHostIn(t, t.TempDir(), addons)
+}
+
+func tailnetHostIn(t *testing.T, dir string, addons *fakeAddons) *Host {
+	t.Helper()
+	host, err := NewHost(dir, 0, hostMux(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,14 +165,7 @@ func tailnetHost(t *testing.T, addons *fakeAddons) *Host {
 	host.addresses = func() ([]string, []string) { return nil, nil }
 	host.ownTailnet = func() ([]string, error) { return nil, nil }
 	host.addonWhois = addons.whois
-	// No Tailscale app here; it is never asked who is behind a connection
-	// that came through the add-on.
-	host.system = &systemTailscale{run: func(_ context.Context, _ int, args ...string) ([]byte, error) {
-		if args[0] == "whois" {
-			t.Error("the Tailscale app was asked about a connection through the add-on")
-		}
-		return nil, errNoTailscale
-	}}
+	host.system = noTailscaleApp(t)
 	t.Cleanup(host.Close)
 	if err := host.SetEnabled(true); err != nil {
 		t.Fatal(err)
@@ -166,13 +176,19 @@ func tailnetHost(t *testing.T, addons *fakeAddons) *Host {
 // pairThrough asks host to pair without a code over conn, as a client does.
 func pairThrough(t *testing.T, conn net.Conn, name string) (int, pairResponse) {
 	t.Helper()
+	return pairThroughAs(t, conn, name, "")
+}
+
+// pairThroughAs is pairThrough for the Switcher with the given install id.
+func pairThroughAs(t *testing.T, conn net.Conn, name, install string) (int, pairResponse) {
+	t.Helper()
 	defer conn.Close()
 	tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}})
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tc.Handshake(); err != nil {
 		return 0, pairResponse{}
 	}
-	body, _ := json.Marshal(map[string]string{"name": name})
+	body, _ := json.Marshal(map[string]string{"name": name, "install": install})
 	req, _ := http.NewRequest(http.MethodPost, "https://switcher-host/remote/pair/tailnet", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if err := req.Write(tc); err != nil {
@@ -194,11 +210,61 @@ func pairThrough(t *testing.T, conn net.Conn, name string) (int, pairResponse) {
 
 func pairViaAddon(t *testing.T, host *Host, addons *fakeAddons) (int, pairResponse) {
 	t.Helper()
+	return pairViaAddonAs(t, host, addons, "")
+}
+
+func pairViaAddonAs(t *testing.T, host *Host, addons *fakeAddons, install string) (int, pairResponse) {
+	t.Helper()
 	conn, _, _, err := addons.dialIdentified(context.Background(), net.JoinHostPort("switcher-studio.tail1234.ts.net", strconv.Itoa(host.Status().Port)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pairThrough(t, conn, "Air")
+	return pairThroughAs(t, conn, "Air", install)
+}
+
+// Two Switchers behind one Tailscale device, such as two accounts sharing
+// the computer's Tailscale, keep both their pairings; the same Switcher
+// pairing again replaces its own. One device keeps at most perNode.
+func TestPairingAgainReplacesOnlyTheSameSwitchersPairing(t *testing.T) {
+	addons := newFakeAddons()
+	host := tailnetHost(t, addons)
+	mine, theirs := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	_, first := pairViaAddonAs(t, host, addons, mine)
+	_, other := pairViaAddonAs(t, host, addons, theirs)
+	status, again := pairViaAddonAs(t, host, addons, mine)
+	if status != http.StatusOK || len(host.Status().Devices) != 2 {
+		t.Fatalf("devices after pairing again: %+v", host.Status().Devices)
+	}
+	if _, ok := host.authenticate(first.Token); ok {
+		t.Fatal("the same Switcher's earlier pairing survived")
+	}
+	for _, token := range []string{other.Token, again.Token} {
+		if _, ok := host.authenticate(token); !ok {
+			t.Fatal("a Switcher lost its pairing to another one behind the same device")
+		}
+	}
+	// A malformed id is no id: it cannot pose as another Switcher's.
+	pairViaAddonAs(t, host, addons, strings.ToUpper(theirs))
+	if _, ok := host.authenticate(other.Token); !ok || len(host.Status().Devices) != 3 {
+		t.Fatalf("a malformed id replaced a pairing: %+v", host.Status().Devices)
+	}
+
+	many := newFakeAddons()
+	crowded := tailnetHost(t, many)
+	var tokens []string
+	for i := 0; i < perNode+1; i++ {
+		_, p := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", i+1))
+		tokens = append(tokens, p.Token)
+	}
+	if n := len(crowded.Status().Devices); n != perNode {
+		t.Fatalf("%d pairings kept for one device", n)
+	}
+	if _, ok := crowded.authenticate(tokens[0]); ok {
+		t.Fatal("the oldest pairing was kept over the newest")
+	}
+	if _, ok := crowded.authenticate(tokens[perNode]); !ok {
+		t.Fatal("the newest pairing is gone")
+	}
 }
 
 func TestHostPairsTheUsersOwnTailscaleDeviceWithoutACode(t *testing.T) {
@@ -337,6 +403,58 @@ func TestPairingWithoutACodeFollowsTheSettingAndSharing(t *testing.T) {
 	}
 }
 
+// A host that shared before pairing without a code existed keeps it off
+// after the update and offers it once; one that starts sharing now has it
+// on. Either answer to the offer is remembered.
+func TestAHostThatSharedBeforeUpgradesWithPairingWithoutACodeOff(t *testing.T) {
+	before := func(f map[string]any) string {
+		dir := t.TempDir()
+		if err := writeJSON(filepath.Join(dir, "host.json"), f); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	shared := before(map[string]any{"enabled": true, "devices": []map[string]any{{"id": "d1", "name": "Mini", "token_sha256": "x"}}})
+	addons := newFakeAddons()
+	host := tailnetHostIn(t, shared, addons)
+	if s := host.Status(); s.TailnetPairing || !s.TailnetNotice {
+		t.Fatalf("after the update: %+v", s)
+	}
+	if status, _ := pairViaAddon(t, host, addons); status != http.StatusForbidden || addons.lookups.Load() != 0 {
+		t.Fatalf("paired without a code before it was turned on: %d", status)
+	}
+	if again, _ := NewHost(shared, 0, nil); !again.Status().TailnetNotice || again.Status().TailnetPairing {
+		t.Fatal("a restart changed the decision")
+	}
+	if err := host.SetTailnetPairing(true); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := pairViaAddon(t, host, addons); status != http.StatusOK {
+		t.Fatalf("after turning it on: %d", status)
+	}
+	if again, _ := NewHost(shared, 0, nil); !again.Status().TailnetPairing || again.Status().TailnetNotice {
+		t.Fatalf("turned on: %+v", again.Status())
+	}
+
+	// Not now: off, and not offered again.
+	declined := before(map[string]any{"enabled": false, "devices": []map[string]any{{"id": "d1", "name": "Mini", "token_sha256": "x"}}})
+	host = tailnetHostIn(t, declined, newFakeAddons())
+	if !host.Status().TailnetNotice {
+		t.Fatal("a host with paired devices is not offered it")
+	}
+	host.SetTailnetPairing(false)
+	if again, _ := NewHost(declined, 0, nil); again.Status().TailnetPairing || again.Status().TailnetNotice {
+		t.Fatalf("declined: %+v", again.Status())
+	}
+
+	// A host that never shared (here one handed back) starts with it on.
+	for _, dir := range []string{before(map[string]any{"enabled": false, "devices": []any{}}), t.TempDir()} {
+		if s := tailnetHostIn(t, dir, newFakeAddons()).Status(); !s.TailnetPairing || s.TailnetNotice {
+			t.Fatalf("a host sharing for the first time: %+v", s)
+		}
+	}
+}
+
 func TestPairingWithoutACodeIsRateLimitedPerDevice(t *testing.T) {
 	addons := newFakeAddons()
 	host := tailnetHost(t, addons)
@@ -380,6 +498,15 @@ const airWhois = `{"Node":{"ID":1714604128457008,"StableID":"nAir11CNTRL","Name"
 	"Hostinfo":{"OS":"macOS","Hostname":"Air"},"ComputedName":"air","Online":true},
 	"UserProfile":{"ID":7017007006444457,"LoginName":"me@github","DisplayName":"Me"},"CapMap":{}}`
 
+// appHost is a sharing host on the Studio, which runs the Tailscale app
+// (see fakeSystem) at 100.101.2.3 and fd7a:115c:a1e0::3.
+func appHost(t *testing.T, whois string, calls *[]string) *Host {
+	host := tailnetHost(t, newFakeAddons())
+	host.system = fakeSystem(t, whois, calls)
+	host.ownTailnet = func() ([]string, error) { return []string{"100.101.2.3", "fd7a:115c:a1e0::3"}, nil }
+	return host
+}
+
 // systemRequest is a pairing request as one from the Tailscale app arrives.
 func systemRequest(remote, local string, header http.Header) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/remote/pair/tailnet", strings.NewReader(`{"name":"Air"}`))
@@ -409,9 +536,8 @@ func TestHostAsksTheTailscaleAppAboutTailscaleConnections(t *testing.T) {
 		{"an answer with more after it", airWhois + `{"Node":{}}`, "100.101.2.4:51234", "100.101.2.3:8788", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			host := tailnetHost(t, newFakeAddons())
 			var calls []string
-			host.system = fakeSystem(t, tc.whois, &calls)
+			host := appHost(t, tc.whois, &calls)
 			w := httptest.NewRecorder()
 			host.ServeHTTP(w, systemRequest(tc.remote, tc.local, nil))
 			if w.Code != tc.want {
@@ -428,9 +554,8 @@ func TestHostAsksTheTailscaleAppAboutTailscaleConnections(t *testing.T) {
 // network that claims a Tailscale identity in headers gets nowhere, and
 // Tailscale is not even asked.
 func TestHostIgnoresTailscaleClaimsFromTheLocalNetwork(t *testing.T) {
-	host := tailnetHost(t, newFakeAddons())
 	var calls []string
-	host.system = fakeSystem(t, airWhois, &calls)
+	host := appHost(t, airWhois, &calls)
 	claims := http.Header{"X-Forwarded-For": {"100.101.2.4"}, "X-Real-Ip": {"100.101.2.4"}, "Forwarded": {"for=100.101.2.4"},
 		"Tailscale-User-Login": {"me@github"}, "Tailscale-User-Name": {"Me"}, "X-Switcher-Tailnet": {"token"},
 		"X-Switcher-Identity": {"eyJzZWxmIjp7fX0"}, "X-Switcher-Phone-Node": {"nAir11CNTRL"}}
@@ -447,10 +572,9 @@ func TestHostIgnoresTailscaleClaimsFromTheLocalNetwork(t *testing.T) {
 }
 
 func TestHostRefusesThisComputerItselfOverTailscale(t *testing.T) {
-	host := tailnetHost(t, newFakeAddons())
 	var calls []string
 	self := strings.NewReplacer("nAir11CNTRL", "nStudio11CNTRL", "100.101.2.4", "100.101.2.3", "fd7a:115c:a1e0::4", "fd7a:115c:a1e0::3").Replace(airWhois)
-	host.system = fakeSystem(t, self, &calls)
+	host := appHost(t, self, &calls)
 	w := httptest.NewRecorder()
 	host.ServeHTTP(w, systemRequest("100.101.2.3:5555", "100.101.2.3:8788", nil))
 	if w.Code != http.StatusForbidden {
@@ -459,9 +583,8 @@ func TestHostRefusesThisComputerItselfOverTailscale(t *testing.T) {
 }
 
 func TestPairingFromTheTailscaleAppIsRateLimitedPerSource(t *testing.T) {
-	host := tailnetHost(t, newFakeAddons())
 	var calls []string
-	host.system = fakeSystem(t, "", &calls)
+	host := appHost(t, "", &calls)
 	for i := 0; i < tailnetTries+3; i++ {
 		w := httptest.NewRecorder()
 		host.ServeHTTP(w, systemRequest("100.101.2.77:51234", "100.101.2.3:8788", nil))
@@ -493,6 +616,103 @@ func TestHostRefusesItsOwnTailscaleAppThroughTheAddon(t *testing.T) {
 	host.system = fakeSystem(t, "", &calls)
 	if status, _ := pairViaAddon(t, host, addons); status != http.StatusForbidden {
 		t.Fatalf("the host's own Tailscale app paired: %d", status)
+	}
+}
+
+// failingRun is a Tailscale command line that fails with err.
+func failingRun(err error) func(context.Context, int, ...string) ([]byte, error) {
+	return func(context.Context, int, ...string) ([]byte, error) { return nil, err }
+}
+
+// appSaying is the Tailscale app on this computer, node nApp11CNTRL at
+// 100.101.9.9, reporting state.
+func appSaying(state string) func(context.Context, int, ...string) ([]byte, error) {
+	return func(_ context.Context, _ int, args ...string) ([]byte, error) {
+		if args[0] != "status" {
+			return nil, errors.New("peer not found")
+		}
+		return []byte(`{"BackendState":"` + state + `","Self":{"ID":"nApp11CNTRL","UserID":7017007006444457,"TailscaleIPs":["100.101.9.9"]},
+			"CurrentTailnet":{"MagicDNSSuffix":"tail1234.ts.net"}}`), nil
+	}
+}
+
+// Through the add-on, the host pairs only when it is certain the device is
+// not this computer's own Tailscale app: whenever Tailscale is here but
+// cannot say, the answer is no.
+func TestHostFailsClosedWhenItCannotRuleOutItsOwnTailscaleApp(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		run     func(context.Context, int, ...string) ([]byte, error)
+		present bool
+		want    int
+	}{
+		{"no Tailscale here", failingRun(errNoTailscale), false, http.StatusOK},
+		{"a Tailscale daemon whose command line Switcher cannot use", failingRun(errNoTailscale), true, http.StatusForbidden},
+		{"a command line that fails or times out", failingRun(errors.New("signal: killed")), false, http.StatusForbidden},
+		{"an app that says it is not connected", appSaying("Stopped"), true, http.StatusOK},
+		{"an app that is starting", appSaying("Starting"), true, http.StatusForbidden},
+		{"an app running another node", appSaying("Running"), true, http.StatusOK},
+		{"garbled output", func(context.Context, int, ...string) ([]byte, error) { return []byte(`{"BackendState":`), nil }, true, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addons := newFakeAddons()
+			host := tailnetHost(t, addons)
+			present := tc.present
+			host.system = &systemTailscale{run: tc.run, present: func() bool { return present }}
+			if status, _ := pairViaAddon(t, host, addons); status != tc.want {
+				t.Fatalf("status %d, want %d", status, tc.want)
+			}
+		})
+	}
+}
+
+// A failure is kept like an answer, so nobody can make the command line
+// run more than every ten seconds.
+func TestHostAsksTheTailscaleAppAtMostEveryTenSeconds(t *testing.T) {
+	addons := newFakeAddons()
+	host := tailnetHost(t, addons)
+	var runs atomic.Int32
+	host.system = &systemTailscale{present: func() bool { return true }, run: func(context.Context, int, ...string) ([]byte, error) {
+		runs.Add(1)
+		return nil, errors.New("timed out")
+	}}
+	for i := 0; i < 3; i++ {
+		if status, _ := pairViaAddon(t, host, addons); status != http.StatusForbidden {
+			t.Fatalf("attempt %d: %d", i+1, status)
+		}
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("the command line ran %d times", runs.Load())
+	}
+}
+
+// Only the user's own devices spend what all sources share or make the
+// command line run: not another user's device through the add-on, nor a
+// neighbour in Tailscale's address range that did not reach this
+// computer's own Tailscale address.
+func TestOnlyTheUsersOwnDevicesSpendTheSharedLimit(t *testing.T) {
+	stranger := newFakeAddons()
+	stranger.client.Peer.User = someone
+	host := tailnetHost(t, stranger)
+	var runs atomic.Int32
+	host.system = &systemTailscale{present: func() bool { return false }, run: func(context.Context, int, ...string) ([]byte, error) {
+		runs.Add(1)
+		return nil, errNoTailscale
+	}}
+	if status, _ := pairViaAddon(t, host, stranger); status != http.StatusForbidden || host.tailnetTries["all"].count != 0 || runs.Load() != 0 {
+		t.Fatalf("another user: %d, shared %d, %d runs", status, host.tailnetTries["all"].count, runs.Load())
+	}
+	var calls []string
+	app := appHost(t, airWhois, &calls)
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, systemRequest("100.70.1.1:5000", "192.168.1.10:8788", nil))
+	if w.Code != http.StatusForbidden || app.tailnetTries["all"].count != 0 || len(calls) != 0 {
+		t.Fatalf("a neighbour: %d, shared %d, asked %v", w.Code, app.tailnetTries["all"].count, calls)
+	}
+	own := newFakeAddons()
+	mine := tailnetHost(t, own)
+	if status, _ := pairViaAddon(t, mine, own); status != http.StatusOK || mine.tailnetTries["all"].count != 1 {
+		t.Fatalf("an own device: %d, shared %d", status, mine.tailnetTries["all"].count)
 	}
 }
 

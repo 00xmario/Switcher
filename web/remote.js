@@ -118,6 +118,10 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       ${host.enabled ? `
         ${host.error ? `<p class="remote-error">${escape(host.error)}</p>` : ''}
         ${chips.length ? `<div class="set-chips" aria-label="Addresses of this ${mac()}">${chips.map(c => `<button type="button" class="set-chip" data-remote-copy="${escape(c.a)}" title="${c.kind}: click to copy">${c.icon}<code>${escape(c.a)}</code></button>`).join('')}</div>` : ''}
+        ${host.tailnet_notice ? `<div class="settings-row remote-notice" role="status">
+          <div><strong>New: your own Tailscale devices can connect without a code</strong><span class="dim">It is off on this ${mac()}, which shared before it existed. Turned on, your ${mac()}s signed in to the same Tailscale account connect from their list of Switchers. So could other accounts or machines that use one of your Tailscale devices; anything else still needs a code.</span></div>
+          <div class="set-foot-actions"><button type="button" class="primary" data-remote-action="tailnet-notice-on" ${busy ? 'disabled' : ''}>Turn on</button><button type="button" data-remote-action="tailnet-notice-off" ${busy ? 'disabled' : ''}>Not now</button></div>
+        </div>` : ''}
         <div class="settings-row">
           <div><strong>Let my own Tailscale devices connect without a code</strong><span class="dim">${tailnet
             ? `Your ${mac()}s signed in to the same Tailscale account connect from their list of Switchers. Everything else needs a code.`
@@ -345,6 +349,9 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
       if (!button || button.disabled) return;
       switch (button.dataset.remoteAction) {
         case 'pair': return act('pair', () => post('/api/remote/host/pairing'));
+        // Either answer to the notice is a choice the host remembers.
+        case 'tailnet-notice-on': return act('tailnet-pairing', () => post('/api/remote/host/tailnet', { enabled: true }));
+        case 'tailnet-notice-off': return act('tailnet-pairing', () => post('/api/remote/host/tailnet', { enabled: false }));
         case 'scan': return scan();
         case 'revoke':
           if (!await confirm({ title: 'Remove this Mac?', message: 'It can no longer use this Switcher until you pair it again.', confirmLabel: 'Remove', danger: true })) return;

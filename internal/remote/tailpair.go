@@ -26,6 +26,9 @@ const tailnetPreamble = "SWITCHER-TAILNET "
 
 var preambleID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// installShape is a Switcher's install id, as the client makes it.
+var installShape = preambleID
+
 // loopbackConn is a connection from this computer. It reads the add-on's
 // preamble, if one comes first, when the TLS handshake first reads, so a
 // slow client never holds up accepting others.
@@ -141,14 +144,17 @@ func (h *Host) allowTailnet(keys ...string) bool {
 // Every refusal gives the same answer as a wrong code, so a caller learns
 // nothing about why.
 func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
+	// Install is the client Switcher's own random id, which only tells two
+	// Switchers behind one Tailscale device apart; it grants nothing.
 	var req struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		Install string `json:"install"`
 	}
 	if json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req) != nil {
 		writeError(w, http.StatusBadRequest, "invalid pairing request")
 		return
 	}
-	open := func() bool { return h.state.Enabled && !h.state.TailnetPairingOff }
+	open := func() bool { return h.state.Enabled && h.state.tailnetPairing() }
 	h.mu.Lock()
 	allowed := open()
 	h.mu.Unlock()
@@ -158,14 +164,32 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	id, ok := h.identify(ctx, r)
+	id, viaAddon, ok := h.identify(ctx, r)
 	own, err := h.ownTailnet()
 	if !ok || err != nil || !hostAdmits(id, own) {
 		writeError(w, http.StatusForbidden, pairFailed)
 		return
 	}
+	// Through the add-on, the Tailscale app on this computer is one more way
+	// in for any account here, also without a network interface (userspace
+	// networking): its node is this computer too. Asking it is spent only
+	// on the user's own devices, so nobody else uses up what they share, and
+	// whenever Tailscale is here but cannot say, the answer is no.
+	if viaAddon {
+		if !h.allowTailnet("all") {
+			writeError(w, http.StatusForbidden, pairFailed)
+			return
+		}
+		if app, err := h.system.isAppNode(ctx, id.Peer); err != nil || app {
+			writeError(w, http.StatusForbidden, pairFailed)
+			return
+		}
+	}
 	d, token := newDevice(req.Name)
 	d.TailscaleNode, d.TailscaleName = id.Peer.ID, id.Peer.Name
+	if installShape.MatchString(req.Install) {
+		d.TailscaleInstall = req.Install
+	}
 	h.mu.Lock()
 	// Sharing or this setting may have been turned off during the lookup.
 	if !open() {
@@ -189,11 +213,11 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 // when the Tailscale app carried it to this computer's own Tailscale
 // address. Anything else, such as the local network, has no identity, and
 // no header or body field can give it one. Every attempt counts against
-// its source and its device.
-func (h *Host) identify(ctx context.Context, r *http.Request) (tailnetIdentity, bool) {
+// its source and its device. viaAddon says the add-on answered.
+func (h *Host) identify(ctx context.Context, r *http.Request) (id tailnetIdentity, viaAddon, ok bool) {
 	remote, ok := parseAddr(r.RemoteAddr)
 	if !ok {
-		return tailnetIdentity{}, false
+		return tailnetIdentity{}, false, false
 	}
 	switch {
 	case remote.IsLoopback():
@@ -202,41 +226,35 @@ func (h *Host) identify(ctx context.Context, r *http.Request) (tailnetIdentity, 
 		whois := h.addonWhois
 		h.mu.Unlock()
 		if lc == nil || whois == nil || lc.tailnetID() == "" {
-			return tailnetIdentity{}, false
+			return tailnetIdentity{}, false, false
 		}
 		id, err := whois(ctx, lc.tailnetID(), r.RemoteAddr)
 		if err != nil || cleanIdentity(&id) != nil {
-			return tailnetIdentity{}, false
+			return tailnetIdentity{}, false, false
 		}
 		peer, ok := parseAddr(id.Peer.Addr)
 		if !ok || !onTailnetIP(peer) {
-			return tailnetIdentity{}, false
+			return tailnetIdentity{}, false, false
 		}
-		if !h.allowTailnet("src:"+peer.String(), "node:"+id.Peer.ID) {
-			return tailnetIdentity{}, false
-		}
-		// The Tailscale app on this computer is another way in for any
-		// account here, also one without a network interface (userspace
-		// networking): its node is this computer too.
-		if h.system != nil {
-			if app, err := h.system.selfNode(ctx); err == nil && (app.ID == id.Peer.ID || hasAddress(app.IPs, id.Peer.Addr)) {
-				return tailnetIdentity{}, false
-			}
-		}
-		return id, true
+		return id, true, h.allowTailnet("src:"+peer.String(), "node:"+id.Peer.ID)
 	case onTailnetIP(remote):
-		if !h.allowTailnet("src:"+remote.String(), "all") {
-			return tailnetIdentity{}, false
-		}
+		// Only a connection to this computer's own Tailscale address counts,
+		// and that is checked before anything is spent on it: a neighbour
+		// in the same address range, such as a carrier's, cannot use up the
+		// limit all sources share.
 		local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
-		if local == nil || h.system == nil {
-			return tailnetIdentity{}, false
+		own, err := h.ownTailnet()
+		if local == nil || h.system == nil || err != nil || !hasAddress(own, local.String()) {
+			return tailnetIdentity{}, false, false
+		}
+		if !h.allowTailnet("src:"+remote.String(), "all") {
+			return tailnetIdentity{}, false, false
 		}
 		id, err := h.system.identify(ctx, local.String(), r.RemoteAddr)
 		if err != nil {
-			return tailnetIdentity{}, false
+			return tailnetIdentity{}, false, false
 		}
-		return id, h.allowTailnet("node:" + id.Peer.ID)
+		return id, false, h.allowTailnet("node:" + id.Peer.ID)
 	}
-	return tailnetIdentity{}, false
+	return tailnetIdentity{}, false, false
 }
