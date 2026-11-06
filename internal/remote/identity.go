@@ -213,22 +213,29 @@ var tailscalePaths = []string{"/usr/bin/tailscale", "/Applications/Tailscale.app
 // line only where no other account can have put or changed it (see
 // resolveTrusted): its answers decide who may pair. It returns the
 // program's resolved path, which is the one run.
-func findTailscale() string {
-	return findTailscaleIn(tailscalePaths, func() (string, error) { return exec.LookPath("tailscale") }, resolveTrusted)
+// findTailscale returns the trusted Tailscale command as found (name) and
+// with every link resolved (resolved), which is what runs.
+func findTailscale() (name, resolved string) {
+	return locateTailscaleIn(tailscalePaths, func() (string, error) { return exec.LookPath("tailscale") }, resolveTrusted)
 }
 
 func findTailscaleIn(fixed []string, lookPath func() (string, error), trusted func(string) (string, bool)) string {
+	_, resolved := locateTailscaleIn(fixed, lookPath, trusted)
+	return resolved
+}
+
+func locateTailscaleIn(fixed []string, lookPath func() (string, error), trusted func(string) (string, bool)) (string, string) {
 	for _, p := range fixed {
 		if resolved, ok := trusted(p); ok {
-			return resolved
+			return p, resolved
 		}
 	}
 	if p, err := lookPath(); err == nil && filepath.IsAbs(p) {
 		if resolved, ok := trusted(p); ok {
-			return resolved
+			return p, resolved
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // cappedBuffer keeps at most limit bytes and notes anything beyond.
@@ -249,21 +256,29 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 // runTailscale runs one read-only Tailscale command with a time limit and a
 // bound on its output.
 func runTailscale(ctx context.Context, limit int, args ...string) ([]byte, error) {
-	bin := findTailscale()
+	name, bin := findTailscale()
 	if bin == "" {
 		return nil, errNoTailscale
 	}
-	return runProgram(ctx, bin, limit, args...)
+	return runProgramAs(ctx, bin, name, limit, args...)
 }
 
 // tailscaleTimeout bounds one command; tests shorten it.
 var tailscaleTimeout = 5 * time.Second
 
 func runProgram(ctx context.Context, bin string, limit int, args ...string) ([]byte, error) {
+	return runProgramAs(ctx, bin, bin, limit, args...)
+}
+
+// runProgramAs runs the resolved program bin under the name it was found
+// as: a multi-call binary such as Ubuntu's snap (tailscale links to
+// /usr/bin/snap) picks its command by that name.
+func runProgramAs(ctx context.Context, bin, name string, limit int, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, tailscaleTimeout)
 	defer cancel()
 	out, errOut := &cappedBuffer{limit: limit}, &cappedBuffer{limit: 4 << 10}
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Args[0] = name
 	cmd.Stdout, cmd.Stderr = out, errOut
 	cmd.WaitDelay = time.Second
 	if err := cmd.Run(); err != nil {

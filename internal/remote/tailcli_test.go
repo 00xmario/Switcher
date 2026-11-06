@@ -5,6 +5,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,5 +70,24 @@ func TestTailscaleDownIsRememberedOnlyBriefly(t *testing.T) {
 	s.selfNode(ctx)
 	if runs != 2 {
 		t.Fatalf("down was kept past two seconds: %d runs", runs)
+	}
+}
+
+// The resolved program runs under the name it was found as, so a multi-call
+// binary such as snap still knows it is tailscale. The test binary plays the
+// program and prints the name it was started under.
+func TestTailscaleRunsUnderItsFoundName(t *testing.T) {
+	if os.Getenv("SWITCHER_ARGV0_HELPER") == "1" {
+		fmt.Print(os.Args[0])
+		os.Exit(0)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Skip(err)
+	}
+	t.Setenv("SWITCHER_ARGV0_HELPER", "1")
+	out, err := runProgramAs(context.Background(), self, "/snap/bin/tailscale", 1<<10, "-test.run=^TestTailscaleRunsUnderItsFoundName$")
+	if err != nil || string(out) != "/snap/bin/tailscale" {
+		t.Fatalf("ran as %q: %v", out, err)
 	}
 }
