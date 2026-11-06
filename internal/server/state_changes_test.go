@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -255,6 +256,35 @@ func TestStateWatcherLooksAgainAfterAChangeMadeHere(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("a poke did not make the watcher look again")
+	}
+}
+
+// A state that fails to build ends one look, not the server: the waiter
+// times out unchanged and the next look that works answers.
+func TestABrokenStateEndsOnlyOneLook(t *testing.T) {
+	var broken atomic.Bool
+	broken.Store(true)
+	f := &fakeState{value: "one"}
+	s := newStateWatch(func(ctx context.Context, read bool) []byte {
+		if broken.Load() {
+			panic("fixture state failure")
+		}
+		return f.render(ctx, read)
+	}, nil, nil)
+	s.hostEvery, s.linger = 10*time.Millisecond, 20*time.Millisecond
+	defer stopped(t, s)
+	if etag, changed, err := s.wait(context.Background(), "", 50*time.Millisecond); err != nil || changed || etag != "" {
+		t.Fatalf("while broken: %q %v %v", etag, changed, err)
+	}
+	result := waitAsync(s, context.Background(), "", time.Minute)
+	broken.Store(false)
+	select {
+	case r := <-result:
+		if !r.changed || r.etag != stateTag([]byte("one")) {
+			t.Fatalf("once it works: %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the watcher did not recover")
 	}
 }
 

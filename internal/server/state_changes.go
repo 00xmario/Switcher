@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -162,6 +163,21 @@ func (s *stateWatch) isRunning() bool {
 	return s.running
 }
 
+// look reads the state once. A panic while building it ends only this look,
+// as it would end only one request to /api/state, instead of the server.
+func (s *stateWatch) look(ctx context.Context, read bool, logged *bool) (tag string, ok bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			if !*logged {
+				log.Printf("state watcher: building the state failed: %v", p)
+				*logged = true
+			}
+			ok = false
+		}
+	}()
+	return stateTag(s.render(ctx, read)), true
+}
+
 func (s *stateWatch) run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var host *hostWatch
@@ -171,6 +187,7 @@ func (s *stateWatch) run() {
 			host.stop()
 		}
 	}()
+	logged := false
 	for {
 		client := s.client != nil && s.client()
 		switch {
@@ -187,7 +204,9 @@ func (s *stateWatch) run() {
 		if host != nil {
 			read = host.dirty.Swap(false) || !host.live.Load()
 		}
-		s.publish(stateTag(s.render(ctx, read)))
+		if tag, ok := s.look(ctx, read, &logged); ok {
+			s.publish(tag)
+		}
 		every := s.hostEvery
 		if client {
 			every = s.clientEvery
