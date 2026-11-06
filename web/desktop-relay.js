@@ -369,7 +369,7 @@ export function createDesktopRelay({ api, getContext, getAccounts = () => [], co
     return run('start', `${base}/start`, 'POST', {}, 'Relay started.');
   }
   function stop() {
-    const inFlight = count(snapshot?.status?.in_flight);
+    const inFlight = count(snapshot?.status?.open_requests);
     return run('stop', `${base}/stop`, 'POST', {}, 'Relay stopped.', inFlight ? () => confirmStop({ inFlight }) : null);
   }
   function revoke(scope) {

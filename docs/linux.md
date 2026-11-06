@@ -56,7 +56,8 @@ Switcher restarts. Before closing anything, Switcher checks that it can reopen
 Desktop: it needs the program, and a systemd user session that knows a display.
 Over SSH with nobody logged in to the desktop, it refuses and leaves Desktop as
 it is. A build that runs under another program name than `claude-desktop` isn't
-recognized, so restart that one yourself.
+recognized: Switcher tries to open it, says it did not open, and leaves it for
+you to restart.
 
 ## The tray
 

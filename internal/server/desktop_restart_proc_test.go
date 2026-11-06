@@ -52,7 +52,7 @@ func newFakeDesktop(t *testing.T) *fakeDesktop {
 	}
 	f := &fakeDesktop{t: t, program: program, env: "HOME=/home/test\nWAYLAND_DISPLAY=wayland-0\n", reopens: true}
 	f.linuxDesktop = &linuxDesktop{
-		proc: filepath.Join(root, "proc"), uid: 1000, home: "/home/test",
+		proc: filepath.Join(root, "proc"), uid: 1000,
 		isDesktop:  func(exe string) bool { return filepath.Base(exe) == linuxDesktopName },
 		installed:  func() string { return program },
 		systemdRun: "/fixture/systemd-run", systemctl: "/fixture/systemctl",
@@ -151,7 +151,7 @@ func TestLinuxDesktopRestartSignalsTheMainProcessAndReopensItOutsideSwitcher(t *
 		t.Fatalf("started %d times", len(runs))
 	}
 	got := strings.Join(runs[0], " ")
-	for _, want := range []string{"--user", "--collect", "--service-type=exec", "--slice=app.slice", "--working-directory=/home/test", "--unit=app-switcher-com.anthropic.Claude-"} {
+	for _, want := range []string{"--user", "--collect", "--service-type=exec", "--unit=app-switcher-com.anthropic.Claude-"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %s in %s", want, got)
 		}
@@ -181,6 +181,22 @@ func TestLinuxDesktopRestartOpensAStoppedApp(t *testing.T) {
 	f := newFakeDesktop(t)
 	if err := f.restart(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if len(f.signalled) != 0 || len(f.started()) != 1 {
+		t.Fatalf("signalled %v, started %d", f.signalled, len(f.started()))
+	}
+}
+
+// Nothing was closed here, so the message must not say it was. A build under
+// another program name lands here too: it isn't seen before or after its
+// launcher hands over to the running app.
+func TestLinuxDesktopSaysItDidNotOpenWhenNothingWasRunning(t *testing.T) {
+	f := newFakeDesktop(t)
+	f.reopens = false
+	err := f.restart(context.Background())
+	var failure *desktopRestartError
+	if !errors.As(err, &failure) || !strings.Contains(failure.message, "did not open") || strings.Contains(failure.message, "come back") {
+		t.Fatalf("error %v", err)
 	}
 	if len(f.signalled) != 0 || len(f.started()) != 1 {
 		t.Fatalf("signalled %v, started %d", f.signalled, len(f.started()))

@@ -141,7 +141,11 @@ func runDesktopRestart(ctx context.Context, ops desktopRestartOperations) error 
 	reopenCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := ops.open(reopenCtx); err != nil {
-		return restartFailure("Claude Desktop closed but did not come back. Open it yourself.", err)
+		var failure *desktopRestartError
+		if errors.As(err, &failure) {
+			return err
+		}
+		return restartFailure("Claude Desktop did not come back. Open it yourself.", err)
 	}
 	return nil
 }

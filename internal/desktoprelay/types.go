@@ -103,11 +103,14 @@ type Status struct {
 	Listening bool `json:"listening"`
 	// InFlight counts model requests being relayed. Other traffic isn't in it:
 	// a Remote Control session keeps a connection open for as long as it lives.
-	InFlight   uint64 `json:"in_flight"`
-	Address    string `json:"address"`
-	CAPath     string `json:"ca_path"`
-	Condition  string `json:"condition"`
-	Validation string `json:"validation"`
+	InFlight uint64 `json:"in_flight"`
+	// OpenRequests counts every relayed request, which is what stopping the
+	// relay cuts off.
+	OpenRequests uint64 `json:"open_requests"`
+	Address      string `json:"address"`
+	CAPath       string `json:"ca_path"`
+	Condition    string `json:"condition"`
+	Validation   string `json:"validation"`
 }
 
 // ReplyStatus is an alias for management integrations that use reply type names.

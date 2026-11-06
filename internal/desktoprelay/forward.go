@@ -40,6 +40,8 @@ func (m *Manager) transport() http.RoundTripper {
 func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *http.Request) {
 	message := r.Method == http.MethodPost && r.URL.Path == "/v1/messages"
 	model := message || (r.Method == http.MethodPost && r.URL.Path == "/v1/messages/count_tokens")
+	run.open.Add(1)
+	defer run.open.Add(-1)
 	if model {
 		run.inFlight.Add(1)
 		defer run.inFlight.Add(-1)

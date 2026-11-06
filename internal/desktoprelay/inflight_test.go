@@ -53,14 +53,17 @@ func TestInFlightCountsOnlyModelRequests(t *testing.T) {
 			if got := m.Status().InFlight; got != tc.want {
 				t.Fatalf("in flight while %s is open: %d, want %d", tc.path, got, tc.want)
 			}
+			if got := m.Status().OpenRequests; got != 1 {
+				t.Fatalf("open requests while %s is open: %d, want 1", tc.path, got)
+			}
 			release()
 			if got := drain(t, r); strings.Contains(got, "open") {
 				t.Fatalf("stream replayed: %q", got)
 			}
 			deadline := time.Now().Add(2 * time.Second)
-			for m.Status().InFlight != 0 {
+			for m.Status().InFlight != 0 || m.Status().OpenRequests != 0 {
 				if time.Now().After(deadline) {
-					t.Fatal("a finished request stayed in flight")
+					t.Fatal("a finished request stayed counted")
 				}
 				time.Sleep(5 * time.Millisecond)
 			}

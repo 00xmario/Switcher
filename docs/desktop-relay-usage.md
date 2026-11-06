@@ -116,6 +116,7 @@ afterwards. **Advanced** shows the relay status, lets you stop it once Desktop
 is disconnected, and manages manual profiles for other apps. Its count of
 requests in flight, like the one in `switcher status`, covers model requests
 only: connections that stay open for Remote Control sessions aren't in it.
+Stopping the relay still asks first when any connection is open.
 
 ## Still worth verifying live
 

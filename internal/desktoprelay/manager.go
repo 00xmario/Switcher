@@ -59,7 +59,8 @@ type runtime struct {
 	wg           sync.WaitGroup
 	shutdownOnce sync.Once
 	finished     chan struct{}
-	inFlight     atomic.Int64
+	inFlight     atomic.Int64 // model requests
+	open         atomic.Int64 // every relayed request, model or not
 }
 
 // track registers a hijacked connection so shutdown can close it.
@@ -338,6 +339,7 @@ func (m *Manager) Status() Status {
 	}
 	if m.run != nil {
 		s.InFlight = uint64(m.run.inFlight.Load())
+		s.OpenRequests = uint64(m.run.open.Load())
 		if m.run.ctx.Err() == nil {
 			s.Listening = true
 			s.Address = m.run.listener.Addr().String()

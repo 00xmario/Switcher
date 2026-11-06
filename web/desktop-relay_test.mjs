@@ -135,6 +135,22 @@ test('a LAN dashboard never loads or offers controls', async () => {
   assert.match(onLinux.settingsHTML(), /Open Switcher on this computer/);
 });
 
+test('stop asks first while any connection is open, even with no model request', async () => {
+  const data = body();
+  data.status = { ...data.status, in_flight: 0, open_requests: 2 };
+  const calls = [];
+  let asked = 0;
+  const relay = createDesktopRelay({
+    api: async (path, options = {}) => { calls.push(path); return options.method && options.method !== 'GET' ? {} : data; },
+    getContext: () => ({ loopback: true, locked: false, loggingOut: false, authKind: '', controllerKey: 'key' }),
+    confirmStop: async ({ inFlight }) => { asked = inFlight; return false; },
+  });
+  await relay.setActive(true);
+  await relay.stop();
+  assert.equal(asked, 2);
+  assert.equal(calls.some(path => path.endsWith('/stop')), false, 'declining keeps the relay running');
+});
+
 test('settings offer connect, restart behind confirmation, and disconnect', async () => {
   let confirmed = false;
   const calls = [];

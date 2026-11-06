@@ -34,7 +34,6 @@ var (
 type linuxDesktop struct {
 	proc string // /proc
 	uid  int
-	home string
 	// isDesktop says whether a running program is Claude Desktop.
 	isDesktop func(exe string) bool
 	// installed is the program to open when Desktop isn't running; "" if none.
@@ -48,9 +47,8 @@ type linuxDesktop struct {
 }
 
 func newLinuxDesktop() *linuxDesktop {
-	home, _ := os.UserHomeDir()
 	return &linuxDesktop{
-		proc: "/proc", uid: os.Getuid(), home: home,
+		proc: "/proc", uid: os.Getuid(),
 		isDesktop: func(exe string) bool { return filepath.Base(exe) == linuxDesktopName },
 		installed: func() string {
 			if path := firstProgram(linuxDesktopPaths); path != "" {
@@ -159,14 +157,15 @@ func (d *linuxDesktop) ownedByUser(dir string) bool {
 }
 
 // prepare finds what to reopen and refuses, before anything is closed, a
-// restart that could not bring Desktop back.
-func (d *linuxDesktop) prepare(ctx context.Context) (string, error) {
-	running, err := d.mains()
+// restart that could not bring Desktop back. It also says whether Desktop was
+// found running.
+func (d *linuxDesktop) prepare(ctx context.Context) (program string, running bool, err error) {
+	processes, err := d.mains()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	program := ""
-	for _, process := range running {
+	running = len(processes) > 0
+	for _, process := range processes {
 		if isProgram(process.exe) {
 			program = process.exe
 			break
@@ -176,23 +175,23 @@ func (d *linuxDesktop) prepare(ctx context.Context) (string, error) {
 		program = d.installed()
 	}
 	if program == "" {
-		return "", restartFailure("Claude Desktop is not installed on this computer.", nil)
+		return "", running, restartFailure("Claude Desktop is not installed on this computer.", nil)
 	}
 	if d.systemdRun == "" || d.systemctl == "" {
-		return "", restartFailure(desktopNoSessionMessage, errors.New("systemd-run or systemctl is missing"))
+		return "", running, restartFailure(desktopNoSessionMessage, errors.New("systemd-run or systemctl is missing"))
 	}
 	check, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	env, err := d.command(check, d.systemctl, "--user", "show-environment")
 	if err != nil {
-		return "", restartFailure(desktopNoSessionMessage, err)
+		return "", running, restartFailure(desktopNoSessionMessage, err)
 	}
 	for line := range strings.SplitSeq(string(env), "\n") {
 		if strings.HasPrefix(line, "WAYLAND_DISPLAY=") || strings.HasPrefix(line, "DISPLAY=") {
-			return program, nil
+			return program, running, nil
 		}
 	}
-	return "", restartFailure(desktopNoSessionMessage, errors.New("the user manager has no display"))
+	return "", running, restartFailure(desktopNoSessionMessage, errors.New("the user manager has no display"))
 }
 
 func (d *linuxDesktop) quit(context.Context) error {
@@ -220,12 +219,8 @@ func (d *linuxDesktop) running(context.Context) (bool, error) {
 // and it would inherit Switcher's environment instead of the desktop session's.
 // Each start gets its own unit name because a name still loaded can't be reused.
 func (d *linuxDesktop) open(ctx context.Context, program string) error {
-	args := []string{"--user", "--collect", "--quiet", "--service-type=exec", "--slice=app.slice",
-		"--unit=app-switcher-com.anthropic.Claude-" + rand.Text() + ".service"}
-	if d.home != "" {
-		args = append(args, "--working-directory="+d.home)
-	}
-	if _, err := d.command(ctx, d.systemdRun, append(args, "--", program)...); err != nil {
+	if _, err := d.command(ctx, d.systemdRun, "--user", "--collect", "--quiet", "--service-type=exec",
+		"--unit=app-switcher-com.anthropic.Claude-"+rand.Text()+".service", "--", program); err != nil {
 		return err
 	}
 	timer := time.NewTimer(d.settle)
@@ -246,13 +241,21 @@ func (d *linuxDesktop) open(ctx context.Context, program string) error {
 }
 
 func (d *linuxDesktop) restart(ctx context.Context) error {
-	program, err := d.prepare(ctx)
+	program, running, err := d.prepare(ctx)
 	if err != nil {
 		return err
 	}
 	return runDesktopRestart(ctx, desktopRestartOperations{
 		quit:    d.quit,
 		running: d.running,
-		open:    func(ctx context.Context) error { return d.open(ctx, program) },
+		open: func(ctx context.Context) error {
+			err := d.open(ctx, program)
+			if err != nil && !running {
+				// Nothing was closed. A build under another program name also
+				// ends here: its launcher hands over to the running app.
+				return restartFailure("Claude Desktop did not open. If it is running under another program name, restart it yourself.", err)
+			}
+			return err
+		},
 	})
 }
