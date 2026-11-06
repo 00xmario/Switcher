@@ -34,7 +34,8 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
 | `switcher reset <account\|provider> --yes` | Spend a banked reset (Codex) on an account, or on a provider's active account |
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
-| `switcher connect <address> --code CODE` | Use the accounts of a Mac that shares them |
+| `switcher share tailnet [on\|off]` | Let your own Tailscale devices connect without a code (on by default), or make them use one |
+| `switcher connect <address> [--code CODE] [--yes]` | Use the accounts of a Mac that shares them: your own Tailscale devices need no code; `--yes` switches from the host in use, which stays if the new one fails |
 | `switcher disconnect --yes` | Use this Mac's own accounts again |
 | `switcher use-host [on\|off]` | Work without the paired host and stay paired (off), or use it again (on) |
 | `switcher update-host [--yes]` | Show the paired host's Switcher version; with `--yes` the host installs the newest release |
@@ -64,7 +65,11 @@ email. `switcher help <command>` explains one command.
 - Exit codes: `0` ok, `1` failed, `2` usage error, `3` Switcher is not running.
   With `--json`, a failure also prints `{"error": "...", "code": "failed" | "usage" | "not_running"}`.
 - Nothing prompts. Destructive or disruptive commands need `--yes`
-  (`remove`, `disconnect`, `share revoke`, `away remove`, `desktop restart`).
+  (`remove`, `disconnect`, `share revoke`, `away remove`, `desktop restart`,
+  and `connect` while another host is in use).
+- `connect` without `--code` pairs over Tailscale without a code when both
+  computers belong to the same Tailscale user. When the host wants a code, it
+  fails with `"needs_code": true` in the JSON answer.
   `add-key` refuses to wait on a terminal: pass `--key`, or pipe the key in.
 - `--url` reaches a Switcher on another port; `SWITCHER_URL` does the same.
   The dashboard's device token is only ever sent to this Mac.
@@ -107,6 +112,10 @@ curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh |
 
 # Use your main Mac's accounts: no sign-ins needed on this Mac.
 switcher connect studio.local --code K7QF-M2XP    # code from: switcher share code
+
+# Or, with this Mac on your tailnet (switcher away on, or the Tailscale app):
+switcher discover
+switcher connect switcher-studio.tail1234.ts.net  # your own device: no code
 
 # Or give this Mac its own accounts.
 switcher login claude

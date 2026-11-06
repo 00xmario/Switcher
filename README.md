@@ -52,7 +52,8 @@ with the most usage left. Errors and limits are the provider's own.
   you merge them. Optional alerts when a window resets.
 - **Share between Macs.** Pair your laptop with your desktop once. Accounts
   and tokens stay on one Mac and the others use them, at home or anywhere
-  with the optional Tailscale add-on.
+  with the optional Tailscale add-on. Your own Macs on Tailscale connect
+  without a code, and switch between hosts in one step.
 - **Switcher in your pocket.** Check usage, switch accounts (Claude Code's
   login included) and spend a banked reset from your phone, wherever you are,
   over Tailscale. Setup is a QR code and a six-digit code; only phones you
@@ -195,8 +196,9 @@ The full matrix, including what is verified per native CLI, is in
 - Tokens stay in `~/.switcher/` (mode `0600`), like the CLIs keep theirs.
   Request bodies are forwarded as they are; Switcher never reads prompts.
 - Sharing between Macs uses a pinned certificate, a pairing code proved in
-  both directions and a revocable token per Mac, and only accepts your own
-  network and Tailscale.
+  both directions (or, for your own Tailscale devices, Tailscale's device
+  identity, checked on both sides) and a revocable token per Mac, and only
+  accepts your own network and Tailscale.
 - The phone page is reachable only inside your tailnet, only from your own
   Tailscale devices, and only for phones you approve on the Mac; sessions
   are bound to the phone. See [phone](docs/phone.md).
