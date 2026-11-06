@@ -173,6 +173,22 @@ test('a Switcher found over Tailscale connects without a code and asks for one o
   assert.deepEqual(changes, [true]);
 });
 
+test('a Switcher found nearby that is in the tailnet too is paired over Tailscale first, then by code locally', async () => {
+  const nearby = { name: 'Studio', address: 'Studio.local', port: 8788, tailnet: 'switcher-studio.tail1.ts.net' };
+  const server = remoteAPI({ host: host(), client: { connected: false } }, [nearby]);
+  const remote = createRemote({ api: server.api, now: () => now });
+  await remote.load();
+  await remote.scan();
+  assert.match(remote.html(), /data-remote-address="Studio\.local" data-remote-port="8788" data-remote-name="Studio" data-remote-tailnet="switcher-studio\.tail1\.ts\.net"/);
+  server.state.refuse = true;
+  await remote.connect(nearby);
+  assert.deepEqual(server.connects()[0], { address: 'switcher-studio.tail1.ts.net', port: 0 });
+  assert.match(remote.html(), /value="Studio\.local"/, 'the code goes to its local address');
+  server.state.refuse = false;
+  await remote.connect({ ...nearby, needsCode: true }, 'K7QF-M2XP');
+  assert.deepEqual(server.connects()[1], { address: 'Studio.local', port: 8788, code: 'K7QF-M2XP' });
+});
+
 test('a connected Mac offers its other Switchers and switches only once confirmed', async () => {
   const server = remoteAPI({ host: host(), client: { connected: true, host_name: 'Studio', address: 'studio.local', reachable: true } },
     [{ name: 'Studio', address: 'studio.local', port: 8788, current: true }, { ...studioPeer, name: 'switcher-mini (Tailscale)', address: 'switcher-mini.tail1.ts.net' }]);

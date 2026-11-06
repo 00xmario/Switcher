@@ -28,8 +28,10 @@ host; allow it.
 A Mac signed in to the same Tailscale account as the host, in the same
 tailnet, pairs without a code: install Switcher, turn on **Away from home**
 (or use the Tailscale app), pick the host and connect. No provider logins are
-needed on it. The host decides with Tailscale's word on who is calling, never
-with anything the other Mac sends:
+needed on it. A host found on your network that is in your tailnet too is
+paired over Tailscale; afterwards the client uses whichever of its addresses
+answers first, as always. The host decides with Tailscale's word on who is
+calling, never with anything the other Mac sends:
 
 - Both sides check. The host asks Tailscale which device is behind the
   connection; the client asks its own Tailscale which device it reached

@@ -146,17 +146,17 @@ func (a *API) handleRemoteDiscover(w http.ResponseWriter, r *http.Request) {
 		self = a.RemoteHost.Fingerprint()
 	}
 	found := []remote.Found{}
-	nearby := map[string]bool{}
+	nearby := map[string]int{}
 	for _, f := range remote.Discover(ctx, self) {
 		if !f.Self {
+			nearby[remote.TailnetHostname(f.Name)] = len(found)
 			found = append(found, f)
-			nearby[remote.TailnetHostname(f.Name)] = true
 		}
 	}
 	// Switchers in the user's tailnet, reachable from anywhere: those the
 	// add-on sees, else those the Tailscale app sees, as the hosts' add-ons
-	// name them. One already found nearby is listed once, by its faster
-	// local address.
+	// name them. One already found nearby is listed once, by its local
+	// address, with its Tailscale name to pair over without a code.
 	var peers []remote.TailnetPeer
 	own := ""
 	if a.Tailnet != nil {
@@ -168,13 +168,18 @@ func (a *API) handleRemoteDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	listed := map[string]bool{}
 	for _, p := range peers {
-		if p.Online && p.DNSName != "" && p.DNSName != own && !nearby[p.Name] && !listed[p.DNSName] {
-			listed[p.DNSName] = true
-			found = append(found, remote.Found{Name: p.Name + " (Tailscale)", Address: p.DNSName, Port: remote.DefaultPort, Tailscale: true})
+		if !p.Online || p.DNSName == "" || p.DNSName == own || listed[p.DNSName] {
+			continue
 		}
+		listed[p.DNSName] = true
+		if i, ok := nearby[p.Name]; ok {
+			found[i].Tailnet = p.DNSName
+			continue
+		}
+		found = append(found, remote.Found{Name: p.Name + " (Tailscale)", Address: p.DNSName, Port: remote.DefaultPort, Tailscale: true})
 	}
-	for i := range found {
-		found[i].Current = a.RemoteClient.IsPairedHost(found[i].Address)
+	for i, f := range found {
+		found[i].Current = a.RemoteClient.IsPairedHost(f.Address) || f.Tailnet != "" && a.RemoteClient.IsPairedHost(f.Tailnet)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hosts": found})
 }

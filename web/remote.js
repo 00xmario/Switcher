@@ -144,7 +144,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
   function foundHTML(hosts, action, label) {
     return `<ul class="remote-found">${hosts.map(h => `<li>
         <span><strong>${escape(h.name)}</strong><span class="dim">${escape(h.address)}</span></span>
-        <button type="button" data-remote-action="${action}" data-remote-address="${escape(h.address)}" data-remote-port="${escape(h.port)}" data-remote-name="${escape(h.name)}" ${busy ? 'disabled' : ''}>${busy === 'connect' && target?.address === h.address ? 'Connecting…' : label}</button>
+        <button type="button" data-remote-action="${action}" data-remote-address="${escape(h.address)}" data-remote-port="${escape(h.port)}" data-remote-name="${escape(h.name)}"${h.tailnet ? ` data-remote-tailnet="${escape(h.tailnet)}"` : ''} ${busy ? 'disabled' : ''}>${busy === 'connect' && target?.address === h.address ? 'Connecting…' : label}</button>
       </li>`).join('')}</ul>`;
   }
 
@@ -384,17 +384,21 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     });
   }
 
-  const chosen = button => ({ address: button.dataset.remoteAddress, port: Number(button.dataset.remotePort) || 0, name: button.dataset.remoteName });
+  const chosen = button => ({ address: button.dataset.remoteAddress, port: Number(button.dataset.remotePort) || 0, name: button.dataset.remoteName,
+    ...(button.dataset.remoteTailnet ? { tailnet: button.dataset.remoteTailnet } : {}) });
 
   // connect pairs with a host: without a code first, which works for the
   // user's own Tailscale devices, and with a code once the host asks for
-  // one. Switching keeps the current host until the new one is paired.
+  // one. A host found nearby that is in the tailnet too is tried over
+  // Tailscale for that, and over its local address with a code. Switching
+  // keeps the current host until the new one is paired.
   async function connect(next, code = '') {
     target = { ...next, needsCode: !!(code || next.needsCode) };
+    const [address, port] = !code && next.tailnet ? [next.tailnet, 0] : [next.address, next.port || 0];
     let needsCode = false;
     const ok = await act('connect', async () => {
       try {
-        await post('/api/remote/connect', { address: next.address, port: next.port || 0, ...(code ? { code } : {}), ...(next.switching ? { switch: true } : {}) });
+        await post('/api/remote/connect', { address, port, ...(code ? { code } : {}), ...(next.switching ? { switch: true } : {}) });
       } catch (e) {
         needsCode = !!e.body?.needs_code;
         throw e;

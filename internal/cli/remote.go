@@ -24,9 +24,7 @@ On the other Mac: switcher connect <host address>. Over Tailscale, your own
 devices need no code; anything else needs --code <code>.
 `
 
-const connectHelp = `Pairs this computer with a Switcher that shares its accounts.
-
-Over Tailscale, your own devices connect without a code: both computers'
+const connectHelp = `Over Tailscale, your own devices connect without a code: both computers'
 Tailscale must say they belong to the same Tailscale user, in the same
 tailnet, untagged and not shared in, and the host must allow it (switcher
 share tailnet). Give the host's Tailscale name or address, as switcher
@@ -325,6 +323,7 @@ func runDiscover(c *ctx, args []string) error {
 			Name    string `json:"name"`
 			Address string `json:"address"`
 			Port    int    `json:"port"`
+			Tailnet string `json:"tailnet,omitempty"`
 		} `json:"hosts"`
 	}
 	if err := c.cl.call(http.MethodGet, "/api/remote/discover", nil, &answer); err != nil {
@@ -340,7 +339,11 @@ func runDiscover(c *ctx, args []string) error {
 	}
 	var rows [][]string
 	for _, h := range answer.Hosts {
-		rows = append(rows, []string{h.Name, h.Address})
+		row := []string{h.Name, h.Address}
+		if h.Tailnet != "" {
+			row = append(row, "Tailscale: "+h.Tailnet)
+		}
+		rows = append(rows, row)
 	}
 	fmt.Fprintln(c.out, table(rows)+"\n\nConnect with: switcher connect <address>. Your own devices on Tailscale need no code; others need --code <code from the other "+machine()+">.")
 	return nil
