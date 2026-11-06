@@ -80,6 +80,8 @@ verify-common:
 	node web/phone-settings_test.mjs
 	node --check web/update-progress.js
 	node web/update-progress_test.mjs
+	node --check web/live-state.js
+	node web/live-state_test.mjs
 	node web/qr_test.mjs
 	node --check web/toggles.js
 	node web/toggles_test.mjs
