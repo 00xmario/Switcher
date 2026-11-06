@@ -56,6 +56,9 @@ func (f *fakeState) looks() (all, reads int) {
 	return len(f.reads), reads
 }
 
+// here is a waiter on this computer, such as its menu bar or dashboard.
+var here = waiter{local: true}
+
 func quickWatch(f *fakeState) *stateWatch {
 	s := newStateWatch(f.render, nil, nil)
 	s.hostEvery, s.clientEvery, s.linger = 10*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond
@@ -86,7 +89,7 @@ type waitResult struct {
 func waitAsync(s *stateWatch, ctx context.Context, since string, timeout time.Duration) chan waitResult {
 	out := make(chan waitResult, 1)
 	go func() {
-		etag, changed, err := s.wait(ctx, since, timeout)
+		etag, changed, err := s.wait(ctx, here, since, timeout)
 		out <- waitResult{etag, changed, err}
 	}()
 	return out
@@ -98,7 +101,7 @@ func TestStateChangesAnswerAtOnceForAnEmptyOrStaleTag(t *testing.T) {
 	defer stopped(t, s)
 	for _, since := range []string{"", "a tag from before a restart"} {
 		started := time.Now()
-		etag, changed, err := s.wait(context.Background(), since, time.Minute)
+		etag, changed, err := s.wait(context.Background(), here, since, time.Minute)
 		if err != nil || !changed || etag != stateTag([]byte("one")) || time.Since(started) > time.Second {
 			t.Fatalf("since %q: %q %v %v after %s", since, etag, changed, err, time.Since(started))
 		}
@@ -109,7 +112,7 @@ func TestStateChangesWaitForAChange(t *testing.T) {
 	f := &fakeState{value: "one"}
 	s := quickWatch(f)
 	defer stopped(t, s)
-	etag, _, _ := s.wait(context.Background(), "", time.Minute)
+	etag, _, _ := s.wait(context.Background(), here, "", time.Minute)
 	result := waitAsync(s, context.Background(), etag, time.Minute)
 	select {
 	case r := <-result:
@@ -131,9 +134,9 @@ func TestStateChangesTimeOutUnchangedWithTheSameTag(t *testing.T) {
 	f := &fakeState{value: "one"}
 	s := quickWatch(f)
 	defer stopped(t, s)
-	etag, _, _ := s.wait(context.Background(), "", time.Minute)
+	etag, _, _ := s.wait(context.Background(), here, "", time.Minute)
 	started := time.Now()
-	again, changed, err := s.wait(context.Background(), etag, 80*time.Millisecond)
+	again, changed, err := s.wait(context.Background(), here, etag, 80*time.Millisecond)
 	if err != nil || changed || again != etag || time.Since(started) < 80*time.Millisecond {
 		t.Fatalf("timeout: %q %v %v after %s", again, changed, err, time.Since(started))
 	}
@@ -143,7 +146,7 @@ func TestStateChangesEndWithTheRequest(t *testing.T) {
 	f := &fakeState{value: "one"}
 	s := quickWatch(f)
 	defer stopped(t, s)
-	etag, _, _ := s.wait(context.Background(), "", time.Minute)
+	etag, _, _ := s.wait(context.Background(), here, "", time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := waitAsync(s, ctx, etag, time.Minute)
 	time.Sleep(30 * time.Millisecond)
@@ -163,7 +166,7 @@ func TestStateChangesWakeEveryWaiterAndAreBounded(t *testing.T) {
 	s := quickWatch(f)
 	s.maxWaiters = 40
 	defer stopped(t, s)
-	etag, _, _ := s.wait(context.Background(), "", time.Minute)
+	etag, _, _ := s.wait(context.Background(), here, "", time.Minute)
 	var results []chan waitResult
 	for range s.maxWaiters {
 		results = append(results, waitAsync(s, context.Background(), etag, time.Minute))
@@ -181,7 +184,7 @@ func TestStateChangesWakeEveryWaiterAndAreBounded(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if _, _, err := s.wait(context.Background(), etag, time.Minute); !errors.Is(err, errTooManyWaiters) {
+	if _, _, err := s.wait(context.Background(), here, etag, time.Minute); !errors.Is(err, errTooManyWaiters) {
 		t.Fatalf("one waiter too many: %v", err)
 	}
 	f.set("two")
@@ -194,6 +197,97 @@ func TestStateChangesWakeEveryWaiterAndAreBounded(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("waiter %d was not woken", i)
 		}
+	}
+}
+
+// waitersOf starts n waits by who and returns once they all wait.
+func waitersOf(t *testing.T, s *stateWatch, ctx context.Context, who waiter, etag string, n int) []chan waitResult {
+	t.Helper()
+	s.mu.Lock()
+	want := s.waiters + n
+	s.mu.Unlock()
+	var results []chan waitResult
+	for range n {
+		results = append(results, waitAsyncAs(s, ctx, who, etag, time.Minute))
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		waiting := s.waiters
+		s.mu.Unlock()
+		if waiting == want {
+			return results
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d waiters, want %d", waiting, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitAsyncAs(s *stateWatch, ctx context.Context, who waiter, since string, timeout time.Duration) chan waitResult {
+	out := make(chan waitResult, 1)
+	go func() {
+		etag, changed, err := s.wait(ctx, who, since, timeout)
+		out <- waitResult{etag, changed, err}
+	}()
+	return out
+}
+
+// One paired device, perhaps another person's Mac, cannot take the waits of
+// this computer's own screens or of other devices.
+func TestEachCallerKeepsItsShareOfTheWaits(t *testing.T) {
+	f := &fakeState{value: "one"}
+	s := quickWatch(f)
+	s.maxWaiters, s.perDevice, s.localReserve = 8, 2, 3
+	defer stopped(t, s)
+	etag, _, _ := s.wait(context.Background(), here, "", time.Minute)
+	refused := func(who waiter) bool {
+		t.Helper()
+		_, _, err := s.wait(context.Background(), who, etag, time.Millisecond)
+		return errors.Is(err, errTooManyWaiters)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mac := waiter{device: "device-a"}
+	first := waitersOf(t, s, ctx, mac, etag, 2)
+	if !refused(mac) {
+		t.Fatal("a paired device held more than its share")
+	}
+	if refused(here) || refused(waiter{device: "device-b"}) {
+		t.Fatal("a device at its share kept this computer or another device out")
+	}
+	// Devices and other callers from elsewhere leave the share kept here.
+	all := append(first, waitersOf(t, s, ctx, waiter{device: "device-b"}, etag, 2)...)
+	all = append(all, waitersOf(t, s, ctx, waiter{}, etag, 1)...) // a browser on the LAN listener
+	if !refused(waiter{device: "device-c"}) || !refused(waiter{}) {
+		t.Fatal("callers from elsewhere took the share kept for this computer")
+	}
+	all = append(all, waitersOf(t, s, ctx, here, etag, 3)...)
+	if !refused(here) {
+		t.Fatal("the overall bound no longer holds")
+	}
+	// A wait that ends gives its slot back.
+	cancel()
+	for _, result := range all {
+		<-result
+	}
+	solo, stop := context.WithCancel(context.Background())
+	again := waitAsyncAs(s, solo, mac, etag, time.Minute)
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case r := <-again:
+		t.Fatalf("a device whose waits ended was refused: %+v", r)
+	default:
+	}
+	stop()
+	if r := <-again; !errors.Is(r.err, context.Canceled) {
+		t.Fatalf("the device's new wait: %+v", r)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.away != 0 || len(s.devices) != 0 {
+		t.Fatalf("slots left after every wait ended: %d away, devices %v", s.away, s.devices)
 	}
 }
 
@@ -229,7 +323,7 @@ func TestStateWatcherStopsAndLeavesNoGoroutines(t *testing.T) {
 	}
 	// A screen that comes back later starts the watcher again, with a fresh look.
 	f.set("two")
-	if etag, changed, err := s.wait(context.Background(), stateTag([]byte("one")), time.Minute); err != nil || !changed || etag != stateTag([]byte("two")) {
+	if etag, changed, err := s.wait(context.Background(), here, stateTag([]byte("one")), time.Minute); err != nil || !changed || etag != stateTag([]byte("two")) {
 		t.Fatalf("after a restart: %q %v %v", etag, changed, err)
 	}
 	stopped(t, s)
@@ -240,7 +334,7 @@ func TestStateWatcherLooksAgainAfterAChangeMadeHere(t *testing.T) {
 	s := quickWatch(f)
 	s.hostEvery = time.Hour // only a poke can make it look again
 	defer stopped(t, s)
-	etag, _, _ := s.wait(context.Background(), "", time.Minute)
+	etag, _, _ := s.wait(context.Background(), here, "", time.Minute)
 	result := waitAsync(s, context.Background(), etag, time.Minute)
 	f.set("two")
 	select {
@@ -273,7 +367,7 @@ func TestABrokenStateEndsOnlyOneLook(t *testing.T) {
 	}, nil, nil)
 	s.hostEvery, s.linger = 10*time.Millisecond, 20*time.Millisecond
 	defer stopped(t, s)
-	if etag, changed, err := s.wait(context.Background(), "", 50*time.Millisecond); err != nil || changed || etag != "" {
+	if etag, changed, err := s.wait(context.Background(), here, "", 50*time.Millisecond); err != nil || changed || etag != "" {
 		t.Fatalf("while broken: %q %v %v", etag, changed, err)
 	}
 	result := waitAsync(s, context.Background(), "", time.Minute)
@@ -316,7 +410,7 @@ func TestAClientReadsItsHostOnlyWhenTheHostChanged(t *testing.T) {
 		stopped(t, s)
 	}()
 	// A screen waits on the state, which does not change here, all along.
-	go func() { _, _, _ = s.wait(ctx, stateTag([]byte("one")), time.Hour) }()
+	go func() { _, _, _ = s.wait(ctx, here, stateTag([]byte("one")), time.Hour) }()
 	answer := func(etag string, changed bool, err error) {
 		t.Helper()
 		select {
@@ -578,6 +672,80 @@ func TestTheControlDeadlineLeavesRoomForTheWait(t *testing.T) {
 	get("/api/state")
 	if err := <-waited; err == nil {
 		t.Fatal("the control deadline no longer bounds other requests")
+	}
+}
+
+// A paired device reaches the host's waits through the host listener, which
+// names the device: at its share it is refused, while this computer's own
+// screens still get theirs, and a wait that ends frees its slot.
+func TestAPairedDeviceAtItsShareLeavesTheHostItsWaits(t *testing.T) {
+	hostAPI := liveAPI(t)
+	hostMux := http.NewServeMux()
+	hostAPI.Register(hostMux)
+	host, err := remote.NewHost(t.TempDir(), 0, hostMux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := remote.NewClient(t.TempDir(), "")
+	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Laptop"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect() })
+	hostSrv := httptest.NewServer(hostMux)
+	defer hostSrv.Close()
+
+	etag, _, err := client.WaitHostChange(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var held []chan error
+	for range stateWatchPerDevice {
+		done := make(chan error, 1)
+		go func() { _, _, err := client.WaitHostChange(ctx, etag); done <- err }()
+		held = append(held, done)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hostAPI.watch().mu.Lock()
+		holding := hostAPI.watch().devices
+		count := 0
+		for _, n := range holding {
+			count += n
+		}
+		hostAPI.watch().mu.Unlock()
+		if count == stateWatchPerDevice {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the device holds %d waits, want %d", count, stateWatchPerDevice)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, _, err := client.WaitHostChange(context.Background(), etag); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("a device past its share: %v", err)
+	}
+	if status, body := getChanges(hostSrv.Client(), hostSrv.URL+"/api/state/changes"); status != http.StatusOK || body["changed"] != true {
+		t.Fatalf("this computer's own screen was refused: %d %v", status, body)
+	}
+	cancel()
+	for _, done := range held {
+		<-done
+	}
+	again, stop := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer stop()
+	if _, _, err := client.WaitHostChange(again, etag); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("after its waits ended, the device's next wait: %v", err)
 	}
 }
 
