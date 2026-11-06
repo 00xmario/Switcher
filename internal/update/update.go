@@ -732,8 +732,11 @@ func copyBinary(source, destination string) error {
 	return dst.Close()
 }
 
+// syncFile flushes a file to disk. It opens the file read-only: fsync needs
+// no write access, and Linux refuses to open a binary for writing while it
+// runs or has just run ("text file busy"), as the smoke-tested one has.
 func syncFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}

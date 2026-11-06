@@ -383,3 +383,15 @@ func TestBeforeRestartRunsRightBeforeTheRestart(t *testing.T) {
 		t.Fatalf("order: %v", order)
 	}
 }
+
+// The smoke-tested binary is flushed without opening it for writing, which
+// Linux refuses for a program that is running ("text file busy").
+func TestSyncFileNeedsNoWriteAccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "switcher")
+	if err := os.WriteFile(path, []byte("binary"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncFile(path); err != nil {
+		t.Fatalf("sync a read-only binary: %v", err)
+	}
+}
