@@ -199,6 +199,12 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 	}
 	err = h.addDeviceLocked(d)
 	h.mu.Unlock()
+	// The caller passed every check, so saying why tells nobody else
+	// anything.
+	if errors.Is(err, errTooManyOnDevice) {
+		writeError(w, http.StatusConflict, "too many Switchers on this device are paired with this one; remove one here, or pair with a code")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save the pairing")
 		return

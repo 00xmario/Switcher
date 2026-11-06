@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -24,6 +25,22 @@ func tailnetClient(t *testing.T, addons *fakeAddons) *Client {
 	client.ownTailnet = func() ([]string, error) { return nil, nil }
 	client.system = noTailscaleApp(t)
 	return client
+}
+
+// A host with all of this device's pairings in use says so, and the client
+// says what to do.
+func TestClientSaysWhenItsDeviceHasTooManyPairings(t *testing.T) {
+	addons := newFakeAddons()
+	host := tailnetHost(t, addons)
+	for i := 0; i < perNode; i++ {
+		pairViaAddonAs(t, host, addons, fmt.Sprintf("%032x", i+1))
+	}
+	client := tailnetClient(t, addons)
+	_, err := client.ConnectTailnet(context.Background(), studio, host.Status().Port, "Air")
+	var needsCode *NeedsCodeError
+	if !errors.As(err, &needsCode) || !strings.Contains(err.Error(), "Too many Switchers on this device are paired") || client.Paired() {
+		t.Fatalf("error %v", err)
+	}
 }
 
 // The client too trusts a host only when it is certain the host is not the

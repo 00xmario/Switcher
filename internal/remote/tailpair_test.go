@@ -202,7 +202,7 @@ func pairThroughAs(t *testing.T, conn net.Conn, name, install string) (int, pair
 	var paired pairResponse
 	raw, _ := io.ReadAll(resp.Body)
 	json.Unmarshal(raw, &paired)
-	if resp.StatusCode != http.StatusOK && !strings.Contains(string(raw), pairFailed) {
+	if resp.StatusCode == http.StatusForbidden && !strings.Contains(string(raw), pairFailed) {
 		t.Errorf("a refusal said more than a wrong code would: %s", raw)
 	}
 	return resp.StatusCode, paired
@@ -249,21 +249,41 @@ func TestPairingAgainReplacesOnlyTheSameSwitchersPairing(t *testing.T) {
 		t.Fatalf("a malformed id replaced a pairing: %+v", host.Status().Devices)
 	}
 
+}
+
+// A device keeps at most perNode pairings. Beyond that, a new Switcher on
+// it is refused, however many it brings within the rate limit, unless one
+// of the device's pairings has gone unused for staleAfter; then that one
+// makes room.
+func TestNewSwitchersOnADeviceCannotPushOutOneInUse(t *testing.T) {
 	many := newFakeAddons()
 	crowded := tailnetHost(t, many)
 	var tokens []string
-	for i := 0; i < perNode+1; i++ {
+	for i := 0; i < perNode; i++ {
 		_, p := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", i+1))
 		tokens = append(tokens, p.Token)
 	}
-	if n := len(crowded.Status().Devices); n != perNode {
-		t.Fatalf("%d pairings kept for one device", n)
+	if status, _ := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", 100)); status != http.StatusConflict {
+		t.Fatalf("one more Switcher on a full device: %d", status)
 	}
-	if _, ok := crowded.authenticate(tokens[0]); ok {
-		t.Fatal("the oldest pairing was kept over the newest")
+	for i, token := range tokens {
+		if _, ok := crowded.authenticate(token); !ok {
+			t.Fatalf("pairing %d was pushed out", i)
+		}
 	}
-	if _, ok := crowded.authenticate(tokens[perNode]); !ok {
-		t.Fatal("the newest pairing is gone")
+	// One that has gone unused for two weeks makes room; the others stay.
+	crowded.mu.Lock()
+	crowded.state.Devices[3].CreatedAt = time.Now().Add(-30 * 24 * time.Hour)
+	crowded.state.Devices[3].LastSeen = time.Now().Add(-20 * 24 * time.Hour)
+	crowded.mu.Unlock()
+	status, newest := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", 101))
+	if status != http.StatusOK || len(crowded.Status().Devices) != perNode {
+		t.Fatalf("with an unused pairing: %d, %d pairings", status, len(crowded.Status().Devices))
+	}
+	for i, token := range append(tokens, newest.Token) {
+		if _, ok := crowded.authenticate(token); ok == (i == 3) {
+			t.Fatalf("pairing %d: kept %v", i, ok)
+		}
 	}
 }
 
