@@ -697,6 +697,74 @@ func TestLiveChangesDuringIdentityProbeAreFenced(t *testing.T) {
 	}
 }
 
+// A switch that leaves the login alone must still finish an interrupted one:
+// until then refreshes stay blocked for every account.
+func TestSettleFinishesAnInterruptedSwitch(t *testing.T) {
+	h := newHarness(t, false)
+	ctx := context.Background()
+	before, _ := h.manager.inspect(ctx)
+	next := before
+	next.File = fileValue{Data: rawCredential("b"), Exists: true}
+	next.Config = fileValue{Data: encoded(map[string]any{"oauthAccount": identityFor("b")}), Exists: true}
+	saved := journal{Version: 1, Paths: h.paths, TargetID: "claude-b", Before: before, After: next}
+	if err := writePrivate(h.manager.pendingPath(), fileValue{Data: encoded(saved), Exists: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.manager.writeSnapshot(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := h.accounts.Get("claude-a")
+	if _, err := h.manager.Synchronize(ctx, &a); err == nil {
+		t.Fatal("fixture: a pending switch should block token work")
+	}
+	loggedIn, err := h.manager.Settle(ctx)
+	if err != nil || !loggedIn {
+		t.Fatalf("logged in %v, err %v", loggedIn, err)
+	}
+	current, _ := h.manager.inspect(ctx)
+	if !reflectSnapshots(before, current) {
+		t.Fatal("the interrupted switch was not rolled back")
+	}
+	if left, _ := readPrivate(h.manager.pendingPath()); left.Exists {
+		t.Fatal("the journal stayed")
+	}
+	if _, err := h.manager.Synchronize(ctx, &a); err != nil {
+		t.Fatalf("token work still blocked: %v", err)
+	}
+	// A journal it cannot resolve is said, and leaves things as they are.
+	if err := writePrivate(h.manager.pendingPath(), fileValue{Data: encoded(saved), Exists: true}); err != nil {
+		t.Fatal(err)
+	}
+	foreign := encoded(map[string]any{"oauthAccount": identityFor("a"), "externalChange": "keep"})
+	if err := writePrivate(h.paths.ConfigFile, fileValue{Data: foreign, Exists: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.manager.Settle(ctx); err == nil {
+		t.Fatal("a foreign change was not reported")
+	}
+	if kept, _ := readPrivate(h.paths.ConfigFile); !bytes.Equal(kept.Data, foreign) {
+		t.Fatal("foreign change overwritten")
+	}
+}
+
+func TestSettleKnowsWhetherThereIsALogin(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, false)
+	if loggedIn, err := h.manager.Settle(ctx); err != nil || !loggedIn {
+		t.Fatalf("logged in %v, err %v", loggedIn, err)
+	}
+	if err := os.Remove(h.paths.CredentialsFile); err != nil {
+		t.Fatal(err)
+	}
+	if loggedIn, err := h.manager.Settle(ctx); err != nil || loggedIn {
+		t.Fatalf("logged in %v, err %v", loggedIn, err)
+	}
+	keychain := newHarness(t, true)
+	if loggedIn, err := keychain.manager.Settle(ctx); err != nil || !loggedIn {
+		t.Fatalf("keychain: logged in %v, err %v", loggedIn, err)
+	}
+}
+
 func TestInterruptedSwitchRecoveryDoesNotOverwriteForeignChanges(t *testing.T) {
 	h := newHarness(t, false)
 	ctx := context.Background()

@@ -175,6 +175,7 @@ type cliSetupClient struct {
 	Stage         string               `json:"stage"`
 	ReasonCode    string               `json:"reason_code,omitempty"`
 	NextStep      string               `json:"next_step,omitempty"`
+	LoginKept     bool                 `json:"login_kept,omitempty"`
 	Installation  cliSetupInstallation `json:"installation"`
 	Configuration cliSetupConfig       `json:"configuration"`
 	Accounts      cliSetupAccounts     `json:"accounts"`
@@ -260,6 +261,7 @@ func (a *API) handleCLISetup(w http.ResponseWriter, r *http.Request) {
 			client.ReasonCode = ""
 			client.NextStep = "Switch the native login from a Claude account card. Desktop sign-in is separate."
 			if a.Proxy != nil && a.Proxy.NativeLoginKept(target.provider) {
+				client.LoginKept = true
 				client.NextStep = "Claude Code uses the account selected in Switcher, through the Desktop relay. Its own login stays, so Remote Control keeps working."
 			}
 			client.Configuration = cliSetupConfig{Condition: status.Condition, Scope: "native_login"}
@@ -832,6 +834,7 @@ func (a *API) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if native, ok := a.Providers["claude"].(provider.NativeLoginProvider); ok {
 		response["claude_code"] = native.NativeStatus()
+		response["claude_code_login_kept"] = a.Proxy != nil && a.Proxy.NativeLoginKept("claude")
 	}
 	// A valid session cookie re-learns its CSRF token (localStorage was
 	// cleared but the browser kept the cookie).
@@ -1246,6 +1249,10 @@ func (a *API) handleActivate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such account"})
 			return
 		}
+		if errors.Is(err, proxy.ErrAccountUnusable) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": proxy.ErrAccountUnusable.Error()})
+			return
+		}
 		if result != nil {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "Claude Code login was not switched", "details": err.Error(), "backup": result.Backup})
 			return
@@ -1282,6 +1289,8 @@ func (a *API) activateForPairedMac(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such account"})
+	case errors.Is(err, proxy.ErrAccountUnusable):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": proxy.ErrAccountUnusable.Error()})
 	case err != nil && result != nil:
 		// Claude Code's login did not switch, for example while this Mac's
 		// Keychain is locked. The account the paired Macs use still does.

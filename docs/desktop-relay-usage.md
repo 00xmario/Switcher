@@ -17,14 +17,23 @@ environments and sessions are only found with the account that registered them,
 so rewriting the login loses them. The card then says **Use this account**, and
 `switcher status` calls the account Claude Code is signed in with its login.
 
-- A Claude Code that was already running keeps using its login, on that account,
-  until it restarts. It keeps running; it just does not follow a switch yet.
+- A Claude Code that was already running picks up the relay by itself within
+  moments, no restart needed (seen with Claude Code 2.1.318). One that has not
+  yet keeps running on its login, and until then does not follow a switch.
 - A Claude Code with no login still gets one from a switch.
+- Connecting doesn't change which account is used: the selection starts at the
+  account Claude Code is signed in with, if Switcher has it.
+- A switch to an account whose sign-in no longer works is refused, instead of
+  another account answering.
 - Features Claude Code decides from its own login, such as which models it
   offers, follow the login, not the selected account. Keep it signed in with
-  your largest plan.
-- Disconnecting the relay brings the old behavior back: a switch moves the login
-  again.
+  your largest plan. To change the login, run `/login` in Claude Code, or
+  disconnect the relay and switch; a Remote Control session registered with the
+  old login then stops.
+- Disconnecting the relay brings the old behavior back: Claude Code uses its
+  login again, which may not be the account that was selected, and a switch
+  moves the login.
+- While the relay is down, Claude Code's requests fail, but its login stays.
 
 ## Set up once
 

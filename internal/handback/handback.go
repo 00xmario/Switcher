@@ -577,7 +577,7 @@ func (m *Manager) setUp(ctx context.Context) ([]string, error) {
 	m.apply(false)
 	note("switcher", "done", "Switcher uses its accounts again.")
 	if c := m.deps.ClaudeCode; c != nil {
-		note("claude-code", "done", "Switcher follows Claude Code's login again; switch accounts as before.")
+		note("claude-code", "done", "Switcher manages Claude Code's account again; switch accounts as before.")
 	}
 	m.mu.Lock()
 	m.last = steps

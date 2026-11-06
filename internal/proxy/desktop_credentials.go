@@ -97,6 +97,8 @@ func (s *DesktopCredentialSource) TookOver(from, to string) {
 	s.manager.mu.Lock()
 	defer s.manager.mu.Unlock()
 	s.manager.recordAutoSwitchLocked("claude", "desktop", from, to)
+	// Anthropic refused it, so a pick at its limit has run its course.
+	delete(s.manager.manualHold, from)
 	// Requests that follow the selection stay on the same stand-in.
 	if from != "" && to != "" {
 		s.manager.claudeReroute[from] = to

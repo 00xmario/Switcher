@@ -12,7 +12,8 @@ import (
 )
 
 // Claude moves off an account that runs out of usage. Claude Code's own login
-// switches after a usage poll shows its account at the limit; a Claude Desktop
+// (or, with the login kept, the selected account its requests use) switches
+// after a usage poll shows its account at the limit; a Claude Desktop
 // conversation moves when Anthropic refuses one of its requests for that
 // reason (desktop_credentials.go). Both take the account with the most usage
 // left, and both follow the "Switch Claude automatically" setting.
@@ -158,6 +159,11 @@ func (m *Manager) ClaudeRoute(account string) string {
 		delete(m.claudeReroute, account)
 		return account
 	}
+	// Picked at its limit, perhaps for extra usage: it answers until Anthropic
+	// refuses it (TookOver).
+	if time.Now().Before(m.manualHold[account]) {
+		return account
+	}
 	// Keep the same stand-in while it has room, so a conversation does not
 	// hop between accounts and lose its cache.
 	if to := m.claudeReroute[account]; to != "" {
@@ -177,7 +183,8 @@ func (m *Manager) ClaudeRoute(account string) string {
 // usage left. It runs after a usage poll, outside every lock the poll holds,
 // on its own context so a switch is never cut off halfway, and moves away
 // from an account at most once per cooldown. It only acts while Claude Code
-// is signed in with an account Switcher manages.
+// is signed in with an account Switcher manages, or, with the login kept
+// (NativeLoginKept), on the selection instead.
 func (m *Manager) AutoSwitchNative() {
 	if m.HandedBack() || !m.claudeAutoOn() || !m.autoSwitching.CompareAndSwap(false, true) {
 		return
@@ -189,8 +196,7 @@ func (m *Manager) AutoSwitchNative() {
 			continue
 		}
 		// With the login kept the selection is what moves: it is the account
-		// Claude Code's requests use, and it needs no identity the login can
-		// carry.
+		// Claude Code's requests use.
 		kept := m.NativeLoginKept(providerID)
 		status := native.NativeStatus()
 		if !kept && status.Condition != "ready" {
@@ -212,7 +218,14 @@ func (m *Manager) AutoSwitchNative() {
 			m.mu.Unlock()
 			continue
 		}
-		to, err := m.takeoverLocked(providerID, from, !kept)
+		to, err := m.takeoverLocked(providerID, from, true)
+		if stand := m.claudeReroute[from]; kept && stand != "" {
+			// The relay already answers from this one (ClaudeRoute): stay on
+			// it, so a conversation keeps its cache.
+			if a, gone := m.store.Get(stand); gone == nil && a.Token.AccountID != "" && m.headroomLocked(a) > 0 {
+				to, err = stand, nil
+			}
+		}
 		if err == nil && to != "" {
 			m.autoSwitchAt[from] = time.Now().Add(autoSwitchRetry)
 		}

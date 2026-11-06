@@ -103,6 +103,7 @@ type Manager struct {
 	// Claude's automatic switching (autoswitch.go).
 	claudeAuto         func() bool
 	claudeCodeRouted   func() bool
+	claudeLoginKept    bool
 	autoSwitching      atomic.Bool
 	autoSwitchAt       map[string]time.Time
 	manualHold         map[string]time.Time
@@ -201,6 +202,7 @@ func New(st *store.Store, providers map[string]provider.Provider, registration [
 		hidden:             hidden,
 		managementKey:      state.ManagementKey,
 		nativeClaudeCommit: state.NativeClaudeCommit,
+		claudeLoginKept:    state.ClaudeLoginKept,
 	}, nil
 }
 
@@ -304,16 +306,17 @@ func (m *Manager) ActiveID(providerID string) string {
 // Code's), otherwise the proxy's active account. A kept login does not select
 // anything (NativeLoginKept), unless the proxy has no account yet.
 func (m *Manager) SelectedID(providerID string) string {
-	active := m.ActiveID(providerID)
 	if native, ok := m.providers[providerID].(provider.NativeLoginProvider); ok && native.NativeEnabled() {
-		if active != "" && m.NativeLoginKept(providerID) {
-			return active
+		if m.NativeLoginKept(providerID) {
+			if active := m.ActiveID(providerID); active != "" {
+				return active
+			}
 		}
 		if id := native.NativeStatus().ActiveID; id != "" {
 			return id
 		}
 	}
-	return active
+	return m.ActiveID(providerID)
 }
 
 // Activate selects an account explicitly within its provider. This is the
@@ -1070,6 +1073,7 @@ func (m *Manager) persistLocked() error {
 		ProviderOrder: order, HiddenProviders: hidden,
 		ManagementKey:      m.managementKey,
 		NativeClaudeCommit: m.nativeClaudeCommit,
+		ClaudeLoginKept:    m.claudeLoginKept,
 	})
 }
 

@@ -209,6 +209,22 @@ func executablePath() string {
 	return exe
 }
 
+// claudeCodeRouted reports whether Claude Code's settings send it through the
+// relay, also while the relay is down: its requests then fail, but its login
+// must not move. What cannot be read right now keeps the last answer.
+func claudeCodeRouted(setup func() desktoprelay.SetupStatus) func() bool {
+	var last bool
+	return func() bool {
+		switch s := setup(); {
+		case s.Routed:
+			last = true
+		case s.Condition != "unavailable" && s.Condition != "pending":
+			last = false
+		}
+		return last
+	}
+}
+
 // cachedFor answers check at most once per ttl: every relay request and every
 // account view asks, and the check reads a file.
 func cachedFor(ttl time.Duration, check func() bool) func() bool {
@@ -322,9 +338,12 @@ func run(port, desktopRelayPort int) {
 	proxyManager.SetClaudeAutoSwitch(settingsStore.AutoSwitchClaude)
 	// Once Claude Code's requests go through the Desktop relay, a switch
 	// leaves its login alone, and with it its Remote Control sessions.
-	proxyManager.SetClaudeCodeRouted(cachedFor(time.Second, func() bool {
-		return desktopRelay != nil && desktopRelay.SetupStatus(desktopSettingsPath()).Configured
-	}))
+	proxyManager.SetClaudeCodeRouted(cachedFor(time.Second, claudeCodeRouted(func() desktoprelay.SetupStatus {
+		if desktopRelay == nil {
+			return desktoprelay.SetupStatus{Condition: "not_configured"}
+		}
+		return desktopRelay.SetupStatus(desktopSettingsPath())
+	})))
 	// The device token exists for the menu bar app as soon as auth is on.
 	if settingsStore.Enabled() {
 		_, _ = settingsStore.EnsureDeviceToken()

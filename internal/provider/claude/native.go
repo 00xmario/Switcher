@@ -64,6 +64,16 @@ func (p *Provider) SwitchNative(ctx context.Context, id string, commit func(stri
 	}
 	return p.Native.SwitchWithReceipt(ctx, id, commit)
 }
+
+// SettleNative finishes an interrupted switch and says whether Claude Code has
+// a login. With native switching unavailable there is nothing to finish, and
+// nothing that may replace a login.
+func (p *Provider) SettleNative(ctx context.Context) (bool, error) {
+	if p.Native == nil {
+		return true, nil
+	}
+	return p.Native.Settle(ctx)
+}
 func (p *Provider) SyncNative(ctx context.Context, a *store.Account) (bool, error) {
 	if p.nativeError != nil {
 		return false, fmt.Errorf("%w: %v", provider.ErrNativeCredentialBusy, p.nativeError)

@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -11,12 +14,30 @@ import (
 	"switcher/internal/store"
 )
 
+// ErrAccountUnusable refuses a switch to an account whose credential does not
+// work: with the login kept nothing else would say so, and another account
+// would answer instead.
+var ErrAccountUnusable = errors.New("this account cannot be used right now; sign in to it again or try later")
+
+// nativeSettler is a native login that can finish what a switch finishes first
+// and say whether Claude Code has a login at this moment.
+type nativeSettler interface {
+	SettleNative(context.Context) (loggedIn bool, err error)
+}
+
 // SetClaudeCodeRouted wires whether Claude Code's requests go through the
 // Desktop relay on this computer. The answer must not depend on m.mu.
 func (m *Manager) SetClaudeCodeRouted(routed func() bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.claudeCodeRouted = routed
+}
+
+func (m *Manager) routed() bool {
+	m.mu.Lock()
+	routed := m.claudeCodeRouted
+	m.mu.Unlock()
+	return routed != nil && routed()
 }
 
 // NativeLoginKept reports that a switch leaves the provider's native login
@@ -26,21 +47,85 @@ func (m *Manager) SetClaudeCodeRouted(routed func() bool) {
 // environment is only found with the account that registered it. A Claude
 // Code without a login still gets one from a switch. Never call with m.mu held.
 func (m *Manager) NativeLoginKept(providerID string) bool {
-	m.mu.Lock()
-	routed := m.claudeCodeRouted
-	m.mu.Unlock()
-	if routed == nil || !routed() {
+	native, ok := m.providers[providerID].(provider.NativeLoginProvider)
+	if !ok || !native.NativeEnabled() {
 		return false
 	}
-	native, ok := m.providers[providerID].(provider.NativeLoginProvider)
-	return ok && native.NativeEnabled() && native.NativeStatus().Condition != "logged_out"
+	if !m.routed() {
+		m.forgetKeptLogin()
+		return false
+	}
+	status := native.NativeStatus()
+	if status.Condition == "logged_out" {
+		return false
+	}
+	m.alignKeptLogin(providerID, status)
+	return true
+}
+
+// alignKeptLogin keeps the selection from jumping when the login starts being
+// kept: until then the login was the selection, so the selection starts there,
+// once, also on the first start of a version that keeps it. A selection that
+// is gone, such as a removed account, falls back to the login the same way.
+func (m *Manager) alignKeptLogin(providerID string, status claudecode.Status) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.claudeLoginKept && m.active[providerID] != "" {
+		return
+	}
+	if status.Condition != "ready" && status.Condition != "unmanaged" {
+		return // Not known yet.
+	}
+	id := status.ActiveID
+	if id != "" {
+		if _, err := m.store.Get(id); err != nil {
+			id = ""
+		}
+	}
+	if m.claudeLoginKept && id == "" {
+		return
+	}
+	err := m.mutateStateLocked(func() {
+		m.claudeLoginKept = true
+		if id != "" && m.active[providerID] != id {
+			m.active[providerID] = id
+			m.selectionRevision[providerID]++
+		}
+	})
+	if err != nil {
+		log.Printf("proxy: save routing state: %v", err)
+	}
+}
+
+func (m *Manager) forgetKeptLogin() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.claudeLoginKept {
+		return
+	}
+	if err := m.mutateStateLocked(func() { m.claudeLoginKept = false }); err != nil {
+		log.Printf("proxy: save routing state: %v", err)
+	}
+}
+
+// keepLoginOnSwitch decides for one switch, on what is true right now rather
+// than on the last status read. It also finishes an interrupted switch, which
+// otherwise only a switch that writes the login would.
+func (m *Manager) keepLoginOnSwitch(ctx context.Context, native provider.NativeLoginProvider) (bool, error) {
+	if !m.routed() {
+		return false, nil
+	}
+	if settler, ok := native.(nativeSettler); ok {
+		return settler.SettleNative(ctx)
+	}
+	return native.NativeStatus().Condition != "logged_out", nil
 }
 
 // ActivateForClient switches an account for the proxy and, for Claude, Claude
 // Code's own login unless that login is kept (NativeLoginKept). The user's
 // switch and the automatic switch after an account runs out of usage
-// (AutoSwitchNative) both come here; proxy failover on a refused request still
-// selects only its route.
+// (AutoSwitchNative) both come here. Proxy failover on a refused request
+// selects only its route, which with a kept login is also the selection.
 func (m *Manager) ActivateForClient(ctx context.Context, id string) (*claudecode.SwitchResult, error) {
 	if m.HandedBack() {
 		return nil, ErrHandedBack
@@ -68,7 +153,25 @@ func (m *Manager) activateNative(ctx context.Context, id string, still func() bo
 		return nil, err
 	}
 	native, ok := m.providers[account.Provider].(provider.NativeLoginProvider)
-	if !ok || !native.NativeEnabled() || m.NativeLoginKept(account.Provider) {
+	if !ok || !native.NativeEnabled() {
+		return nil, m.Activate(id)
+	}
+	keep, err := m.keepLoginOnSwitch(ctx, native)
+	if err != nil {
+		// As when a switch of the login fails: nothing moved, and the caller
+		// says why.
+		return &claudecode.SwitchResult{}, err
+	}
+	if keep {
+		if _, err := m.PrepareAccount(ctx, id); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrAccountUnusable, err)
+		}
+		m.mu.Lock()
+		err := m.mutateStateLocked(func() { m.claudeLoginKept = true })
+		m.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		return nil, m.Activate(id)
 	}
 	accounts, err := m.store.List()

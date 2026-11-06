@@ -41,7 +41,8 @@ with the most usage left. Errors and limits are the provider's own.
 - **One click, every tool.** *Use in Claude Code* switches Claude Code's own
   login and Switcher's proxy together; running sessions follow within about
   30 seconds. Codex, the T3 Code hub and, if you want, Claude Desktop use the
-  account you pick.
+  account you pick. Through the Desktop relay, Claude Code uses the account you
+  pick and keeps its login, so Remote Control sessions survive a switch.
 - **Never stuck at a limit.** When an account runs out, Switcher moves on by
   itself. Codex retries the request on another paid account, with a banked
   reset before any Free account. Claude Code's login switches to the Claude

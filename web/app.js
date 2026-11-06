@@ -2220,7 +2220,7 @@ function cliSetupRowHTML(client) {
     other_provider: 'Another provider selected in file',
     misconfigured: 'Switcher entry differs from this server',
   };
-  const summary = claudeNative ? (nativeUnavailable ? 'Native login switching unavailable' : 'Native login switching available') : codex ? (descriptions[condition] || 'Config status unknown')
+  const summary = claudeNative ? (client.login_kept ? 'Uses the selected account through the Desktop relay' : nativeUnavailable ? 'Native login switching unavailable' : 'Native login switching available') : codex ? (descriptions[condition] || 'Config status unknown')
     : client.stage === 'protocol_validation_pending' ? 'Setup under validation' : 'Setup research';
   const readinessLabels = {
     oauth_coexistence_unverified: 'Native OAuth coexistence unverified',
@@ -2238,7 +2238,8 @@ function cliSetupRowHTML(client) {
     : 'Switcher account count unavailable';
   let detail = 'Native CLI configuration has not been checked.';
   if (claudeNative) detail = 'The account switch action writes Claude Code’s native login, preserving shared MCP credentials, project settings, and history. Running macOS sessions may take about 30 seconds to pick it up; reopen Code to apply immediately. This does not switch Claude Desktop’s signed-in account.';
-  if (nativeUnavailable) detail = client.next_step || 'Inspect the Claude Code login status before switching.';
+  if (client.login_kept) detail = client.next_step || detail;
+  else if (nativeUnavailable) detail = client.next_step || 'Inspect the Claude Code login status before switching.';
   const verification = client.verification || { condition: 'not_tested' };
   let routeTest = 'Switcher route not tested; native CLI request not tested.';
   if (['last_success', 'historical'].includes(verification.condition) && Number.isFinite(verification.last_success)) {
@@ -2352,7 +2353,7 @@ async function renderSettings() {
         ${ladderHTML(status.auto_use_reset)}
         <div class="settings-row set-row-icon">
           <span class="set-icon">${LOGOS.claude || ''}</span>
-          <div><strong>Switch Claude automatically</strong><span class="dim">Claude Code’s login and Claude Desktop conversations move to the Claude account with the most usage left.</span></div>
+          <div><strong>Switch Claude automatically</strong><span class="dim">Claude Code and Claude Desktop conversations move to the Claude account with the most usage left.</span></div>
           <label class="switch-wrap"><input type="checkbox" id="auto-switch-claude" aria-label="Switch Claude automatically when an account runs out of usage" ${status.auto_switch_claude !== false ? 'checked' : ''}><span class="switch-visual"></span></label>
         </div>
         <div class="settings-row">
@@ -2361,7 +2362,7 @@ async function renderSettings() {
         </div>
       </div>
       ${code ? `<div class="settings-card">
-        <div class="set-card-head"><h3>Claude Code login</h3><p class="settings-sub">${code.available ? '“Use in Claude Code” switches Claude Code’s own login. Running sessions pick it up within about 30 seconds.' : 'Switching the Claude Code login is unavailable here.'}</p></div>
+        <div class="set-card-head"><h3>Claude Code login</h3><p class="settings-sub">${status.claude_code_login_kept ? 'Claude Code stays signed in with this account, which keeps its Remote Control sessions. Its requests use the account you select, through the Desktop relay.' : code.available ? '“Use in Claude Code” switches Claude Code’s own login. Running sessions pick it up within about 30 seconds.' : 'Switching the Claude Code login is unavailable here.'}</p></div>
         <div class="cc-login ${code.condition === 'ready' ? 'is-ok' : ''}">
           <span class="cc-logo">${LOGOS.claude || ''}</span>
           <div><strong>Claude Code</strong>${code.email ? `<span class="set-email" tabindex="0" title="Hover to show">${escapeHTML(code.email)}</span>` : '<span>No account</span>'}</div>

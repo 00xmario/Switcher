@@ -121,6 +121,91 @@ func TestCachedForChecksOncePerPeriod(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeRoutedKeepsTheLastAnswerWhenItCannotTell(t *testing.T) {
+	var status desktoprelay.SetupStatus
+	routed := claudeCodeRouted(func() desktoprelay.SetupStatus { return status })
+	for _, step := range []struct {
+		name   string
+		status desktoprelay.SetupStatus
+		want   bool
+	}{
+		{"never connected", desktoprelay.SetupStatus{Condition: "not_configured"}, false},
+		{"unreadable before it was ever routed", desktoprelay.SetupStatus{Condition: "unavailable"}, false},
+		{"connected", desktoprelay.SetupStatus{Condition: "configured", Routed: true}, true},
+		{"relay down", desktoprelay.SetupStatus{Condition: "unavailable", Routed: true}, true},
+		{"settings unreadable for a moment", desktoprelay.SetupStatus{Condition: "unavailable"}, true},
+		{"halfway through an operation", desktoprelay.SetupStatus{Condition: "pending"}, true},
+		{"edited by hand", desktoprelay.SetupStatus{Condition: "changed"}, false},
+		{"connected again", desktoprelay.SetupStatus{Condition: "configured", Routed: true}, true},
+		{"disconnected", desktoprelay.SetupStatus{Condition: "not_configured"}, false},
+	} {
+		status = step.status
+		if got := routed(); got != step.want {
+			t.Fatalf("%s: routed %v", step.name, got)
+		}
+	}
+}
+
+// The real setup through connect, a stopped relay and disconnect.
+func TestClaudeCodeRoutedFollowsTheRealSetup(t *testing.T) {
+	previous := http.DefaultTransport
+	http.DefaultTransport = mainDesktopBlockedTransport{}
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(root, "claude", "settings.json")
+	// A fixed port, as in real use: a restart comes back at the same address.
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := free.Addr().(*net.TCPAddr).Port
+	free.Close()
+	cfg := desktoprelay.Config{DataRoot: filepath.Join(root, "relay"), Port: port, Transport: mainDesktopBlockedTransport{},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("fixture blocks tunnel egress")
+		}}
+	ctx := context.Background()
+	m, err := resumeDesktopRelay(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close(ctx) })
+	routed := claudeCodeRouted(func() desktoprelay.SetupStatus { return m.SetupStatus(settings) })
+	if routed() {
+		t.Fatal("routed before connecting")
+	}
+	if _, err := m.Configure(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	if !routed() {
+		t.Fatal("not routed after connecting")
+	}
+	if err := m.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !routed() {
+		t.Fatal("a relay that is down moved the login")
+	}
+	resumed, err := resumeDesktopRelay(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.Close(ctx) })
+	routed = claudeCodeRouted(func() desktoprelay.SetupStatus { return resumed.SetupStatus(settings) })
+	if !routed() {
+		t.Fatal("not routed after a restart")
+	}
+	if _, err := resumed.RestoreSetup(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	if routed() {
+		t.Fatal("still routed after disconnecting")
+	}
+}
+
 func TestDesktopRelayPortValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

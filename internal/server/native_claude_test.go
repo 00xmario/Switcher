@@ -22,6 +22,15 @@ type nativeClaudeFixture struct {
 	*recheckProvider
 	bridge         *claudecode.Manager
 	statusOverride *claudecode.Status
+	refreshErr     error
+}
+
+func (p *nativeClaudeFixture) IsExpired(store.Account) bool { return p.refreshErr != nil }
+func (p *nativeClaudeFixture) Refresh(context.Context, *store.Account) error {
+	return p.refreshErr
+}
+func (p *nativeClaudeFixture) SettleNative(ctx context.Context) (bool, error) {
+	return p.bridge.Settle(ctx)
 }
 
 func (*nativeClaudeFixture) ID() string          { return "claude" }
@@ -154,8 +163,33 @@ func TestARoutedClaudeCodeKeepsItsLoginFiles(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://127.0.0.1:8787/api/cli-setup", nil)
 	req.RemoteAddr = "127.0.0.1:2222"
 	api.handleCLISetup(cli, req)
-	if !strings.Contains(cli.Body.String(), "Remote Control keeps working") {
+	if !strings.Contains(cli.Body.String(), "Remote Control keeps working") || !strings.Contains(cli.Body.String(), `"login_kept":true`) {
 		t.Fatalf("setup row does not say the login stays: %s", cli.Body.String())
+	}
+}
+
+func TestARoutedClaudeCodeRefusesAnAccountThatCannotSignIn(t *testing.T) {
+	api, manager, paths, prefs, session, p := nativeClaudeFixtureAPI(t)
+	manager.SetClaudeCodeRouted(func() bool { return true })
+	p.refreshErr = provider.ErrReloginRequired
+	mux := http.NewServeMux()
+	api.Register(mux)
+	gate := (&AuthGate{Store: prefs}).Wrap(mux)
+	before, _ := os.ReadFile(paths.CredentialsFile)
+	r := httptest.NewRequest("POST", "http://127.0.0.1:8787/api/accounts/claude-b/activate", nil)
+	r.RemoteAddr = "127.0.0.1:2222"
+	r.AddCookie(&http.Cookie{Name: "switcher_session", Value: session})
+	r.Header.Set("X-Switcher-CSRF", prefs.CSRFToken())
+	w := httptest.NewRecorder()
+	gate.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "sign in to it again") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if manager.ActiveID("claude") != "claude-a" {
+		t.Fatalf("selection moved to %q", manager.ActiveID("claude"))
+	}
+	if after, _ := os.ReadFile(paths.CredentialsFile); string(after) != string(before) {
+		t.Fatal("the login changed")
 	}
 }
 

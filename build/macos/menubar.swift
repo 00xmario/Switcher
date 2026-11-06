@@ -2174,7 +2174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 let check = NSImageView(frame: layout.checkmark)
                 check.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
                 check.contentTintColor = accentColor
-                check.toolTip = account.native_switch_available == true ? "Claude Code native login active" : "Proxy account active"
+                check.toolTip = account.native_switch_available == true ? "Claude Code native login active" : "Account in use"
                 row.addSubview(check)
             }
             if let badge {
