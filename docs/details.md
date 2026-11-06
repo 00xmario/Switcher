@@ -235,6 +235,19 @@ required; OpenCode Go uses its own API key.
   Bar colors are shared by compact cards, expanded cards, and usage charts.
 - **T3 Code hub**: speaks CLIProxyAPI's management protocol, so T3 Code
   shows every account's quota from one place.
+- **Changes show at once**: the dashboard and the menu bar wait on
+  `GET /api/state/changes?since=<etag>`, which answers
+  `{"etag": "…", "changed": true}` as soon as `/api/state` differs from that
+  tag (at once for an empty or stale one) and `"changed": false` with the
+  same tag after 25 seconds. A switch made on a paired computer, on the host,
+  or by automatic switching shows within about half a second, also in an
+  open menu. One watcher per server runs only while something waits; it
+  compares `/api/state` as a paired device would see it, without the
+  relay's count of replies in flight, every half second, and at once after
+  a change made on that Switcher. The route is guarded like `/api/state`;
+  paired Macs may use the host's, the phone page may not. The dashboard
+  keeps polling every four seconds and the menu every minute, which also
+  covers an older server; a hidden tab holds no wait open.
 - **Menu bar app**: the macOS app supervises the server, shows every
   account's usage and plan, switches, refreshes, and updates itself. The
   Copilot mark follows the menu's light or dark appearance. It retries an
@@ -374,8 +387,9 @@ Switcher; authentication resets to off.
 preparation path using six synthetic accounts and bundled logos. The menu
 keeps prepared views, patches changed providers, caches blurred email images,
 and reuses formatters and text measurements. It updates countdowns on open.
-State polling compares only menu-visible data; hidden web tabs pause polling,
-and unchanged account cards retain their DOM nodes.
+State polling compares only menu-visible data; hidden web tabs pause polling
+and their wait for changes, and unchanged account cards retain their DOM
+nodes.
 
 Run `make verify` before creating a tag. The same Go, race, vet, web-state,
 Swift menu, and cross-platform build checks run on pushes and pull requests
