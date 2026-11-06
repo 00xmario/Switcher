@@ -10,21 +10,23 @@ import (
 // Tailscale add-on.
 type remoteStatus struct {
 	Host *struct {
-		Enabled   bool     `json:"enabled"`
-		Listening bool     `json:"listening"`
-		Name      string   `json:"name"`
-		Port      int      `json:"port"`
-		LAN       []string `json:"lan"`
-		Tailscale []string `json:"tailscale"`
-		Error     string   `json:"error,omitempty"`
-		Pairing   *struct {
+		Enabled        bool     `json:"enabled"`
+		TailnetPairing bool     `json:"tailnet_pairing"`
+		Listening      bool     `json:"listening"`
+		Name           string   `json:"name"`
+		Port           int      `json:"port"`
+		LAN            []string `json:"lan"`
+		Tailscale      []string `json:"tailscale"`
+		Error          string   `json:"error,omitempty"`
+		Pairing        *struct {
 			Code      string `json:"code"`
 			ExpiresAt string `json:"expires_at"`
 		} `json:"pairing,omitempty"`
 		Devices []struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			LastSeen string `json:"last_seen,omitempty"`
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			LastSeen  string `json:"last_seen,omitempty"`
+			Tailscale string `json:"tailscale,omitempty"`
 		} `json:"devices"`
 	} `json:"host,omitempty"`
 	Client struct {

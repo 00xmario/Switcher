@@ -2,8 +2,10 @@ package remote
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -147,6 +150,32 @@ func (t *Tailnet) SyncForwarding() {
 		if resp.StatusCode == http.StatusNoContent {
 			t.mu.Lock()
 			t.sentForward = control + on
+			t.mu.Unlock()
+		}
+	}
+}
+
+// StopForwarding has a running add-on stop passing tailnet connections on,
+// and waits for its answer, before the host listener closes: once the port
+// is free another program could take it, and the add-on must not hand it
+// the user's devices. The host calls it under its lock, so it asks nothing
+// of the host.
+func (t *Tailnet) StopForwarding() {
+	t.mu.Lock()
+	control, token := t.control, t.token
+	t.mu.Unlock()
+	if control == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+control+"/forwarding?on=0", nil)
+	req.Header.Set("X-Switcher-Tailnet", token)
+	if resp, err := t.client.Do(req); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent {
+			t.mu.Lock()
+			t.sentForward = control + "0"
 			t.mu.Unlock()
 		}
 	}
@@ -538,29 +567,79 @@ func (t *Tailnet) Addresses() []string {
 	return out
 }
 
+// whoIsBehind asks the add-on which tailnet device is behind one of the
+// connections it forwarded to the host listener: conn is the id its
+// preamble carried, from the loopback address the host saw it come from.
+// The add-on answers only for a connection that is still open, from that
+// same address, with what its own node's Tailscale says.
+func (t *Tailnet) whoIsBehind(ctx context.Context, conn, from string) (tailnetIdentity, error) {
+	t.mu.Lock()
+	control, token := t.control, t.token
+	t.mu.Unlock()
+	if control == "" {
+		return tailnetIdentity{}, errors.New("the Tailscale add-on is not running")
+	}
+	query := url.Values{"conn": {conn}, "from": {from}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+control+"/whois?"+query.Encode(), nil)
+	if err != nil {
+		return tailnetIdentity{}, err
+	}
+	req.Header.Set("X-Switcher-Tailnet", token)
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return tailnetIdentity{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return tailnetIdentity{}, fmt.Errorf("the Tailscale add-on does not know that connection (%d)", resp.StatusCode)
+	}
+	var id tailnetIdentity
+	if err := decodeOne(resp.Body, 64<<10, &id); err != nil {
+		return tailnetIdentity{}, err
+	}
+	return id, nil
+}
+
+// identityHeader carries, in the add-on's answer to a CONNECT that asked
+// for it, what Tailscale says about the node the tunnel reached.
+const identityHeader = "X-Switcher-Identity"
+
 // Dial reaches address through the tailnet, or reports false when the add-on
 // is not running, the address is not on the tailnet or the add-on cannot reach
 // it; the caller then dials directly, through the Tailscale app if installed.
 func (t *Tailnet) Dial(ctx context.Context, address string) (net.Conn, bool, error) {
+	conn, _, handled, err := t.dial(ctx, address, false)
+	return conn, handled, err
+}
+
+// dialIdentified is Dial that also has the add-on say which node the tunnel
+// reached, as its own node's Tailscale sees it. The identity is nil when
+// the add-on could not tell.
+func (t *Tailnet) dialIdentified(ctx context.Context, address string) (net.Conn, *tailnetIdentity, bool, error) {
+	return t.dial(ctx, address, true)
+}
+
+func (t *Tailnet) dial(ctx context.Context, address string, identify bool) (net.Conn, *tailnetIdentity, bool, error) {
 	host, _, _ := net.SplitHostPort(address)
-	if !onTailnet(host) {
-		return nil, false, nil
+	// The address goes into the CONNECT line as it is.
+	if !onTailnet(host) || strings.ContainsAny(address, " \t\r\n") {
+		return nil, nil, false, nil
 	}
 	// Only a signed-in add-on handles tailnet addresses; otherwise they go
 	// to the Tailscale app, if one is installed.
 	if t.Status().State != "Running" {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	t.mu.Lock()
 	control, token := t.control, t.token
 	t.mu.Unlock()
 	if control == "" {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	d := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", control)
 	if err != nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	deadline := time.Now().Add(20 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -569,25 +648,49 @@ func (t *Tailnet) Dial(ctx context.Context, address string) (net.Conn, bool, err
 	conn.SetDeadline(deadline)
 	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
 	defer stop()
-	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nX-Switcher-Tailnet: %s\r\n\r\n", address, address, token)
+	ask := ""
+	if identify {
+		ask = "X-Switcher-Whois: 1\r\n"
+	}
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nX-Switcher-Tailnet: %s\r\n%s\r\n", address, address, token, ask)
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 	if err != nil || resp.StatusCode != http.StatusOK {
 		conn.Close()
 		if ctx.Err() != nil {
-			return nil, true, ctx.Err()
+			return nil, nil, true, ctx.Err()
 		}
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if !stop() {
 		conn.Close()
-		return nil, true, ctx.Err()
+		return nil, nil, true, ctx.Err()
 	}
 	conn.SetDeadline(time.Time{})
-	if br.Buffered() > 0 {
-		return &prefixedConn{Conn: conn, r: br}, true, nil
+	var id *tailnetIdentity
+	if identify {
+		id = decodeIdentityHeader(resp.Header.Get(identityHeader))
 	}
-	return conn, true, nil
+	if br.Buffered() > 0 {
+		return &prefixedConn{Conn: conn, r: br}, id, true, nil
+	}
+	return conn, id, true, nil
+}
+
+// decodeIdentityHeader reads the add-on's identity header, or returns nil.
+func decodeIdentityHeader(value string) *tailnetIdentity {
+	if value == "" || len(value) > 16<<10 {
+		return nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil
+	}
+	var id tailnetIdentity
+	if decodeOne(bytes.NewReader(raw), 16<<10, &id) != nil || cleanIdentity(&id) != nil {
+		return nil
+	}
+	return &id
 }
 
 type prefixedConn struct {

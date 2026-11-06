@@ -525,11 +525,18 @@ func run(port, desktopRelayPort int) {
 		}
 		remoteHost.AlsoReachableAt(tailnet.Addresses)
 		remoteClient.UseTailnet(tailnet.Dial)
+		// Pairing without a code: the add-on says, from Tailscale, which of
+		// the user's devices is behind a connection, on either side.
+		remoteHost.IdentifyThrough(tailnet)
+		remoteClient.IdentifyThrough(tailnet)
+		remoteHost.BeforeStop(tailnet.StopForwarding)
 		remoteHost.Start()
 		tailnet.ForwardWhen(remoteHost.Listening)
 		tailnet.Start()
-		defer remoteHost.Close()
+		// The host closes first, with the add-on told to stop forwarding to
+		// its port before that, and the add-on after.
 		defer tailnet.Close()
+		defer remoteHost.Close()
 	}
 	if desktopRelay != nil {
 		remoteClient.OnChange(func(connected bool) {

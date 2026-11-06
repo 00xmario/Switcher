@@ -11,14 +11,66 @@ each other out.
 
 ## Set up
 
-1. On the host: **Settings → Share between Macs → Share this Switcher**, then
-   **Pair a Mac**. A code such as `K7QF-M2XP` is valid for ten minutes.
-2. On the client: the same card lists Switchers found on your network. Click
-   **Connect**, enter the code and connect. Away from home, enter the host's
-   Tailscale name or address instead.
+1. On the host: **Settings → Share between Macs → Share this Switcher**.
+2. On the client: the same card lists the Switchers found on your network and
+   in your tailnet. Click **Connect**.
+   - Over Tailscale, your own Macs connect without a code: if both Macs are
+     signed in to the same Tailscale account, the client is ready right away.
+   - Otherwise the host asks for a code: click **Pair a Mac** on the host and
+     enter the code it shows, such as `K7QF-M2XP`, valid for ten minutes.
+   Away from home, enter the host's Tailscale name or address instead.
 
 macOS may ask once whether Switcher may accept incoming connections on the
 host; allow it.
+
+### Without a code, over Tailscale
+
+A Mac signed in to the same Tailscale account as the host, in the same
+tailnet, pairs without a code: install Switcher, turn on **Away from home**
+(or use the Tailscale app), pick the host and connect. No provider logins are
+needed on it. A host found on your network that is in your tailnet too is
+paired over Tailscale; afterwards the client uses whichever of its addresses
+answers first, as always. The host decides with Tailscale's word on who is
+calling, never with anything the other Mac sends:
+
+- Both sides check. The host asks Tailscale which device is behind the
+  connection; the client asks its own Tailscale which device it reached
+  before it sends anything, and pins the certificate presented on that same
+  connection. The client also refuses its own computer, and a device that
+  answers under another Tailscale name than the one it asked for.
+- Only the same Tailscale user's own devices count, compared by Tailscale's
+  stable user and device ids: not another user of a shared tailnet, not a
+  tagged device (it belongs to no user), not a device shared in from another
+  tailnet, not an expired one, and not one that routes traffic for other
+  machines (a subnet router, exit node or app connector), since anyone behind
+  it would look like it. A connection from the host itself does not count
+  either: any account on that computer can make one.
+- Everything else uses the code, as before. A refusal looks exactly like a
+  wrong code, and attempts are limited per device and per address.
+- Tailscale vouches for devices, not for the accounts and programs on them.
+  Anything that can send traffic as one of your devices (another account on
+  it, a container or virtual machine behind it) can pair from it, and
+  anything listening on port 8788 of one of your devices can pose as a host
+  to your other devices. If other people use one of your Tailscale devices,
+  turn this off on your hosts and pair with codes.
+
+On the host, **Let my own Tailscale devices connect without a code** (on by
+default, under **Share this Switcher**; `switcher share tailnet off`) turns
+this off: then every Mac needs a code. A Mac paired this way is listed as
+**Paired via Tailscale** and is removed like any other. If it pairs again,
+its new pairing replaces the old one.
+
+## Switching hosts
+
+With more than one Mac that shares, a client lists the others under **Other
+Switchers**. **Use this one** asks once, then pairs with the new host first
+(without a code over Tailscale, or with the code it asks for) and only then
+stops using the old one, which also drops the client's pairing. If the new
+host cannot be reached or refuses, the client keeps using the old host. On
+the command line: `switcher connect <other host> --yes`.
+
+A Mac that shares cannot use another Switcher at the same time: it would pass
+accounts in a circle. Turn off sharing on it first.
 
 ## Away from home
 
@@ -31,7 +83,8 @@ anywhere, turn on **Away from home** in the same card on both Macs:
 2. Click **Sign in with Tailscale** and sign in with a free Tailscale account,
    the same one on every Mac.
 3. The Macs now reach each other over Tailscale wherever they are. Switchers
-   in your tailnet also appear in the list of hosts to connect to.
+   in your tailnet also appear in the list of hosts to connect to, and your
+   own Macs connect to them without a code.
 
 The add-on joins your tailnet as its own device (`switcher-<mac name>`); it
 installs no VPN and needs no admin password, and only Switcher's traffic uses
@@ -42,7 +95,9 @@ Tailscale's coordination service sees which devices are connected, not the
 traffic, which is end-to-end encrypted. Switcher checks the add-on against the
 checksum built into the app before every start and restarts it if it stops.
 **Remove add-on and sign out** deletes it again. If you already run the Tailscale app, Switcher also works with that
-without the add-on.
+without the add-on: it finds hosts whose add-on is in your tailnet, and asks
+the Tailscale app, read-only (`tailscale status` and `tailscale whois`), who
+is at the other end when pairing without a code.
 
 ## What follows the host
 
@@ -107,10 +162,21 @@ not take updates from its clients yet: update it on the host once.
   certificate, and a fake host cannot learn the code or get the client to
   trust it. Five wrong codes invalidate a code, and a network address that
   keeps guessing is refused for ten minutes.
+- Pairing without a code rests on Tailscale's device authentication instead
+  (see above). The host learns who is calling only from Tailscale: for a
+  connection through its add-on, from the add-on, which marks each
+  connection it forwards with a random id the host asks about; for one
+  through the Tailscale app, from `tailscale whois`, and only for a
+  connection that reached the host's own Tailscale address. A connection from
+  the local network has no Tailscale identity, whatever it claims. The client
+  checks the host the same way and pins the certificate of that very
+  connection. Ten attempts per device and per address in ten minutes.
 - Only paired Macs are served, with their own revocable token, and only for
   account views and actions, waiting for the accounts to change, provider
-  proxies, the hub, Claude inference and updating the host. The wait answers
-  only an opaque tag and whether the accounts changed. An update installs only the newest official release,
+  proxies, the hub, Claude inference, updating the host and dropping their
+  own pairing, which a client does when it disconnects or switches to another
+  host. The wait answers only an opaque tag and whether the accounts changed.
+  An update installs only the newest official release,
   checked against its published SHA-256 (and its signature on a Mac), and a
   host never waits on a password prompt for it. Tokens are never sent to
   clients.
@@ -125,7 +191,22 @@ not take updates from its clients yet: update it on the host once.
 add-on is `cmd/switcher-tailnet`, a separate Go module built on `tsnet`: it
 forwards its tailnet port 8788 to the local host listener and offers Switcher
 a token-protected loopback CONNECT proxy and status endpoint. It exits when
-Switcher closes its stdin. The client's server forwards
+Switcher closes its stdin.
+
+Pairing without a code: each connection the add-on forwards starts with
+`SWITCHER-TAILNET <random id>` before TLS, and the add-on keeps the id with
+the tailnet address behind it while the connection is open (it forgets it
+before the connection closes). The host's `POST /remote/pair/tailnet` asks the
+add-on's `GET /whois?conn=<id>&from=<loopback address>`, which answers only
+for a live id from that same port, with what its node's Tailscale says
+(`internal/remote/tailpair.go`, `cmd/switcher-tailnet/identity.go`). A loopback
+address alone proves nothing: any program on the Mac can connect from
+loopback, and a closed connection's port can be reused at once. A CONNECT with
+`X-Switcher-Whois: 1` gets the reached node's identity back in its answer, so
+the client checks the very tunnel it then pairs over. Without the add-on,
+`internal/remote/identity.go` runs the Tailscale command line, read-only, with
+a five-second limit and bounded output. The decision itself
+(`notOwnDevice`, `hostAdmits`) is one function on both sides. The client's server forwards
 `/api/accounts/…`, `/api/providers/…`, `/api/usage/refresh`, provider paths and
 `/v0/management/…`, merges `/api/state` with its local fields, and gives the
 Desktop relay a remote inference hook. It answers its own

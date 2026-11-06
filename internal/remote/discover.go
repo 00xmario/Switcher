@@ -19,13 +19,20 @@ import (
 const serviceType = "_switcher._tcp"
 const dnssd = "/usr/bin/dns-sd"
 
-// Found is a Switcher host advertised on the local network.
+// Found is a Switcher host advertised on the local network or seen in the
+// tailnet. Tailscale marks one found in the tailnet, which may let this
+// computer in without a code; Tailnet is the Tailscale name of one found on
+// the local network that is in the tailnet too. Current is the host this
+// computer is paired with.
 type Found struct {
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	Port    int    `json:"port"`
-	Self    bool   `json:"self,omitempty"`
-	fp      string
+	Name      string `json:"name"`
+	Address   string `json:"address"`
+	Port      int    `json:"port"`
+	Self      bool   `json:"self,omitempty"`
+	Tailscale bool   `json:"tailscale,omitempty"`
+	Tailnet   string `json:"tailnet,omitempty"`
+	Current   bool   `json:"current,omitempty"`
+	fp        string
 }
 
 // advertise registers this host until the returned stop function runs.

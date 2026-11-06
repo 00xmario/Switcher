@@ -124,7 +124,9 @@ required; OpenCode Go uses its own API key.
   storage and credential-overriding environment variables block the operation
   with an explanation. See [the source analysis and comparison](claude-swap-analysis.md).
 - **Share between Macs**: let your other Macs use one Mac's accounts. Pair once
-  with a code (Switchers on your network are found automatically). The optional
+  with a code (Switchers on your network are found automatically), or, for
+  your own Macs on Tailscale, without one. A client switches between hosts
+  in one step and keeps the old one if the new one fails. The optional
   **Away from home** add-on, downloaded only when turned on, connects your Macs
   over Tailscale from anywhere. Accounts, tokens and every provider request stay on
   that Mac; the other Macs' account views, Codex, T3 Code hub, Claude Code and
@@ -364,6 +366,22 @@ environment; a terminal-only override needs the CLI command. The first
   on the LAN, so only enable this on networks you trust.
   Disabling authentication or invalidating LAN prerequisites denies dashboard
   access immediately, including while a restart is pending or fails.
+- **Sharing between Macs.** The host listener (port 8788, its own pinned
+  certificate) drops connections from outside private, link-local and
+  Tailscale addresses before TLS. Pairing needs a code proved in both
+  directions, or, for the user's own Tailscale devices, Tailscale's device
+  authentication: the host takes who is calling only from Tailscale (its
+  add-on, for connections it forwarded and marked with a random id, or the
+  Tailscale app's `whois`, for connections to the host's own Tailscale
+  address), never from the request, and admits only an untagged device of
+  the same Tailscale user in the same tailnet that is not shared in, not
+  expired, routes no traffic for other machines and is not the host itself.
+  The client checks the host the same way before it sends anything and pins
+  the certificate of that same connection. Refusals look like a wrong code;
+  attempts are limited per device and per address. **Let my own Tailscale
+  devices connect without a code** turns it off. Paired Macs get revocable
+  tokens, stored only as hashes on the host; account tokens never leave the
+  host. See [sharing](sharing.md#without-a-code-over-tailscale).
 - **Phone access, opt-in and tailnet-only.** The Tailscale add-on serves a
   small phone page over HTTPS with Tailscale's certificate. It admits only
   your own Tailscale devices, and Switcher admits only phones approved on

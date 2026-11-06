@@ -31,6 +31,7 @@ Over SSH, forward it with `ssh -L 8787:127.0.0.1:8787` first.
 | Desktop restart and session sync | yes | no: restart Desktop yourself; sync needs macOS |
 | Finding other Switchers | Bonjour (`dns-sd`) | Avahi (`avahi-browse`, `avahi-publish-service` from `avahi-utils`); without them, pair by address |
 | Away from home (Tailscale add-on) | yes | yes, `switcher-tailnet_<version>_linux_<arch>` |
+| Pairing without a code (your own Tailscale devices) | the add-on, or the Tailscale app's command line | the add-on, or the system `tailscale` command (`tailscaled`) |
 | Updates | Replaces Switcher.app | Replaces `~/.local/bin/switcher` and restarts in place; the tray restarts itself |
 | Reset alerts | macOS notifications from the menu bar app | desktop notifications from the tray |
 
@@ -98,6 +99,26 @@ Sharing listens on port 8788. If `ufw` or `firewalld` is on, allow it from
 your home network, for example `sudo ufw allow from 192.168.0.0/16 to any port 8788 proto tcp`.
 Switcher itself refuses connections from outside private, link-local and
 Tailscale addresses either way.
+
+## Tailscale without the add-on
+
+With `tailscaled` running (the Tailscale package, kernel networking as it
+installs by default), Switcher pairs your own devices without a code also
+without the add-on. It runs `tailscale status --json` and `tailscale whois
+--json`, read-only, from `PATH`, `/usr/bin/tailscale` or
+`/usr/local/bin/tailscale`; both work for any user, so no `sudo` or operator
+setting is needed. A connection counts only when it reached this computer's
+own Tailscale address, and never one from this computer itself, so another
+account on a shared Linux machine cannot pair with the Switcher on it without
+a code. Tailscale vouches for devices, not for the accounts on them: whatever
+can send traffic as one of your devices, such as another account or a
+container on it, can pair from it with your hosts. If others use one of your
+Tailscale devices, turn this off on your hosts with `switcher share tailnet
+off`. With `tailscaled --tun=userspace-networking`, connections arrive from
+loopback and carry no Tailscale identity, so pairing needs a code; the add-on
+works either way.
+Allow port 8788 on `tailscale0` if a firewall is on, for example
+`sudo ufw allow in on tailscale0 to any port 8788 proto tcp`.
 
 ## What only a real Linux desktop can confirm
 

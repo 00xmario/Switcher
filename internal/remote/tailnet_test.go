@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,7 +31,7 @@ func TestMain(m *testing.M) {
 
 func fakeAddon() {
 	token := os.Getenv("SWITCHER_TAILNET_TOKEN")
-	var phoneOn atomic.Bool
+	var phoneOn, forwarding atomic.Bool
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Switcher-Tailnet") != token {
@@ -46,6 +48,22 @@ func fakeAddon() {
 			json.NewEncoder(w).Encode(map[string]any{"forward": os.Getenv("SWITCHER_TAILNET_PHONE"),
 				"key": os.Getenv("SWITCHER_TAILNET_PHONE_KEY"), "args": os.Args[1:], "on": phoneOn.Load()})
 			return
+		case "/forwarding":
+			if r.Method == http.MethodPost {
+				forwarding.Store(r.URL.Query().Get("on") == "1")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"on": forwarding.Load()})
+			return
+		case "/whois":
+			// One live forwarded connection, from one loopback port.
+			if r.URL.Query().Get("conn") != strings.Repeat("a", 32) || r.URL.Query().Get("from") != "127.0.0.1:4242" {
+				http.Error(w, "no such connection", http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(ownIdentity())
+			return
 		}
 		if r.Method == http.MethodConnect {
 			_, port, _ := net.SplitHostPort(r.Host)
@@ -54,8 +72,13 @@ func fakeAddon() {
 				http.Error(w, "unreachable", http.StatusBadGateway)
 				return
 			}
+			identity := ""
+			if r.Header.Get("X-Switcher-Whois") == "1" {
+				b, _ := json.Marshal(newFakeAddons().host)
+				identity = identityHeader + ": " + base64.RawURLEncoding.EncodeToString(b) + "\r\n"
+			}
 			conn, rw, _ := w.(http.Hijacker).Hijack()
-			rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+			rw.WriteString("HTTP/1.1 200 Connection Established\r\n" + identity + "\r\n")
 			rw.Flush()
 			go func() { io.Copy(remote, rw.Reader); remote.Close() }()
 			go func() { io.Copy(conn, remote); conn.Close() }()
@@ -212,6 +235,98 @@ func TestClientPairsAndForwardsOverTheTailnet(t *testing.T) {
 	}
 	if s := client.Status(); s.Address != "switcher-studio.tail1234.ts.net" {
 		t.Fatalf("client address: %+v", s)
+	}
+}
+
+// The add-on names the device behind one of its forwarded connections only
+// for the id and port it forwarded, and the node a tunnel reached only when
+// asked; nothing else is taken for an identity.
+func TestTailnetAddonVouchesForItsOwnConnections(t *testing.T) {
+	tn := fakeTailnet(t, t.TempDir(), 1)
+	if _, err := tn.whoIsBehind(context.Background(), strings.Repeat("a", 32), "127.0.0.1:4242"); err == nil {
+		t.Fatal("an add-on that is not running answered")
+	}
+	if err := tn.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	id, err := tn.whoIsBehind(context.Background(), strings.Repeat("a", 32), "127.0.0.1:4242")
+	if err != nil || id.Peer.ID != "nAir11CNTRL" || notOwnDevice(id) != "" {
+		t.Fatalf("a forwarded connection: %+v %v", id, err)
+	}
+	for _, q := range [][2]string{{strings.Repeat("b", 32), "127.0.0.1:4242"}, {strings.Repeat("a", 32), "127.0.0.1:4243"}} {
+		if _, err := tn.whoIsBehind(context.Background(), q[0], q[1]); err == nil {
+			t.Fatalf("%v: answered for an unknown connection", q)
+		}
+	}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			io.WriteString(c, "hello")
+			c.Close()
+		}
+	}()
+	address := net.JoinHostPort(studio, portOf(ln.Addr().String()))
+	conn, host, handled, err := tn.dialIdentified(context.Background(), address)
+	if err != nil || !handled || host == nil || host.Peer.ID != "nStudio11CNTRL" {
+		t.Fatalf("an identified tunnel: %v %v %+v", err, handled, host)
+	}
+	if b, _ := io.ReadAll(conn); string(b) != "hello" {
+		t.Fatalf("through the tunnel: %q", b)
+	}
+	conn.Close()
+	if decodeIdentityHeader("not base64!") != nil || decodeIdentityHeader(base64.RawURLEncoding.EncodeToString([]byte(`{"self":{}}`))) != nil {
+		t.Fatal("a malformed identity header was taken")
+	}
+}
+
+// The add-on stops forwarding to the host's port before the host frees it,
+// so another program that takes the port then never gets the user's
+// devices, nor a client's trust.
+func TestHostHasTheAddonStopForwardingBeforeItsPortIsFreed(t *testing.T) {
+	host, err := NewHost(t.TempDir(), 0, hostMux(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	host.SetEnabled(true)
+	port := strconv.Itoa(host.Status().Port)
+	tn := fakeTailnet(t, t.TempDir(), host.Status().Port)
+	if err := tn.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	forwarding := func() bool {
+		tn.mu.Lock()
+		control, token := tn.control, tn.token
+		tn.mu.Unlock()
+		req, _ := http.NewRequest(http.MethodGet, "http://"+control+"/forwarding", nil)
+		req.Header.Set("X-Switcher-Tailnet", token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var state struct{ On bool }
+		json.NewDecoder(resp.Body).Decode(&state)
+		return state.On
+	}
+	tn.ForwardWhen(host.Listening)
+	if !forwarding() {
+		t.Fatal("not forwarding while sharing")
+	}
+	var openWhenStopped, forwardingWhenClosed atomic.Bool
+	host.BeforeStop(func() {
+		if c, err := net.Dial("tcp", "127.0.0.1:"+port); err == nil {
+			openWhenStopped.Store(true)
+			c.Close()
+		}
+		tn.StopForwarding()
+		forwardingWhenClosed.Store(forwarding())
+	})
+	host.SetEnabled(false)
+	if !openWhenStopped.Load() || forwardingWhenClosed.Load() || forwarding() {
+		t.Fatalf("listener open when the add-on stopped: %v; forwarding as the port was freed: %v", openWhenStopped.Load(), forwardingWhenClosed.Load())
 	}
 }
 

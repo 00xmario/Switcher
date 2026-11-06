@@ -25,10 +25,12 @@ func newClient(base string, token func() string) *client {
 	return &client{base: base, token: token, http: &http.Client{Timeout: 60 * time.Second}}
 }
 
-// apiError is an error answer from the server.
+// apiError is an error answer from the server. NeedsCode says a host
+// cannot be paired without a code.
 type apiError struct {
-	Status  int
-	Message string
+	Status    int
+	Message   string
+	NeedsCode bool
 }
 
 func (e *apiError) Error() string { return e.Message }
@@ -92,9 +94,12 @@ func answerError(status int, raw []byte) error {
 		Error        string `json:"error"`
 		Details      string `json:"details"`
 		AuthRequired bool   `json:"auth_required"`
+		NeedsCode    bool   `json:"needs_code"`
 	}
 	msg := ""
+	needsCode := false
 	if json.Unmarshal(raw, &body) == nil {
+		needsCode = body.NeedsCode
 		msg = body.Error
 		if body.Details != "" {
 			msg += ": " + body.Details
@@ -109,7 +114,7 @@ func answerError(status int, raw []byte) error {
 	if msg == "" {
 		msg = http.StatusText(status)
 	}
-	return &apiError{Status: status, Message: msg}
+	return &apiError{Status: status, Message: msg, NeedsCode: needsCode}
 }
 
 func loopback(host string) bool {

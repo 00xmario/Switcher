@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"switcher/internal/remote"
@@ -14,6 +16,7 @@ func (a *API) registerRemoteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/remote", a.handleRemoteStatus)
 	mux.HandleFunc("POST /api/remote/host", a.handleRemoteHost)
 	mux.HandleFunc("POST /api/remote/host/pairing", a.handleRemotePairing)
+	mux.HandleFunc("POST /api/remote/host/tailnet", a.handleRemoteTailnetPairing)
 	mux.HandleFunc("DELETE /api/remote/host/devices/{id}", a.handleRemoteRevoke)
 	mux.HandleFunc("GET /api/remote/discover", a.handleRemoteDiscover)
 	mux.HandleFunc("POST /api/remote/connect", a.handleRemoteConnect)
@@ -101,6 +104,26 @@ func (a *API) handleRemotePairing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, code)
 }
 
+// handleRemoteTailnetPairing lets the user's own Tailscale devices pair
+// with this host without a code, or makes them use one.
+func (a *API) handleRemoteTailnetPairing(w http.ResponseWriter, r *http.Request) {
+	if !a.hostControl(w, r) {
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body) != nil || body.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := a.RemoteHost.SetTailnetPairing(*body.Enabled); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not save the setting"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"host": a.RemoteHost.Status()})
+}
+
 func (a *API) handleRemoteRevoke(w http.ResponseWriter, r *http.Request) {
 	if !a.hostControl(w, r) {
 		return
@@ -123,21 +146,40 @@ func (a *API) handleRemoteDiscover(w http.ResponseWriter, r *http.Request) {
 		self = a.RemoteHost.Fingerprint()
 	}
 	found := []remote.Found{}
-	nearby := map[string]bool{}
+	nearby := map[string]int{}
 	for _, f := range remote.Discover(ctx, self) {
 		if !f.Self {
+			nearby[remote.TailnetHostname(f.Name)] = len(found)
 			found = append(found, f)
-			nearby[remote.TailnetHostname(f.Name)] = true
 		}
 	}
-	// Switchers in the user's tailnet, reachable from anywhere. One already
-	// found nearby is listed once, by its faster local address.
+	// Switchers in the user's tailnet, reachable from anywhere: those the
+	// add-on sees, else those the Tailscale app sees, as the hosts' add-ons
+	// name them. One already found nearby is listed once, by its local
+	// address, with its Tailscale name to pair over without a code.
+	var peers []remote.TailnetPeer
+	own := ""
 	if a.Tailnet != nil {
-		for _, p := range a.Tailnet.Status().Peers {
-			if p.Online && p.DNSName != "" && !nearby[p.Name] {
-				found = append(found, remote.Found{Name: p.Name + " (Tailscale)", Address: p.DNSName, Port: remote.DefaultPort})
-			}
+		status := a.Tailnet.Status()
+		peers, own = status.Peers, status.DNSName
+	}
+	if len(peers) == 0 {
+		peers = remote.SystemTailnetPeers(ctx)
+	}
+	listed := map[string]bool{}
+	for _, p := range peers {
+		if !p.Online || p.DNSName == "" || p.DNSName == own || listed[p.DNSName] {
+			continue
 		}
+		listed[p.DNSName] = true
+		if i, ok := nearby[p.Name]; ok {
+			found[i].Tailnet = p.DNSName
+			continue
+		}
+		found = append(found, remote.Found{Name: p.Name + " (Tailscale)", Address: p.DNSName, Port: remote.DefaultPort, Tailscale: true})
+	}
+	for i, f := range found {
+		found[i].Current = a.RemoteClient.IsPairedHost(f.Address) || f.Tailnet != "" && a.RemoteClient.IsPairedHost(f.Tailnet)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hosts": found})
 }
@@ -146,24 +188,41 @@ func (a *API) handleRemoteConnect(w http.ResponseWriter, r *http.Request) {
 	if !a.remoteControl(w, r) {
 		return
 	}
+	// Without a code, the host is paired over Tailscale if both computers'
+	// Tailscale says they are the same user's. Switch replaces the host in
+	// use, which stays until the new one is paired.
 	var body struct {
 		Address string `json:"address"`
 		Port    int    `json:"port"`
 		Code    string `json:"code"`
+		Switch  bool   `json:"switch"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body) != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	// A Mac that shares serves other Macs; using another Switcher as well
+	// would loop accounts between them.
 	if a.hosting() {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn off sharing on this Mac before using another Switcher"})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn off sharing on this Mac before using another Switcher: a Mac that shares cannot use another one at the same time"})
 		return
 	}
-	if a.RemoteClient.Paired() {
+	if a.RemoteClient.Paired() && !body.Switch {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "disconnect from the other Switcher first"})
 		return
 	}
-	status, err := a.RemoteClient.Connect(r.Context(), body.Address, body.Port, body.Code, remote.MachineName())
+	var status remote.ClientStatus
+	var err error
+	if strings.TrimSpace(body.Code) == "" {
+		status, err = a.RemoteClient.ConnectTailnet(r.Context(), body.Address, body.Port, remote.MachineName())
+	} else {
+		status, err = a.RemoteClient.Connect(r.Context(), body.Address, body.Port, body.Code, remote.MachineName())
+	}
+	var needsCode *remote.NeedsCodeError
+	if errors.As(err, &needsCode) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "needs_code": true})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
