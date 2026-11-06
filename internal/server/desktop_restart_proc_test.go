@@ -195,7 +195,7 @@ func TestLinuxDesktopSaysItDidNotOpenWhenNothingWasRunning(t *testing.T) {
 	f.reopens = false
 	err := f.restart(context.Background())
 	var failure *desktopRestartError
-	if !errors.As(err, &failure) || !strings.Contains(failure.message, "did not open") || strings.Contains(failure.message, "come back") {
+	if !errors.As(err, &failure) || !strings.Contains(failure.message, "could not confirm") || strings.Contains(failure.message, "come back") {
 		t.Fatalf("error %v", err)
 	}
 	if len(f.signalled) != 0 || len(f.started()) != 1 {
@@ -223,7 +223,7 @@ func TestLinuxDesktopRestartRefusesBeforeClosingAnything(t *testing.T) {
 		change  func(*fakeDesktop)
 		want    string
 	}{
-		{"not installed", false, func(f *fakeDesktop) { f.installed = func() string { return "" } }, "not installed"},
+		{"not installed", false, func(f *fakeDesktop) { f.installed = func() string { return "" } }, "could not find"},
 		{"no systemd-run", true, func(f *fakeDesktop) { f.systemdRun = "" }, "desktop session"},
 		{"no systemctl", true, func(f *fakeDesktop) { f.systemctl = "" }, "desktop session"},
 		{"no user manager", true, func(f *fakeDesktop) { f.envErr = errors.New("fixture bus failure") }, "desktop session"},
@@ -391,11 +391,11 @@ func TestDesktopRestartEndpointReportsTheFailure(t *testing.T) {
 	f := newDesktopSetupFixture(t)
 	f.request(t, "POST", "/configure", `{}`, 200)
 	f.api.RestartDesktopForTest = func(context.Context) error {
-		return restartFailure("Claude Desktop is not installed on this computer.", nil)
+		return restartFailure("Switcher could not find the claude-desktop program on this computer.", nil)
 	}
 	w := f.request(t, "POST", "/restart-desktop", `{"confirmed":true}`, 503)
 	body, _ := io.ReadAll(w.Result().Body)
-	if !strings.Contains(string(body), "not installed") || strings.Contains(string(body), "relay") {
+	if !strings.Contains(string(body), "could not find") || strings.Contains(string(body), "relay") {
 		t.Fatalf("reply: %s", body)
 	}
 	f.api.RestartDesktopForTest = func(context.Context) error { return errors.New("fixture-provider-secret") }

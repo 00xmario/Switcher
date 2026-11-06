@@ -60,7 +60,7 @@ type runtime struct {
 	shutdownOnce sync.Once
 	finished     chan struct{}
 	inFlight     atomic.Int64 // model requests
-	open         atomic.Int64 // every relayed request, model or not
+	open         atomic.Int64 // every request to Anthropic, model or not
 }
 
 // track registers a hijacked connection so shutdown can close it.

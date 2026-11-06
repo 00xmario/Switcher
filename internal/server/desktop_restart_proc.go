@@ -175,7 +175,7 @@ func (d *linuxDesktop) prepare(ctx context.Context) (program string, running boo
 		program = d.installed()
 	}
 	if program == "" {
-		return "", running, restartFailure("Claude Desktop is not installed on this computer.", nil)
+		return "", running, restartFailure("Switcher could not find the claude-desktop program on this computer.", nil)
 	}
 	if d.systemdRun == "" || d.systemctl == "" {
 		return "", running, restartFailure(desktopNoSessionMessage, errors.New("systemd-run or systemctl is missing"))
@@ -253,7 +253,7 @@ func (d *linuxDesktop) restart(ctx context.Context) error {
 			if err != nil && !running {
 				// Nothing was closed. A build under another program name also
 				// ends here: its launcher hands over to the running app.
-				return restartFailure("Claude Desktop did not open. If it is running under another program name, restart it yourself.", err)
+				return restartFailure("Switcher could not confirm that Claude Desktop opened. If it runs under another program name, restart it yourself.", err)
 			}
 			return err
 		},

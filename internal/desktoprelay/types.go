@@ -104,8 +104,9 @@ type Status struct {
 	// InFlight counts model requests being relayed. Other traffic isn't in it:
 	// a Remote Control session keeps a connection open for as long as it lives.
 	InFlight uint64 `json:"in_flight"`
-	// OpenRequests counts every relayed request, which is what stopping the
-	// relay cuts off.
+	// OpenRequests counts every request being relayed to Anthropic, model or
+	// not. Stopping the relay cuts them off. It also cuts tunnels to other
+	// hosts and plain proxy requests, which no count here includes.
 	OpenRequests uint64 `json:"open_requests"`
 	Address      string `json:"address"`
 	CAPath       string `json:"ca_path"`
