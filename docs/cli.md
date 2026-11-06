@@ -25,7 +25,7 @@ does this for you, and a source build (`make install`) is the same binary.
 |---|---|
 | `switcher status` | Accounts with usage, sharing, Claude Desktop, Away from home |
 | `switcher accounts [--provider P]` | Accounts with their usage windows |
-| `switcher use <account>` | Use an account; for Claude this also switches Claude Code's login |
+| `switcher use <account>` | Use an account; for Claude this also switches Claude Code's login, or with the Desktop relay the account its requests use |
 | `switcher login <provider>` | Sign in and add an account (see below) |
 | `switcher login finish <address>` | Finish a sign-in done in a browser on another device |
 | `switcher login import <provider>` | Adopt the login of the provider's own CLI on this Mac |

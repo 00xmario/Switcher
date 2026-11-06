@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -130,7 +131,15 @@ func (a *API) handleDesktopRelay(w http.ResponseWriter, r *http.Request) {
 		var setup desktoprelay.SetupStatus
 		var err error
 		if r.URL.Path == "/api/desktop-relay/configure" {
+			before := a.DesktopRelay.SetupStatus(a.DesktopSettingsPath)
 			setup, err = a.DesktopRelay.Configure(ctx, a.DesktopSettingsPath)
+			// Until now Claude Code's login was the account it used. Connecting
+			// what is already connected changes nothing.
+			if err == nil && !before.Routed && a.Proxy != nil {
+				if restartErr := a.Proxy.RestartSelectionAtLogin(); restartErr != nil {
+					log.Printf("desktop relay: save routing state: %v", restartErr)
+				}
+			}
 		} else {
 			setup, err = a.DesktopRelay.RestoreSetup(ctx, a.DesktopSettingsPath)
 		}

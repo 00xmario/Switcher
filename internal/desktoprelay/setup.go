@@ -23,7 +23,10 @@ type SetupStatus struct {
 	BackupPath      string `json:"backup_path,omitempty"`
 	RestartRequired bool   `json:"restart_required"`
 	Configured      bool   `json:"configured,omitempty"`
-	Message         string `json:"message,omitempty"`
+	// Routed: the settings still send Claude Code here, whether or not the
+	// relay is listening right now.
+	Routed  bool   `json:"routed,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type SetupError struct {
@@ -372,6 +375,7 @@ func (m *Manager) SetupStatus(path string) SetupStatus {
 		s.Message = "Desktop proxy settings changed after setup"
 		return s
 	}
+	s.Routed = true
 	if m.run == nil || m.run.ctx.Err() != nil {
 		s.Message = "Desktop relay is not listening"
 		return s
@@ -382,6 +386,7 @@ func (m *Manager) SetupStatus(path string) SetupStatus {
 	}
 	u, err := url.Parse(r.OwnedEnv["HTTPS_PROXY"])
 	if err != nil || u.Host != m.run.listener.Addr().String() {
+		s.Routed = false
 		s.Condition = "changed"
 		s.Message = "Desktop relay address changed; run setup again"
 		return s

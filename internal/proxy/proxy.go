@@ -102,6 +102,10 @@ type Manager struct {
 	probeBootID        string
 	// Claude's automatic switching (autoswitch.go).
 	claudeAuto         func() bool
+	claudeCodeRouted   func() bool
+	keptLoginAligned   bool
+	keptLoginRetry     time.Time
+	keptLoginWaiting   time.Time
 	autoSwitching      atomic.Bool
 	autoSwitchAt       map[string]time.Time
 	manualHold         map[string]time.Time
@@ -200,6 +204,7 @@ func New(st *store.Store, providers map[string]provider.Provider, registration [
 		hidden:             hidden,
 		managementKey:      state.ManagementKey,
 		nativeClaudeCommit: state.NativeClaudeCommit,
+		keptLoginAligned:   state.KeptLoginAligned,
 	}, nil
 }
 
@@ -300,9 +305,15 @@ func (m *Manager) ActiveID(providerID string) string {
 
 // SelectedID is the account Switcher shows as selected for providerID: the
 // native login when Switcher manages one and it is a Switcher account (Claude
-// Code's), otherwise the proxy's active account.
+// Code's), otherwise the proxy's active account. A kept login does not select
+// anything (NativeLoginKept), unless the proxy has no account yet.
 func (m *Manager) SelectedID(providerID string) string {
 	if native, ok := m.providers[providerID].(provider.NativeLoginProvider); ok && native.NativeEnabled() {
+		if m.NativeLoginKept(providerID) {
+			if active := m.ActiveID(providerID); active != "" {
+				return active
+			}
+		}
 		if id := native.NativeStatus().ActiveID; id != "" {
 			return id
 		}
@@ -1064,6 +1075,7 @@ func (m *Manager) persistLocked() error {
 		ProviderOrder: order, HiddenProviders: hidden,
 		ManagementKey:      m.managementKey,
 		NativeClaudeCommit: m.nativeClaudeCommit,
+		KeptLoginAligned:   m.keptLoginAligned,
 	})
 }
 
@@ -1483,6 +1495,7 @@ func (m *Manager) autoUseBankedResetForRequest(ctx context.Context, prov provide
 // token refresh) so the next pick moves on. One hour is enough to keep a
 // broken account out of the way without losing it forever.
 func (m *Manager) deactivate(id string) error {
+	kept := m.NativeLoginKept("claude")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	nextByProvider := map[string]string{}
@@ -1495,7 +1508,7 @@ func (m *Manager) deactivate(id string) error {
 			nextByProvider[providerID] = next
 		}
 	}
-	return m.mutateStateLocked(func() {
+	err := m.mutateStateLocked(func() {
 		if _, ok := m.exhausted[id]; !ok {
 			m.exhausted[id] = time.Now().Add(time.Hour)
 		}
@@ -1510,6 +1523,11 @@ func (m *Manager) deactivate(id string) error {
 			}
 		}
 	})
+	// The route is also what Claude Code uses now, so say that it moved.
+	if next := nextByProvider["claude"]; err == nil && kept && next != "" {
+		m.recordAutoSwitchLocked("claude", "claude_code", id, next)
+	}
+	return err
 }
 
 // splitPrefix splits "/codex/v1/x" into ("codex", "/v1/x"). The path must

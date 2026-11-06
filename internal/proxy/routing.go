@@ -24,6 +24,7 @@ func (m *Manager) requestCurrentLocked(providerID, id string, expected requestEp
 // With holdFree, an account whose only way out is a Free account stays
 // selected (held) so the caller can try a banked reset on it first.
 func (m *Manager) handleExhaustion(providerID, id string, until time.Time, expected requestEpoch, holdFree bool) (retry, held bool, err error) {
+	kept := m.NativeLoginKept(providerID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.requestCurrentLocked(providerID, id, expected) {
@@ -44,6 +45,10 @@ func (m *Manager) handleExhaustion(providerID, id string, until time.Time, expec
 			m.selectionRevision[providerID]++
 		}
 	})
+	if err == nil && kept && next != "" {
+		// The route is also what Claude Code uses now, so say that it moved.
+		m.recordAutoSwitchLocked(providerID, "claude_code", id, next)
+	}
 	if err == nil {
 		// This response belongs to the current reset epoch. A later retry of
 		// the old redemption must not clear this newly confirmed exhaustion.

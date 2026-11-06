@@ -960,6 +960,59 @@ func (m *Manager) recover(ctx context.Context) error {
 	return writePrivate(m.pendingPath(), fileValue{})
 }
 
+// Settle does what a switch does first: it finishes an interrupted switch or
+// refresh, which otherwise blocks token refreshes for every account. A switch
+// that leaves the login alone needs this too. It also says whether Claude Code
+// has a login right now. Without a pending switch it takes no native locks, so
+// a Claude Code busy refreshing does not hold up a switch. When the login
+// cannot be read it counts as there: only a certain absence replaces it.
+func (m *Manager) Settle(ctx context.Context) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pending, err := readRecovery(m.pendingPath())
+	if err != nil {
+		return true, err
+	}
+	if pending.Exists {
+		locked, unlock, err := m.locks(ctx)
+		if err != nil {
+			return true, err
+		}
+		err = m.recover(locked)
+		unlock()
+		if err != nil {
+			return true, err
+		}
+	}
+	if err := m.recoverActiveRefreshes(ctx); err != nil {
+		return true, err
+	}
+	return m.hasCredential(ctx), nil
+}
+
+func (m *Manager) hasCredential(ctx context.Context) bool {
+	var data []byte
+	if m.paths.Keychain {
+		value, exists, err := m.keys.Read(ctx, m.paths.Service)
+		if err != nil {
+			return true
+		}
+		if exists {
+			data = value
+		}
+	}
+	if data == nil {
+		file, err := readPrivate(m.paths.CredentialsFile)
+		if err != nil {
+			return true
+		}
+		data = file.Data
+	}
+	// The same file also holds MCP credentials, which are no login.
+	oauth, err := parseOAuth(data)
+	return err != nil || oauth.AccessToken != ""
+}
+
 // Switch changes Claude Code's actual login, and calls commit only after
 // native writes verify. Caller serializes every Claude account record with
 // Switcher's token refreshes so outgoing capture cannot revert another save.

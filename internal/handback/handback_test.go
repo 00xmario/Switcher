@@ -74,12 +74,16 @@ type fakeClaude struct {
 	loggedIn, available bool
 	used                bool
 	onUse               func()
+	useErr              error
 }
 
 func (c *fakeClaude) LoggedIn() (bool, bool) { return c.loggedIn, c.available }
 func (c *fakeClaude) UseSelected(context.Context) (string, error) {
 	if c.onUse != nil {
 		c.onUse()
+	}
+	if c.useErr != nil {
+		return "", c.useErr
 	}
 	c.used, c.loggedIn = true, true
 	return "work@example.com", nil
@@ -716,6 +720,18 @@ func TestClaudeCodeWithoutALoginGetsTheSelectedAccount(t *testing.T) {
 	}
 	if !f.claude.used {
 		t.Fatal("Claude Code was left without a login")
+	}
+}
+
+// The last status said logged out, but going through the relay it turned out
+// to have a login: that is no reason to refuse handing back.
+func TestAClaudeCodeThatTurnsOutToHaveALoginKeepsIt(t *testing.T) {
+	f := newFixture(t)
+	f.claude.loggedIn = false
+	f.claude.useErr = errLoginKept
+	m := New(f.dir, f.deps())
+	if _, err := m.HandBack(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

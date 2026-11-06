@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -208,6 +209,55 @@ func executablePath() string {
 	return exe
 }
 
+// claudeCodeRouted reports whether Claude Code's settings send it through the
+// relay, also while the relay is down: its requests then fail, but its login
+// must not move. What cannot be read right now keeps the last answer; before
+// there is one, a setup Switcher made counts, as after a restart. So do settings
+// that changed for less than grace, as an editor saving them can look like. A
+// disconnect is immediate.
+func claudeCodeRouted(grace time.Duration, setup func() desktoprelay.SetupStatus) func() bool {
+	var last, known bool
+	var changed time.Time
+	return func() bool {
+		s := setup()
+		if s.Condition != "changed" {
+			changed = time.Time{}
+		}
+		switch {
+		case s.Routed:
+			last, known = true, true
+		case s.Condition == "changed" && last:
+			if changed.IsZero() {
+				changed = time.Now()
+			}
+			if time.Since(changed) >= grace {
+				last = false
+			}
+		case s.Condition != "unavailable" && s.Condition != "pending":
+			last, known = false, true
+		case !known:
+			last = s.ScopeID != ""
+		}
+		return last
+	}
+}
+
+// cachedFor answers check at most once per ttl: every relay request and every
+// account view asks, and the check reads a file.
+func cachedFor(ttl time.Duration, check func() bool) func() bool {
+	var mu sync.Mutex
+	var at time.Time
+	var value bool
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) >= ttl {
+			value, at = check(), time.Now()
+		}
+		return value
+	}
+}
+
 // Resolve only in main. The API and manager have no implicit HOME fallback.
 // Relative overrides fail closed instead of targeting the working directory.
 func desktopSettingsPath() string {
@@ -303,6 +353,14 @@ func run(port, desktopRelayPort int) {
 	// Claude Code's login and Claude Desktop conversations move off an
 	// account that runs out of usage, unless the user turned that off.
 	proxyManager.SetClaudeAutoSwitch(settingsStore.AutoSwitchClaude)
+	// Once Claude Code's requests go through the Desktop relay, a switch
+	// leaves its login alone, and with it its Remote Control sessions.
+	proxyManager.SetClaudeCodeRouted(cachedFor(time.Second, claudeCodeRouted(5*time.Second, func() desktoprelay.SetupStatus {
+		if desktopRelay == nil {
+			return desktoprelay.SetupStatus{Condition: "not_configured"}
+		}
+		return desktopRelay.SetupStatus(desktopSettingsPath())
+	})))
 	// The device token exists for the menu bar app as soon as auth is on.
 	if settingsStore.Enabled() {
 		_, _ = settingsStore.EnsureDeviceToken()

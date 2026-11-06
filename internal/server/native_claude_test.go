@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"switcher/internal/claudecode"
+	"switcher/internal/desktoprelay"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
 	"switcher/internal/settings"
@@ -22,6 +25,15 @@ type nativeClaudeFixture struct {
 	*recheckProvider
 	bridge         *claudecode.Manager
 	statusOverride *claudecode.Status
+	refreshErr     error
+}
+
+func (p *nativeClaudeFixture) IsExpired(store.Account) bool { return p.refreshErr != nil }
+func (p *nativeClaudeFixture) Refresh(context.Context, *store.Account) error {
+	return p.refreshErr
+}
+func (p *nativeClaudeFixture) SettleNative(ctx context.Context) (bool, error) {
+	return p.bridge.Settle(ctx)
 }
 
 func (*nativeClaudeFixture) ID() string          { return "claude" }
@@ -95,6 +107,163 @@ func nativeClaudeFixtureAPI(t *testing.T) (*API, *proxy.Manager, claudecode.Path
 	api := &API{Store: st, Proxy: manager, Settings: prefs, Providers: map[string]provider.Provider{"claude": p},
 		CodexConfigPath: filepath.Join(t.TempDir(), "config.toml")}
 	return api, manager, paths, prefs, session, p
+}
+
+// With Claude Code routed through the Desktop relay, a switch must not touch
+// its login: a Remote Control environment belongs to the account that
+// registered it. The screens then mark the selection, not the login.
+func TestARoutedClaudeCodeKeepsItsLoginFiles(t *testing.T) {
+	api, manager, paths, prefs, session, _ := nativeClaudeFixtureAPI(t)
+	manager.SetClaudeCodeRouted(func() bool { return true })
+	mux := http.NewServeMux()
+	api.Register(mux)
+	gate := (&AuthGate{Store: prefs}).Wrap(mux)
+	// A state read lets the bridge learn the login first.
+	api.handleState(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/state", nil))
+	credentials, err := os.ReadFile(paths.CredentialsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "http://127.0.0.1:8787/api/accounts/claude-b/activate", nil)
+	r.RemoteAddr = "127.0.0.1:2222"
+	r.AddCookie(&http.Cookie{Name: "switcher_session", Value: session})
+	r.Header.Set("X-Switcher-CSRF", prefs.CSRFToken())
+	w := httptest.NewRecorder()
+	gate.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if manager.ActiveID("claude") != "claude-b" || manager.SelectedID("claude") != "claude-b" {
+		t.Fatalf("active %q, selected %q", manager.ActiveID("claude"), manager.SelectedID("claude"))
+	}
+	if after, _ := os.ReadFile(paths.CredentialsFile); string(after) != string(credentials) {
+		t.Fatal("the switch rewrote Claude Code's credentials")
+	}
+	if after, _ := os.ReadFile(paths.ConfigFile); string(after) != string(config) {
+		t.Fatal("the switch rewrote Claude Code's config")
+	}
+	state := httptest.NewRecorder()
+	api.handleState(state, httptest.NewRequest("GET", "/api/state", nil))
+	var body struct {
+		Accounts []accountView `json:"accounts"`
+	}
+	if err := json.Unmarshal(state.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range body.Accounts {
+		if a.NativeSwitchAvailable {
+			t.Fatalf("%s still offers a native switch", a.ID)
+		}
+		if a.Active != (a.ID == "claude-b") {
+			t.Fatalf("%s active=%v", a.ID, a.Active)
+		}
+	}
+	cli := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8787/api/cli-setup", nil)
+	req.RemoteAddr = "127.0.0.1:2222"
+	api.handleCLISetup(cli, req)
+	if !strings.Contains(cli.Body.String(), "Remote Control keeps working") || !strings.Contains(cli.Body.String(), `"login_kept":true`) {
+		t.Fatalf("setup row does not say the login stays: %s", cli.Body.String())
+	}
+}
+
+// Connecting on purpose starts the selection at the login, which is what Claude
+// Code used until then. Connecting what is connected changes nothing.
+func TestConnectingStartsTheSelectionAtTheLogin(t *testing.T) {
+	blockDesktopControlEgress(t)
+	api, manager, _, _, _, p := nativeClaudeFixtureAPI(t)
+	p.statusOverride = &claudecode.Status{Condition: "ready", ActiveID: "claude-a"}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay, err := desktoprelay.New(desktoprelay.Config{DataRoot: filepath.Join(root, "relay"),
+		Source: &setupForbiddenSource{}, Transport: desktopControlBlockedTransport{},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("fixture forbids tunnel egress")
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = relay.Close(context.Background()) })
+	path := filepath.Join(root, "settings.json")
+	api.DesktopRelay, api.DesktopSettingsPath, api.ManagementKey = relay, path, "fixture-management-secret"
+	manager.SetClaudeCodeRouted(func() bool { return relay.SetupStatus(path).Routed })
+	mux := http.NewServeMux()
+	api.Register(mux)
+	post := func(suffix string) {
+		t.Helper()
+		if w := desktopControlRequest(t, mux, "POST", "/api/desktop-relay"+suffix, "{}", api.ManagementKey); w.Code != 200 {
+			t.Fatalf("%s: %d %s", suffix, w.Code, w.Body.String())
+		}
+	}
+	// Drifted: the proxy's account is not the login.
+	if err := manager.Activate("claude-b"); err != nil {
+		t.Fatal(err)
+	}
+	post("/configure")
+	if manager.SelectedID("claude") != "claude-a" || manager.ActiveID("claude") != "claude-a" {
+		t.Fatalf("selected %q, active %q, want the login", manager.SelectedID("claude"), manager.ActiveID("claude"))
+	}
+	if _, err := manager.ActivateForClient(context.Background(), "claude-b"); err != nil {
+		t.Fatal(err)
+	}
+	post("/configure")
+	if manager.SelectedID("claude") != "claude-b" {
+		t.Fatalf("connecting again took the pick away: %q", manager.SelectedID("claude"))
+	}
+	post("/restore")
+	if manager.SelectedID("claude") != "claude-a" {
+		t.Fatalf("after disconnecting %q, want the login", manager.SelectedID("claude"))
+	}
+}
+
+func TestARoutedClaudeCodeRefusesAnAccountThatCannotSignIn(t *testing.T) {
+	api, manager, paths, prefs, session, p := nativeClaudeFixtureAPI(t)
+	manager.SetClaudeCodeRouted(func() bool { return true })
+	p.refreshErr = provider.ErrReloginRequired
+	mux := http.NewServeMux()
+	api.Register(mux)
+	gate := (&AuthGate{Store: prefs}).Wrap(mux)
+	before, _ := os.ReadFile(paths.CredentialsFile)
+	r := httptest.NewRequest("POST", "http://127.0.0.1:8787/api/accounts/claude-b/activate", nil)
+	r.RemoteAddr = "127.0.0.1:2222"
+	r.AddCookie(&http.Cookie{Name: "switcher_session", Value: session})
+	r.Header.Set("X-Switcher-CSRF", prefs.CSRFToken())
+	w := httptest.NewRecorder()
+	gate.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "sign in to it again") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if manager.ActiveID("claude") != "claude-a" {
+		t.Fatalf("selection moved to %q", manager.ActiveID("claude"))
+	}
+	if after, _ := os.ReadFile(paths.CredentialsFile); string(after) != string(before) {
+		t.Fatal("the login changed")
+	}
+}
+
+// A kept login does not widen who may switch: a switch from the network still
+// needs what a native switch needs.
+func TestARoutedClaudeCodeStillRefusesASwitchFromTheNetwork(t *testing.T) {
+	api, manager, _, prefs, session, _ := nativeClaudeFixtureAPI(t)
+	manager.SetClaudeCodeRouted(func() bool { return true })
+	mux := http.NewServeMux()
+	api.Register(mux)
+	gate := (&AuthGate{Store: prefs}).Wrap(mux)
+	r := httptest.NewRequest("POST", "http://127.0.0.1:8787/api/accounts/claude-b/activate", nil)
+	r.RemoteAddr = "192.168.1.4:2222"
+	r.AddCookie(&http.Cookie{Name: "switcher_session", Value: session})
+	r.Header.Set("X-Switcher-CSRF", prefs.CSRFToken())
+	w := httptest.NewRecorder()
+	gate.ServeHTTP(w, r)
+	if w.Code != 403 || manager.ActiveID("claude") != "claude-a" {
+		t.Fatalf("status=%d active=%q", w.Code, manager.ActiveID("claude"))
+	}
 }
 
 func TestNativeClaudeActivationAuthLocalityAndActualCredentialWrite(t *testing.T) {

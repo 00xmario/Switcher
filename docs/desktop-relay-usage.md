@@ -8,9 +8,33 @@ switch have not been verified end to end. The relay is a network intermediary,
 so it can add latency, but it never fails a request because of its own
 bookkeeping.
 
-The native **Use in Claude Code** action on an account card is separate: it
-switches Claude Code's machine login. The relay only changes the credential of
-conversations you pick it for.
+Without the relay, the **Use in Claude Code** action on an account card switches
+Claude Code's machine login. Once the relay is set up here, a switch leaves that
+login alone and changes only the account selected in Switcher, which is the
+account Claude Code's requests use through the relay. Everything that belongs to
+the login keeps working across a switch, above all Remote Control: its
+environments and sessions are only found with the account that registered them,
+so rewriting the login loses them. The card then says **Use this account**, and
+`switcher status` calls the account Claude Code is signed in with its login.
+
+- A Claude Code that was already running picks up the relay by itself within
+  moments, no restart needed (seen with Claude Code 2.1.318). One that has not
+  yet keeps running on its login, and until then does not follow a switch.
+- A Claude Code with no login still gets one from a switch.
+- Connecting doesn't change which account Claude Code uses: the selection starts
+  at the account it is signed in with, if Switcher has it. Other tools on the
+  Claude proxy, and Macs paired with this one, move to that account too.
+- A switch to an account whose sign-in no longer works is refused, instead of
+  another account answering.
+- Features Claude Code decides from its own login, such as which models it
+  offers, follow the login, not the selected account. Keep it signed in with
+  your largest plan. To change the login, run `/login` in Claude Code, or
+  disconnect the relay and switch; a Remote Control session registered with the
+  old login then stops.
+- Disconnecting the relay brings the old behavior back: Claude Code uses its
+  login again, which may not be the account that was selected, and a switch
+  moves the login.
+- While the relay is down, Claude Code's requests fail, but its login stays.
 
 ## Set up once
 
@@ -56,9 +80,9 @@ sessions, and message transcripts are never read.
 
 ## What the relay changes on a request
 
-Only `POST /v1/messages` and `/v1/messages/count_tokens` of a picked
-conversation are changed, and only so they look like Claude Code logged in to
-the picked account: its bearer token, the `oauth-2025-04-20` beta if missing,
+Only `POST /v1/messages` and `/v1/messages/count_tokens` that use a Switcher
+account (the selected one, or one picked for the conversation) are changed, and
+only so they look like Claude Code logged in to that account: its bearer token, the `oauth-2025-04-20` beta if missing,
 and `metadata.user_id`'s `account_uuid`. `X-Api-Key` is removed. Everything
 else, including model, tools, thinking and unknown fields, is passed through.
 Other traffic keeps the caller's credentials, and other hosts are tunneled

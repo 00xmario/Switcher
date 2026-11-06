@@ -72,7 +72,7 @@ each usage window has left, with a short bar and the time to its reset, for
 example `Weekly: ▰▰▱▱▱ 31% left · ↻ 2d 8h`, and notes such as **Out of usage
 · back in 1h 0m** or **Sign in again**. The bars follow **Usage bars** in the
 dashboard's Settings → General → Tray. Clicking an account switches to it
-(Claude also switches Claude Code's login). The menu also holds keep awake,
+(Claude also moves Claude Code to it). The menu also holds keep awake,
 **Use the accounts of &lt;host&gt;**, **Update &lt;host&gt;**, **Hand back
 to the providers on this computer**, **Start at login**, the dashboard,
 updates and Quit.

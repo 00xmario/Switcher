@@ -21,6 +21,9 @@ type Account struct {
 	// BankedResets counts the account's unused usage-limit resets (Codex).
 	BankedResets int `json:"banked_resets,omitempty"`
 	nextReset    string
+	// loginKept: Claude Code is signed in with this account, but its requests
+	// use the selected one.
+	loginKept bool
 }
 
 // Window is one usage window, such as a five-hour session or a week.
@@ -51,6 +54,7 @@ type apiAccount struct {
 	Plan         string `json:"plan"`
 	Active       bool   `json:"active"`
 	NativeActive bool   `json:"native_active"`
+	NativeSwitch bool   `json:"native_switch_available"`
 	Usage        *struct {
 		Windows []Window `json:"windows"`
 	} `json:"usage"`
@@ -64,7 +68,7 @@ type apiAccount struct {
 }
 
 func (a apiAccount) account() Account {
-	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, Usage: []Window{}}
+	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, loginKept: a.NativeActive && !a.NativeSwitch, Usage: []Window{}}
 	if a.Usage != nil && a.Usage.Windows != nil {
 		account.Usage = a.Usage.Windows
 	}
@@ -201,7 +205,11 @@ func accountTable(accounts []Account) string {
 			mark = "●"
 		}
 		notes := []string{}
-		if a.ClaudeCode {
+		switch {
+		case a.loginKept:
+			// Claude Code is signed in here, but uses the account marked ●.
+			notes = append(notes, "Claude Code's login")
+		case a.ClaudeCode:
 			notes = append(notes, "Claude Code")
 		}
 		if h := healthText(a.Health); h != "" {
