@@ -148,7 +148,7 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid pairing request")
 		return
 	}
-	open := func() bool { return h.state.Enabled && !h.state.TailnetPairingOff }
+	open := func() bool { return h.state.Enabled && h.state.tailnetPairing() }
 	h.mu.Lock()
 	allowed := open()
 	h.mu.Unlock()

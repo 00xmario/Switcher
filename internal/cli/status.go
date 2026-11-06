@@ -12,6 +12,7 @@ type remoteStatus struct {
 	Host *struct {
 		Enabled        bool     `json:"enabled"`
 		TailnetPairing bool     `json:"tailnet_pairing"`
+		TailnetNotice  bool     `json:"tailnet_notice,omitempty"`
 		Listening      bool     `json:"listening"`
 		Name           string   `json:"name"`
 		Port           int      `json:"port"`

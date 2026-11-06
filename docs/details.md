@@ -364,11 +364,17 @@ environment; a terminal-only override needs the CLI command. The first
   the same Tailscale user in the same tailnet that is not shared in, not
   expired, routes no traffic for other machines and is not the host itself.
   The client checks the host the same way before it sends anything and pins
-  the certificate of that same connection. Refusals look like a wrong code;
-  attempts are limited per device and per address. **Let my own Tailscale
-  devices connect without a code** turns it off. Paired Macs get revocable
-  tokens, stored only as hashes on the host; account tokens never leave the
-  host. See [sharing](sharing.md#without-a-code-over-tailscale).
+  the certificate of that same connection. Whenever the Tailscale app on
+  either computer is there but cannot say whether it is the other side, the
+  answer is no. Refusals look like a wrong code; attempts are limited per
+  device and per address. Tailscale vouches for devices, not the accounts
+  on them: another account, a container, or a device added with an
+  untagged auth key (a CI runner, `TS_AUTHKEY`) counts as yours; tag such
+  devices. **Let my own Tailscale devices connect without a code** decides:
+  on for a host that starts sharing now, off with a one-time offer for one
+  that shared before. Paired Macs get revocable tokens, stored only as
+  hashes on the host; account tokens never leave the host. See
+  [sharing](sharing.md#without-a-code-over-tailscale).
 - **Phone access, opt-in and tailnet-only.** The Tailscale add-on serves a
   small phone page over HTTPS with Tailscale's certificate. It admits only
   your own Tailscale devices, and Switcher admits only phones approved on

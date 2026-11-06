@@ -74,18 +74,23 @@ Tailscale addresses either way.
 With `tailscaled` running (the Tailscale package, kernel networking as it
 installs by default), Switcher pairs your own devices without a code also
 without the add-on. It runs `tailscale status --json` and `tailscale whois
---json`, read-only, from `PATH`, `/usr/bin/tailscale` or
-`/usr/local/bin/tailscale`; both work for any user, so no `sudo` or operator
-setting is needed. A connection counts only when it reached this computer's
-own Tailscale address, and never one from this computer itself, so another
-account on a shared Linux machine cannot pair with the Switcher on it without
-a code. Tailscale vouches for devices, not for the accounts on them: whatever
-can send traffic as one of your devices, such as another account or a
-container on it, can pair from it with your hosts. If others use one of your
-Tailscale devices, turn this off on your hosts with `switcher share tailnet
-off`. With `tailscaled --tun=userspace-networking`, connections arrive from
-loopback and carry no Tailscale identity, so pairing needs a code; the add-on
-works either way.
+--json`, read-only, from `/usr/bin/tailscale`, `/usr/local/bin/tailscale` or
+else `PATH` (such as the snap's `/snap/bin/tailscale`), and only a program
+owned by root or you that no group or other user can change; both commands
+work for any user, so no `sudo` or operator setting is needed. A connection
+counts only when it reached this computer's own Tailscale address, and never
+one from this computer itself, so another account on a shared Linux machine
+cannot pair with the Switcher on it without a code. When `tailscaled` is
+there (its socket, or a Tailscale address on an interface) but its command
+line cannot answer, pairing without a code is refused. Tailscale vouches for
+devices, not for the accounts on them: whatever can send traffic as one of
+your devices, such as another account or a container on it, or a machine
+joined with an untagged auth key (a CI runner, a container with
+`TS_AUTHKEY`), can pair from it with your hosts. Tag such machines, and if
+others use one of your Tailscale devices, turn this off on your hosts with
+`switcher share tailnet off`. With `tailscaled --tun=userspace-networking`,
+connections arrive from loopback and carry no Tailscale identity, so pairing
+needs a code; the add-on works either way.
 Allow port 8788 on `tailscale0` if a firewall is on, for example
 `sudo ufw allow in on tailscale0 to any port 8788 proto tcp`.
 

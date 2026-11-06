@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,7 +152,12 @@ func noTailscaleApp(t *testing.T) *systemTailscale {
 // tailnetHost is a sharing host whose add-on is fake.
 func tailnetHost(t *testing.T, addons *fakeAddons) *Host {
 	t.Helper()
-	host, err := NewHost(t.TempDir(), 0, hostMux(t))
+	return tailnetHostIn(t, t.TempDir(), addons)
+}
+
+func tailnetHostIn(t *testing.T, dir string, addons *fakeAddons) *Host {
+	t.Helper()
+	host, err := NewHost(dir, 0, hostMux(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,6 +344,58 @@ func TestPairingWithoutACodeFollowsTheSettingAndSharing(t *testing.T) {
 	host.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/remote/pair/tailnet", strings.NewReader(`{"name":"Air"}`)))
 	if w.Code != http.StatusForbidden || addons.lookups.Load() != 0 {
 		t.Fatalf("sharing off: %d", w.Code)
+	}
+}
+
+// A host that shared before pairing without a code existed keeps it off
+// after the update and offers it once; one that starts sharing now has it
+// on. Either answer to the offer is remembered.
+func TestAHostThatSharedBeforeUpgradesWithPairingWithoutACodeOff(t *testing.T) {
+	before := func(f map[string]any) string {
+		dir := t.TempDir()
+		if err := writeJSON(filepath.Join(dir, "host.json"), f); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	shared := before(map[string]any{"enabled": true, "devices": []map[string]any{{"id": "d1", "name": "Mini", "token_sha256": "x"}}})
+	addons := newFakeAddons()
+	host := tailnetHostIn(t, shared, addons)
+	if s := host.Status(); s.TailnetPairing || !s.TailnetNotice {
+		t.Fatalf("after the update: %+v", s)
+	}
+	if status, _ := pairViaAddon(t, host, addons); status != http.StatusForbidden || addons.lookups.Load() != 0 {
+		t.Fatalf("paired without a code before it was turned on: %d", status)
+	}
+	if again, _ := NewHost(shared, 0, nil); !again.Status().TailnetNotice || again.Status().TailnetPairing {
+		t.Fatal("a restart changed the decision")
+	}
+	if err := host.SetTailnetPairing(true); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := pairViaAddon(t, host, addons); status != http.StatusOK {
+		t.Fatalf("after turning it on: %d", status)
+	}
+	if again, _ := NewHost(shared, 0, nil); !again.Status().TailnetPairing || again.Status().TailnetNotice {
+		t.Fatalf("turned on: %+v", again.Status())
+	}
+
+	// Not now: off, and not offered again.
+	declined := before(map[string]any{"enabled": false, "devices": []map[string]any{{"id": "d1", "name": "Mini", "token_sha256": "x"}}})
+	host = tailnetHostIn(t, declined, newFakeAddons())
+	if !host.Status().TailnetNotice {
+		t.Fatal("a host with paired devices is not offered it")
+	}
+	host.SetTailnetPairing(false)
+	if again, _ := NewHost(declined, 0, nil); again.Status().TailnetPairing || again.Status().TailnetNotice {
+		t.Fatalf("declined: %+v", again.Status())
+	}
+
+	// A host that never shared (here one handed back) starts with it on.
+	for _, dir := range []string{before(map[string]any{"enabled": false, "devices": []any{}}), t.TempDir()} {
+		if s := tailnetHostIn(t, dir, newFakeAddons()).Status(); !s.TailnetPairing || s.TailnetNotice {
+			t.Fatalf("a host sharing for the first time: %+v", s)
+		}
 	}
 }
 

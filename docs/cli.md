@@ -34,7 +34,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
 | `switcher reset <account\|provider> --yes` | Spend a banked reset (Codex) on an account, or on a provider's active account |
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
-| `switcher share tailnet [on\|off]` | Let your own Tailscale devices connect without a code (on by default), or make them use one |
+| `switcher share tailnet [on\|off]` | Let your own Tailscale devices connect without a code, or make them use one; on for a Mac that starts sharing now, off for one that shared before |
 | `switcher connect <address> [--code CODE] [--yes]` | Use the accounts of a Mac that shares them: your own Tailscale devices need no code; `--yes` switches from the host in use, which stays if the new one fails |
 | `switcher disconnect --yes` | Use this Mac's own accounts again |
 | `switcher use-host [on\|off]` | Work without the paired host and stay paired (off), or use it again (on) |
