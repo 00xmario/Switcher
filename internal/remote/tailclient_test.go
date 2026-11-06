@@ -117,6 +117,17 @@ func TestClientPairsWithTheUsersOwnHostWithoutACode(t *testing.T) {
 	if got, err := inference(t, client); err != nil || !strings.Contains(got, "device=Air") {
 		t.Fatalf("through the host: %q %v", got, err)
 	}
+	// The host knows this Switcher by its own id, which outlives the pairing.
+	install, err := client.installID()
+	if err != nil || host.state.Devices[0].TailscaleInstall != install {
+		t.Fatalf("install id %q, host has %q (%v)", install, host.state.Devices[0].TailscaleInstall, err)
+	}
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := NewClient(client.dir, "").installID(); again != install {
+		t.Fatal("the install id changed with the pairing")
+	}
 }
 
 // The client checks the host before it sends anything: a host Tailscale

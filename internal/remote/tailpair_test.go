@@ -176,13 +176,19 @@ func tailnetHostIn(t *testing.T, dir string, addons *fakeAddons) *Host {
 // pairThrough asks host to pair without a code over conn, as a client does.
 func pairThrough(t *testing.T, conn net.Conn, name string) (int, pairResponse) {
 	t.Helper()
+	return pairThroughAs(t, conn, name, "")
+}
+
+// pairThroughAs is pairThrough for the Switcher with the given install id.
+func pairThroughAs(t *testing.T, conn net.Conn, name, install string) (int, pairResponse) {
+	t.Helper()
 	defer conn.Close()
 	tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}})
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tc.Handshake(); err != nil {
 		return 0, pairResponse{}
 	}
-	body, _ := json.Marshal(map[string]string{"name": name})
+	body, _ := json.Marshal(map[string]string{"name": name, "install": install})
 	req, _ := http.NewRequest(http.MethodPost, "https://switcher-host/remote/pair/tailnet", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if err := req.Write(tc); err != nil {
@@ -204,11 +210,61 @@ func pairThrough(t *testing.T, conn net.Conn, name string) (int, pairResponse) {
 
 func pairViaAddon(t *testing.T, host *Host, addons *fakeAddons) (int, pairResponse) {
 	t.Helper()
+	return pairViaAddonAs(t, host, addons, "")
+}
+
+func pairViaAddonAs(t *testing.T, host *Host, addons *fakeAddons, install string) (int, pairResponse) {
+	t.Helper()
 	conn, _, _, err := addons.dialIdentified(context.Background(), net.JoinHostPort("switcher-studio.tail1234.ts.net", strconv.Itoa(host.Status().Port)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pairThrough(t, conn, "Air")
+	return pairThroughAs(t, conn, "Air", install)
+}
+
+// Two Switchers behind one Tailscale device, such as two accounts sharing
+// the computer's Tailscale, keep both their pairings; the same Switcher
+// pairing again replaces its own. One device keeps at most perNode.
+func TestPairingAgainReplacesOnlyTheSameSwitchersPairing(t *testing.T) {
+	addons := newFakeAddons()
+	host := tailnetHost(t, addons)
+	mine, theirs := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	_, first := pairViaAddonAs(t, host, addons, mine)
+	_, other := pairViaAddonAs(t, host, addons, theirs)
+	status, again := pairViaAddonAs(t, host, addons, mine)
+	if status != http.StatusOK || len(host.Status().Devices) != 2 {
+		t.Fatalf("devices after pairing again: %+v", host.Status().Devices)
+	}
+	if _, ok := host.authenticate(first.Token); ok {
+		t.Fatal("the same Switcher's earlier pairing survived")
+	}
+	for _, token := range []string{other.Token, again.Token} {
+		if _, ok := host.authenticate(token); !ok {
+			t.Fatal("a Switcher lost its pairing to another one behind the same device")
+		}
+	}
+	// A malformed id is no id: it cannot pose as another Switcher's.
+	pairViaAddonAs(t, host, addons, strings.ToUpper(theirs))
+	if _, ok := host.authenticate(other.Token); !ok || len(host.Status().Devices) != 3 {
+		t.Fatalf("a malformed id replaced a pairing: %+v", host.Status().Devices)
+	}
+
+	many := newFakeAddons()
+	crowded := tailnetHost(t, many)
+	var tokens []string
+	for i := 0; i < perNode+1; i++ {
+		_, p := pairViaAddonAs(t, crowded, many, fmt.Sprintf("%032x", i+1))
+		tokens = append(tokens, p.Token)
+	}
+	if n := len(crowded.Status().Devices); n != perNode {
+		t.Fatalf("%d pairings kept for one device", n)
+	}
+	if _, ok := crowded.authenticate(tokens[0]); ok {
+		t.Fatal("the oldest pairing was kept over the newest")
+	}
+	if _, ok := crowded.authenticate(tokens[perNode]); !ok {
+		t.Fatal("the newest pairing is gone")
+	}
 }
 
 func TestHostPairsTheUsersOwnTailscaleDeviceWithoutACode(t *testing.T) {

@@ -50,9 +50,12 @@ type device struct {
 	CreatedAt time.Time `json:"created_at"`
 	LastSeen  time.Time `json:"last_seen"`
 	// A device paired without a code, by its Tailscale identity, keeps that
-	// node's stable id and name; a new pairing from it replaces this one.
-	TailscaleNode string `json:"tailscale_node,omitempty"`
-	TailscaleName string `json:"tailscale_name,omitempty"`
+	// node's stable id and name, and the random id of the Switcher there
+	// that paired. A new pairing from the same Switcher on the same node
+	// replaces this one.
+	TailscaleNode    string `json:"tailscale_node,omitempty"`
+	TailscaleName    string `json:"tailscale_name,omitempty"`
+	TailscaleInstall string `json:"tailscale_install,omitempty"`
 }
 
 type hostFile struct {
@@ -573,15 +576,35 @@ func newDevice(name string) (device, string) {
 	return device{ID: randomHex(8), Name: name, TokenHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now().UTC()}, token
 }
 
-// addDeviceLocked saves a new pairing. One from a Tailscale device replaces
-// that device's earlier pairing, whose token stops working.
+// perNode bounds the pairings kept for one Tailscale device.
+const perNode = 8
+
+// addDeviceLocked saves a new pairing. One from the same Switcher on the
+// same Tailscale device replaces that Switcher's earlier pairing, whose
+// token stops working; another Switcher behind the same device, such as
+// another account's sharing its Tailscale, keeps its own. One device keeps
+// at most perNode pairings, the oldest going first.
 func (h *Host) addDeviceLocked(d device) error {
 	previous := h.state.Devices
 	kept := make([]device, 0, len(previous)+1)
+	sameNode := 0
 	for _, old := range previous {
-		if d.TailscaleNode == "" || old.TailscaleNode != d.TailscaleNode {
-			kept = append(kept, old)
+		if d.TailscaleNode != "" && old.TailscaleNode == d.TailscaleNode {
+			if old.TailscaleInstall == d.TailscaleInstall {
+				continue
+			}
+			sameNode++
 		}
+		kept = append(kept, old)
+	}
+	for ; d.TailscaleNode != "" && sameNode >= perNode; sameNode-- {
+		oldest := -1
+		for i, old := range kept {
+			if old.TailscaleNode == d.TailscaleNode && (oldest < 0 || old.CreatedAt.Before(kept[oldest].CreatedAt)) {
+				oldest = i
+			}
+		}
+		kept = append(kept[:oldest], kept[oldest+1:]...)
 	}
 	h.state.Devices = append(kept, d)
 	if err := writeJSON(h.path(), h.state); err != nil {

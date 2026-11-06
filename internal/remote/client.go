@@ -494,7 +494,11 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	if err := conn.HandshakeContext(ctx); err != nil || fp == "" {
 		return nil, fmt.Errorf("could not reach a Switcher at %s: is sharing turned on there?", address)
 	}
-	body, _ := json.Marshal(map[string]string{"name": deviceName})
+	install, err := c.installID()
+	if err != nil {
+		return nil, err
+	}
+	body, _ := json.Marshal(map[string]string{"name": deviceName, "install": install})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://switcher-host/remote/pair/tailnet", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Close = true
@@ -532,6 +536,27 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 }
 
 var tokenShape = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// installID is this Switcher's own random id, kept across pairings. A host
+// replaces a pairing without a code only when the same Switcher on the same
+// Tailscale device pairs again, so two Switchers behind one device, such as
+// two accounts sharing the computer's Tailscale, keep both of theirs.
+func (c *Client) installID() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	path := filepath.Join(c.dir, "install.json")
+	var f struct {
+		ID string `json:"id"`
+	}
+	if readJSON(path, &f) == nil && installShape.MatchString(f.ID) {
+		return f.ID, nil
+	}
+	f.ID = randomHex(16)
+	if err := writeJSON(path, f); err != nil {
+		return "", fmt.Errorf("could not save this Switcher's id: %w", err)
+	}
+	return f.ID, nil
+}
 
 // dialVerified connects to target over Tailscale and returns what this
 // computer's own Tailscale says about the node the connection reached:
