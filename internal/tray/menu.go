@@ -66,7 +66,10 @@ func Build(st State, status Status, now time.Time) []Item {
 			Item{Action: "quit-tray", Title: "Close this menu"})
 		return items
 	}
-	items = append(items, label("Switcher "+st.Version))
+	// The header: the panel, which has the Mac menu's look, then the
+	// version and what changes how the accounts are used.
+	items = append(items, Item{Action: "panel", Title: "Open Switcher…", Icon: "switcher"},
+		label("Switcher "+st.Version))
 	if r := st.Remote; r != nil {
 		switch {
 		case r.Role == "client" && r.Connected:

@@ -26,6 +26,9 @@ type Options struct {
 	Start func() error
 	// Open shows the dashboard in a browser.
 	Open func(url string)
+	// Panel shows the Switcher panel (the server's /panel) in a small
+	// window; OpenPanel does on Linux.
+	Panel func(url string) error
 	// Updated restarts the tray when its binary was replaced by an update;
 	// it returns only when there was nothing to restart into.
 	Updated func()
@@ -249,9 +252,10 @@ func (c *Controller) finish(err error, done string) {
 // Click runs a menu action. It returns once the action is done.
 func (c *Controller) Click(ctx context.Context, action string) {
 	c.mu.Lock()
-	st, busy := c.state, c.status.Busy
+	st, busy, running := c.state, c.status.Busy, c.status.Running
 	c.mu.Unlock()
-	if busy != "" && action != "quit" && action != "quit-tray" && action != "open" {
+	// The windows open while an action runs, but nothing else starts.
+	if busy != "" && action != "quit" && action != "quit-tray" && action != "open" && (action != "panel" || !running) {
 		return
 	}
 	api := c.opt.Client
@@ -265,6 +269,22 @@ func (c *Controller) Click(ctx context.Context, action string) {
 	case action == "open":
 		if c.opt.Open != nil {
 			c.opt.Open(api.Base)
+		}
+	case action == "panel":
+		// The panel is a page of the server, so a stopped one starts first.
+		if !running {
+			c.mu.Lock()
+			c.started = true
+			c.mu.Unlock()
+			c.startServer(ctx)
+			c.mu.Lock()
+			running = c.status.Running
+			c.mu.Unlock()
+		}
+		if running && c.opt.Panel != nil {
+			if err := c.opt.Panel(api.Base + "/panel"); err != nil {
+				c.finish(err, "")
+			}
 		}
 	case action == "start":
 		c.mu.Lock()

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -547,5 +548,65 @@ func TestEveryProviderHasAMenuLogo(t *testing.T) {
 	}
 	if logo("unknown") != nil {
 		t.Fatal("an unknown provider has a logo")
+	}
+}
+
+func TestThePanelOpensInTheFirstAppBrowserFound(t *testing.T) {
+	const url = "http://127.0.0.1:8787/panel"
+	installed := func(names ...string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			if slices.Contains(names, name) {
+				return "/usr/bin/" + name, nil
+			}
+			return "", errors.New("not found")
+		}
+	}
+	app := " --app=" + url + " --window-size=420,820"
+	for _, tc := range []struct {
+		installed []string
+		want      string
+	}{
+		{[]string{"microsoft-edge", "chromium", "google-chrome"}, "/usr/bin/google-chrome" + app},
+		{[]string{"microsoft-edge", "chromium-browser", "chromium"}, "/usr/bin/chromium" + app},
+		{[]string{"microsoft-edge", "chromium-browser"}, "/usr/bin/chromium-browser" + app},
+		{[]string{"firefox", "microsoft-edge"}, "/usr/bin/microsoft-edge" + app},
+		// Without one, the default browser opens it as a page.
+		{[]string{"firefox"}, "xdg-open " + url},
+		{nil, "xdg-open " + url},
+	} {
+		if got := strings.Join(PanelCommand(url, installed(tc.installed...)), " "); got != tc.want {
+			t.Errorf("with %v: %s, want %s", tc.installed, got, tc.want)
+		}
+	}
+}
+
+// Open Switcher… heads the menu and opens the server's panel; a stopped
+// server starts first, and a browser that cannot open says so.
+func TestOpenSwitcherShowsThePanel(t *testing.T) {
+	_, ui, c, _ := newFixture(t)
+	var opened []string
+	var refuse error
+	c.opt.Panel = func(url string) error { opened = append(opened, url); return refuse }
+	ctx := context.Background()
+	c.Refresh(ctx)
+	if first := ui.last()[0]; first.Title != "Open Switcher…" || first.Action != "panel" || first.Icon != "switcher" {
+		t.Fatalf("first item: %+v", first)
+	}
+	c.Click(ctx, "panel")
+	if len(opened) != 1 || opened[0] != c.opt.Client.Base+"/panel" {
+		t.Fatalf("opened %v", opened)
+	}
+	refuse = errors.New("no browser found to open Switcher in")
+	c.Click(ctx, "panel")
+	if find(ui.last(), "no browser found to open Switcher in") == nil {
+		t.Fatalf("the failure is not shown:\n%s", titles(ui.last()))
+	}
+
+	starts := 0
+	stopped := New(Options{Client: &Client{Base: "http://127.0.0.1:1"}, Start: func() error { starts++; return errors.New("could not start") },
+		Panel: func(url string) error { opened = append(opened, url); return nil }}, &recordingUI{})
+	stopped.Click(ctx, "panel")
+	if starts != 1 || len(opened) != 2 {
+		t.Fatalf("stopped server: %d starts, opened %v", starts, opened)
 	}
 }

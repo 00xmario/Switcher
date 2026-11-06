@@ -31,6 +31,11 @@ func Run(opt Options, icon []byte) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ui.ctrl = New(opt, ui)
+	// Clicking the icon opens the panel where the desktop activates tray
+	// icons on a click (KDE, for one); the menu is then on the right
+	// button. GNOME's AppIndicator opens the menu on a click and activates
+	// on a double click. Set before Run, which tells the desktop.
+	systray.SetOnTapped(func() { go ui.ctrl.Click(ctx, "panel") })
 	systray.Run(func() {
 		systray.SetIcon(icon)
 		systray.SetTitle("Switcher")
