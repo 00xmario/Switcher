@@ -259,6 +259,9 @@ func (a *API) handleCLISetup(w http.ResponseWriter, r *http.Request) {
 			client.Stage = "available"
 			client.ReasonCode = ""
 			client.NextStep = "Switch the native login from a Claude account card. Desktop sign-in is separate."
+			if a.Proxy != nil && a.Proxy.NativeLoginKept(target.provider) {
+				client.NextStep = "Claude Code uses the account selected in Switcher, through the Desktop relay. Its own login stays, so Remote Control keeps working."
+			}
 			client.Configuration = cliSetupConfig{Condition: status.Condition, Scope: "native_login"}
 			if !status.Available || status.Condition == "unavailable" {
 				client.Stage = "unavailable"
@@ -522,7 +525,9 @@ func viewBaseWithSettings(a *API, acc store.Account, preferences settings.Settin
 		v.Plan = v.Usage.Plan
 	}
 	if native, ok := a.Providers[acc.Provider].(provider.NativeLoginProvider); ok && native.NativeEnabled() {
-		v.NativeSwitchAvailable = true
+		// A kept login does not follow a switch, so the screens mark the
+		// selected account, not the login.
+		v.NativeSwitchAvailable = !a.Proxy.NativeLoginKept(acc.Provider)
 		v.NativeActive = native.NativeStatus().ActiveID == acc.ID
 	}
 	return v

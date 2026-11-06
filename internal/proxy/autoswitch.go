@@ -188,11 +188,21 @@ func (m *Manager) AutoSwitchNative() {
 		if !ok || !native.NativeEnabled() {
 			continue
 		}
+		// With the login kept the selection is what moves: it is the account
+		// Claude Code's requests use, and it needs no identity the login can
+		// carry.
+		kept := m.NativeLoginKept(providerID)
 		status := native.NativeStatus()
-		if status.Condition != "ready" || status.ActiveID == "" {
+		if !kept && status.Condition != "ready" {
 			continue
 		}
 		from := status.ActiveID
+		if kept {
+			from = m.ActiveID(providerID)
+		}
+		if from == "" {
+			continue
+		}
 		due := func() bool {
 			now := time.Now()
 			return m.outOfUsageLocked(from) && now.After(m.autoSwitchAt[from]) && now.After(m.manualHold[from])
@@ -202,7 +212,7 @@ func (m *Manager) AutoSwitchNative() {
 			m.mu.Unlock()
 			continue
 		}
-		to, err := m.takeoverLocked(providerID, from, true)
+		to, err := m.takeoverLocked(providerID, from, !kept)
 		if err == nil && to != "" {
 			m.autoSwitchAt[from] = time.Now().Add(autoSwitchRetry)
 		}
@@ -213,7 +223,11 @@ func (m *Manager) AutoSwitchNative() {
 		// Right before switching, under the switch lock, make sure nobody
 		// switched meanwhile and the account is still out.
 		still := func() bool {
-			if native.NativeStatus().ActiveID != from {
+			now := native.NativeStatus().ActiveID
+			if kept {
+				now = m.ActiveID(providerID)
+			}
+			if now != from {
 				return false
 			}
 			m.mu.Lock()
@@ -227,13 +241,13 @@ func (m *Manager) AutoSwitchNative() {
 			continue
 		}
 		if err != nil {
-			log.Printf("proxy: Claude Code's account ran out of usage, but switching its login did not go through; trying again in a minute")
+			log.Printf("proxy: Claude Code's account ran out of usage, but switching it did not go through; trying again in a minute")
 			continue
 		}
 		m.mu.Lock()
 		m.autoSwitchAt[from] = time.Now().Add(autoSwitchCooldown)
 		m.recordAutoSwitchLocked(providerID, "claude_code", from, to)
 		m.mu.Unlock()
-		log.Printf("proxy: Claude Code's account ran out of usage; switched its login to the account with the most usage left")
+		log.Printf("proxy: Claude Code's account ran out of usage; switched to the account with the most usage left")
 	}
 }

@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -208,6 +209,22 @@ func executablePath() string {
 	return exe
 }
 
+// cachedFor answers check at most once per ttl: every relay request and every
+// account view asks, and the check reads a file.
+func cachedFor(ttl time.Duration, check func() bool) func() bool {
+	var mu sync.Mutex
+	var at time.Time
+	var value bool
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) >= ttl {
+			value, at = check(), time.Now()
+		}
+		return value
+	}
+}
+
 // Resolve only in main. The API and manager have no implicit HOME fallback.
 // Relative overrides fail closed instead of targeting the working directory.
 func desktopSettingsPath() string {
@@ -303,6 +320,11 @@ func run(port, desktopRelayPort int) {
 	// Claude Code's login and Claude Desktop conversations move off an
 	// account that runs out of usage, unless the user turned that off.
 	proxyManager.SetClaudeAutoSwitch(settingsStore.AutoSwitchClaude)
+	// Once Claude Code's requests go through the Desktop relay, a switch
+	// leaves its login alone, and with it its Remote Control sessions.
+	proxyManager.SetClaudeCodeRouted(cachedFor(time.Second, func() bool {
+		return desktopRelay != nil && desktopRelay.SetupStatus(desktopSettingsPath()).Configured
+	}))
 	// The device token exists for the menu bar app as soon as auth is on.
 	if settingsStore.Enabled() {
 		_, _ = settingsStore.EnsureDeviceToken()

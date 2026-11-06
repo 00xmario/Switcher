@@ -103,6 +103,24 @@ func TestDesktopRelayStartupReturnsManagerOnUnavailableStore(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close(context.Background()) })
 }
 
+func TestCachedForChecksOncePerPeriod(t *testing.T) {
+	checks := 0
+	cached := cachedFor(time.Hour, func() bool { checks++; return true })
+	if !cached() || !cached() || checks != 1 {
+		t.Fatalf("checks=%d", checks)
+	}
+	checks = 0
+	answer := true
+	every := cachedFor(0, func() bool { checks++; return answer })
+	if !every() {
+		t.Fatal("first answer")
+	}
+	answer = false
+	if every() || checks != 2 {
+		t.Fatalf("a passed period must check again: checks=%d", checks)
+	}
+}
+
 func TestDesktopRelayPortValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

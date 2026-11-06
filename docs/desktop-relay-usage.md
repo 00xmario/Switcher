@@ -8,9 +8,23 @@ switch have not been verified end to end. The relay is a network intermediary,
 so it can add latency, but it never fails a request because of its own
 bookkeeping.
 
-The native **Use in Claude Code** action on an account card is separate: it
-switches Claude Code's machine login. The relay only changes the credential of
-conversations you pick it for.
+Without the relay, the **Use in Claude Code** action on an account card switches
+Claude Code's machine login. Once the relay is set up here, a switch leaves that
+login alone and changes only the account selected in Switcher, which is the
+account Claude Code's requests use through the relay. Everything that belongs to
+the login keeps working across a switch, above all Remote Control: its
+environments and sessions are only found with the account that registered them,
+so rewriting the login loses them. The card then says **Use this account**, and
+`switcher status` calls the account Claude Code is signed in with its login.
+
+- A Claude Code that was already running keeps using its login, on that account,
+  until it restarts. It keeps running; it just does not follow a switch yet.
+- A Claude Code with no login still gets one from a switch.
+- Features Claude Code decides from its own login, such as which models it
+  offers, follow the login, not the selected account. Keep it signed in with
+  your largest plan.
+- Disconnecting the relay brings the old behavior back: a switch moves the login
+  again.
 
 ## Set up once
 

@@ -112,10 +112,12 @@ is at the other end when pairing without a code.
 - Account cards, usage and the menu bar show the host's accounts. Switching an
   account on the client switches it on the host, exactly as switching on the
   host would: the account every Mac uses, and the host's own Claude Code
-  login. If the host's Claude Code cannot switch (for example while its
-  Keychain is locked), the account still switches and the client says why
-  Claude Code did not follow. Accounts are added and signed in again on the
-  host.
+  login, unless Claude Code on the host goes through the Desktop relay, which
+  keeps that login and its Remote Control sessions (see
+  [Claude Desktop](desktop-relay-usage.md)). If the host's Claude Code cannot
+  switch (for example while its Keychain is locked), the account still switches
+  and the client says why Claude Code did not follow. Accounts are added and
+  signed in again on the host.
 - A switch shows everywhere at once. The host's dashboard and menu bar show a
   switch made on a client right away, also while the menu is open, and a
   client shows one made on the host, on another client or by automatic

@@ -11,10 +11,36 @@ import (
 	"switcher/internal/store"
 )
 
+// SetClaudeCodeRouted wires whether Claude Code's requests go through the
+// Desktop relay on this computer. The answer must not depend on m.mu.
+func (m *Manager) SetClaudeCodeRouted(routed func() bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.claudeCodeRouted = routed
+}
+
+// NativeLoginKept reports that a switch leaves the provider's native login
+// alone. Claude Code's requests go through the Desktop relay, which sends
+// them with the selected account, so its own login no longer picks the
+// account, and what belongs to that login keeps working: a Remote Control
+// environment is only found with the account that registered it. A Claude
+// Code without a login still gets one from a switch. Never call with m.mu held.
+func (m *Manager) NativeLoginKept(providerID string) bool {
+	m.mu.Lock()
+	routed := m.claudeCodeRouted
+	m.mu.Unlock()
+	if routed == nil || !routed() {
+		return false
+	}
+	native, ok := m.providers[providerID].(provider.NativeLoginProvider)
+	return ok && native.NativeEnabled() && native.NativeStatus().Condition != "logged_out"
+}
+
 // ActivateForClient switches an account for the proxy and, for Claude, Claude
-// Code's own login. The user's switch and the automatic switch after an
-// account runs out of usage (AutoSwitchNative) both come here; proxy failover
-// on a refused request still selects only its route.
+// Code's own login unless that login is kept (NativeLoginKept). The user's
+// switch and the automatic switch after an account runs out of usage
+// (AutoSwitchNative) both come here; proxy failover on a refused request still
+// selects only its route.
 func (m *Manager) ActivateForClient(ctx context.Context, id string) (*claudecode.SwitchResult, error) {
 	if m.HandedBack() {
 		return nil, ErrHandedBack
@@ -42,7 +68,7 @@ func (m *Manager) activateNative(ctx context.Context, id string, still func() bo
 		return nil, err
 	}
 	native, ok := m.providers[account.Provider].(provider.NativeLoginProvider)
-	if !ok || !native.NativeEnabled() {
+	if !ok || !native.NativeEnabled() || m.NativeLoginKept(account.Provider) {
 		return nil, m.Activate(id)
 	}
 	accounts, err := m.store.List()
