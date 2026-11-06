@@ -2315,7 +2315,7 @@ async function renderSettings() {
       ${autostartHTML(data.autostart)}
       <div class="settings-card">
         <div class="set-card-head"><h3>${data.platform === 'linux' ? 'Tray' : 'Menu bar'}</h3><p class="settings-sub">${data.platform === 'linux'
-          ? 'Reset alerts appear while the Switcher tray runs (switcher tray); usage bars are for the Mac menu bar.'
+          ? 'For the Switcher tray (switcher tray): usage bars show in its menu and panel, and reset alerts appear while it runs.'
           : 'Needs the Switcher menu bar app; reset alerts also need notification permission.'}</p></div>
         <div class="set-split">
           ${menuPreviewHTML(status.menu_usage_bars !== false)}

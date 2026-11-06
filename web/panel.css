@@ -1,0 +1,26 @@
+/* The tray's panel: the phone page's look (phone.css) in a small window on
+   a Linux desktop. A pointer gets hover states where the phone has touch
+   feedback, and the window is narrow, so the type is a little smaller. */
+body.desktop { font-size: 14px; padding-bottom: 20px; }
+body.desktop .top { padding-top: 10px; }
+
+@media (hover: hover) {
+  button.row-main:hover { background: var(--press); }
+  button.row-main:hover .use { background: var(--surface-2); }
+  .icon-button:hover { background: var(--press); color: var(--text); }
+  .button:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  .button.primary:hover, .button.danger:hover { filter: brightness(.96); }
+}
+
+/* What changes how the accounts are used: a paired host, a hand-back. */
+.notice {
+  margin: 8px 0 0; padding: 10px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--dim); font-size: 13px; line-height: 1.45;
+}
+.notice strong { color: var(--text); font-weight: 600; }
+.notice.is-warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+
+.foot { display: flex; justify-content: center; margin-top: 22px; }
+.foot a { color: var(--dim); font-size: 13px; text-decoration: none; }
+.foot a:hover, .foot a:focus-visible { color: var(--text); text-decoration: underline; }

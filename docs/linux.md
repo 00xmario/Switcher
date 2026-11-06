@@ -50,12 +50,37 @@ for everyone is still refused.
 `switcher tray` puts Switcher's icon in the desktop's tray, through the
 StatusNotifierItem protocol. KDE Plasma, Cinnamon, XFCE, LXQt and Ubuntu's
 GNOME show it; on another GNOME, turn on the AppIndicator extension. The
-menu shows every account with its usage and switches accounts (Claude also
-switches Claude Code's login), and holds keep awake, **Use the accounts of
-&lt;host&gt;**, **Update &lt;host&gt;**, **Hand back to the providers on this
-computer**, **Start at login**, updates and Quit. Everything else is in the
-dashboard, which the tray opens. The tray starts the server when it is not
-running; **Quit Switcher** stops both.
+tray starts the server when it is not running; **Quit Switcher** stops both.
+
+**Open Switcher…**, the menu's first item, opens the Switcher panel: a small
+window with the Mac menu's look, the same account cards as the phone page.
+It shows each provider with its logo, every account with its plan, banked
+resets and what each usage window has left, and switches accounts, refreshes
+usage and spends banked resets. It opens as an app window in the first of
+Google Chrome, Chromium or Microsoft Edge it finds, otherwise in the default
+browser. Clicking the tray icon opens it too where the desktop activates
+tray icons on a click (KDE); there the menu is on the right button. GNOME's
+AppIndicator opens the menu on a click and the panel on a double click. The
+panel is the page `/panel` of the dashboard, only for browsers on this
+computer and behind the dashboard's password if one is set.
+
+The menu itself follows the Mac menu as closely as a tray menu can: each
+provider's name with its logo, then its accounts, the one in use checked
+(for Claude, Claude Code's login). Under each account, dim lines show what
+each usage window has left, with a short bar and the time to its reset, for
+example `Weekly: ▰▰▱▱▱ 31% left · ↻ 2d 8h`, and notes such as **Out of usage
+· back in 1h 0m** or **Sign in again**. The bars follow **Usage bars** in the
+dashboard's Settings → General → Tray. Clicking an account switches to it
+(Claude also switches Claude Code's login). The menu also holds keep awake,
+**Use the accounts of &lt;host&gt;**, **Update &lt;host&gt;**, **Hand back
+to the providers on this computer**, **Start at login**, the dashboard,
+updates and Quit.
+
+The tray and the panel show changes within a second or two, including an
+account switched from another computer: they wait for the server to report
+a change rather than reading on a timer. The menu changes in place, so it
+stays open while it updates. With a Switcher from before this, they read
+the state every few seconds instead.
 
 ## Start at login
 
@@ -79,7 +104,11 @@ Tailscale addresses either way.
 These were built and tested in Linux containers, with mocked services where
 a desktop is needed. Check them once on the real machine:
 
-- The tray icon and menu in your desktop (StatusNotifierItem host).
+- The tray icon and menu in your desktop (StatusNotifierItem host): the
+  provider logos, the bars (they need a font with ▰ and ▱, such as DejaVu
+  Sans), the indented usage lines, and that the menu stays open while it
+  updates.
+- Clicking the tray icon, and the panel's app window and its size.
 - Keep awake: that `systemd-inhibit --list` shows Switcher's lock and the
   computer stays awake; polkit may refuse inhibitor locks to a session that
   is not active (for example SSH only).

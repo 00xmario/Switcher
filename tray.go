@@ -38,6 +38,7 @@ func runTray(port int) int {
 				go open.Wait()
 			}
 		},
+		Panel: tray.OpenPanel,
 		Updated: func() {
 			// An update replaced the binary: run the new one. The lock's
 			// descriptor closes on exec, and the new tray takes it again.

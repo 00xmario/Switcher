@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -51,6 +52,9 @@ type State struct {
 		Enabled   bool `json:"enabled"`
 	} `json:"autostart"`
 	ResetNotifications bool `json:"reset_notifications"`
+	// MenuUsageBars is the dashboard's choice of usage bars in the menu;
+	// unset means on, as in the Mac menu.
+	MenuUsageBars *bool `json:"menu_usage_bars"`
 }
 
 // Account is one account card.
@@ -62,12 +66,17 @@ type Account struct {
 	Active                bool   `json:"active"`
 	NativeActive          bool   `json:"native_active"`
 	NativeSwitchAvailable bool   `json:"native_switch_available"`
-	Usage                 *struct {
+	// ExhaustedUntil is when an account that ran out of usage gets it back.
+	ExhaustedUntil float64 `json:"exhausted_until"`
+	Usage          *struct {
 		Windows []Window `json:"windows"`
 	} `json:"usage"`
 	Health *struct {
 		Condition string `json:"condition"`
 	} `json:"health"`
+	ResetCredits *struct {
+		Count int `json:"count"`
+	} `json:"reset_credits"`
 }
 
 // Selected is the account the account card marks: Claude Code's login for
@@ -147,9 +156,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-			return errors.New(e.Error)
+			return &refusal{status: resp.StatusCode, text: e.Error}
 		}
-		return fmt.Errorf("Switcher answered %d", resp.StatusCode)
+		return &refusal{status: resp.StatusCode, text: fmt.Sprintf("Switcher answered %d", resp.StatusCode)}
 	}
 	if out != nil && len(raw) > 0 {
 		return json.Unmarshal(raw, out)
@@ -157,11 +166,39 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return nil
 }
 
+// refusal is an answer the server refused, with its message.
+type refusal struct {
+	status int
+	text   string
+}
+
+func (r *refusal) Error() string { return r.text }
+
 // State reads the dashboard state.
 func (c *Client) State(ctx context.Context) (State, error) {
 	var st State
 	err := c.do(ctx, http.MethodGet, "/api/state", nil, &st)
 	return st, err
+}
+
+// ErrNoChanges means the server cannot report changes: it predates them.
+var ErrNoChanges = errors.New("this Switcher does not report changes")
+
+// Changes waits until the state differs from the one tagged since, or until
+// the server's own limit (25 seconds) passes, and returns the current
+// state's tag. An empty or outdated since answers at once.
+func (c *Client) Changes(ctx context.Context, since string) (tag string, changed bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	var answer struct {
+		ETag    string `json:"etag"`
+		Changed bool   `json:"changed"`
+	}
+	err = c.do(ctx, http.MethodGet, "/api/state/changes?since="+url.QueryEscape(since), nil, &answer)
+	if r := (*refusal)(nil); errors.As(err, &r) && r.status == http.StatusNotFound {
+		return "", false, ErrNoChanges
+	}
+	return answer.ETag, answer.Changed, err
 }
 
 // Post sends one action.

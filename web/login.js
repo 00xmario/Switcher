@@ -23,7 +23,9 @@ form.addEventListener('submit', async (event) => {
     }
     if (result.csrf) localStorage.setItem('switcher-csrf', result.csrf);
     password.value = '';
-    location.replace('/');
+    // The tray's panel sends its login here and gets it back; any other
+    // page to return to is ignored, so the login never leads off Switcher.
+    location.replace(new URLSearchParams(location.search).get('next') === '/panel' ? '/panel' : '/');
   } catch {
     error.textContent = 'Could not reach Switcher';
   } finally {
