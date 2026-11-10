@@ -392,6 +392,7 @@ func TestSavedStateHoldsNoSessionAndIsPrivate(t *testing.T) {
 		t.Fatal("the session itself is saved")
 	}
 	reloaded := New(x.access.path)
+	reloaded.now = x.access.now
 	if _, _, ok := reloaded.Session(myPhone, session.Value); !ok {
 		t.Fatal("session lost after a restart")
 	}
