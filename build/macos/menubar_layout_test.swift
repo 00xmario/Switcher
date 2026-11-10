@@ -695,7 +695,8 @@ func runLoadAndLimitFixtures() {
     guard let pinned = buttons.first(where: \.pinned) else { fail("No limit button for the limited account") }
     pinned.onClicked?()
     guard delegate.limitEditingID == "claude-kept" else { fail("The limit button must open the account's choices") }
-    let chips = views(ChipButton.self, in: delegate.menu)
+    // The limit chips come first; Keep awake's follow further down.
+    let chips = Array(views(ChipButton.self, in: delegate.menu).prefix(5))
     guard chips.map(\.title) == ["Off", "10%", "20%", "30%", "50%"], chips.first(where: { $0.title == "10%" })?.selected == true,
           texts(in: delegate.menu).contains("Switches away at 10% left, keeping it for the chat apps") else {
         fail("Limit choices are incomplete: \(chips.map(\.title))")
