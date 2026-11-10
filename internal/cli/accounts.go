@@ -20,7 +20,11 @@ type Account struct {
 	Usage      []Window `json:"usage"`
 	// BankedResets counts the account's unused usage-limit resets (Codex).
 	BankedResets int `json:"banked_resets,omitempty"`
-	nextReset    string
+	// UsageLimit is the share of the weekly or monthly usage the account
+	// keeps; AtLimit says it reached it, so Switcher moved away from it.
+	UsageLimit int  `json:"usage_limit,omitempty"`
+	AtLimit    bool `json:"at_limit,omitempty"`
+	nextReset  string
 	// loginKept: Claude Code is signed in with this account, but its requests
 	// use the selected one.
 	loginKept bool
@@ -65,10 +69,13 @@ type apiAccount struct {
 		Count  int    `json:"count"`
 		NextID string `json:"next_id"`
 	} `json:"reset_credits"`
+	UsageLimit int  `json:"usage_limit"`
+	AtLimit    bool `json:"at_limit"`
 }
 
 func (a apiAccount) account() Account {
-	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, loginKept: a.NativeActive && !a.NativeSwitch, Usage: []Window{}}
+	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, loginKept: a.NativeActive && !a.NativeSwitch, Usage: []Window{},
+		UsageLimit: a.UsageLimit, AtLimit: a.AtLimit && a.UsageLimit > 0}
 	if a.Usage != nil && a.Usage.Windows != nil {
 		account.Usage = a.Usage.Windows
 	}
@@ -215,6 +222,12 @@ func accountTable(accounts []Account) string {
 		if h := healthText(a.Health); h != "" {
 			notes = append(notes, h)
 		}
+		switch {
+		case a.AtLimit:
+			notes = append(notes, fmt.Sprintf("at its %d%% limit", a.UsageLimit))
+		case a.UsageLimit > 0:
+			notes = append(notes, fmt.Sprintf("keeps %d%%", a.UsageLimit))
+		}
 		plan := planNames[a.Plan]
 		if plan == "" {
 			plan = a.Plan
@@ -288,6 +301,81 @@ func runUse(c *ctx, args []string) error {
 	}
 	c.result(out, human)
 	return nil
+}
+
+const limitHelp = `Keeps a share of an account's weekly or monthly usage for what Switcher
+cannot route, such as the Claude and ChatGPT chat apps. Once the account has
+that much or less left, Switcher moves its provider to the account with the
+most usage left and does not move back to it on its own. With no other
+account to move to, it keeps using this one.
+
+  switcher limit me@example.com 10     keep 10%: switch away at 10% left
+  switcher limit me@example.com off    use it all again
+  switcher limit me@example.com        show its limit
+
+On a Mac that uses another Switcher's accounts, the limit is set on that
+Switcher and applies everywhere.
+`
+
+func runLimit(c *ctx, args []string) error {
+	pos, err := c.parse(c.flags("limit"), args, 1, 2)
+	if err != nil {
+		return err
+	}
+	_, accounts, err := c.state()
+	if err != nil {
+		return err
+	}
+	account, err := resolve(pos[0], accounts)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 1 {
+		human := fmt.Sprintf("%s has no usage limit.", account.Email)
+		switch {
+		case account.AtLimit:
+			human = fmt.Sprintf("%s keeps %d%% of its usage and has reached that.", account.Email, account.UsageLimit)
+		case account.UsageLimit > 0:
+			human = fmt.Sprintf("%s keeps %d%% of its usage: Switcher moves away at %d%% left.", account.Email, account.UsageLimit, account.UsageLimit)
+		}
+		c.result(map[string]any{"account": account}, human)
+		return nil
+	}
+	limit, err := parseLimit(pos[1])
+	if err != nil {
+		return err
+	}
+	var answer struct {
+		Account *apiAccount `json:"account"`
+	}
+	if err := c.cl.call(http.MethodPatch, "/api/accounts/"+url.PathEscape(account.ID), map[string]int{"usage_limit": limit}, &answer); err != nil {
+		return err
+	}
+	if updated := answer.Account.added(); updated != nil {
+		account = *updated
+	} else {
+		account.UsageLimit = limit
+	}
+	human := fmt.Sprintf("%s has no usage limit now.", account.Email)
+	if limit > 0 {
+		human = fmt.Sprintf("%s keeps %d%%: Switcher moves %s to another account at %d%% left.", account.Email, limit, providerName(account.Provider), limit)
+	}
+	c.result(map[string]any{"account": account}, human)
+	return nil
+}
+
+// parseLimit reads a usage limit: a percentage from 1 to 95, with or without
+// the percent sign, or off (0).
+func parseLimit(text string) (int, error) {
+	text = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(text)), "%")
+	if text == "off" || text == "none" || text == "0" {
+		return 0, nil
+	}
+	var limit int
+	if _, err := fmt.Sscanf(text, "%d", &limit); err != nil || fmt.Sprint(limit) != text || limit < 1 || limit > 95 {
+		return 0, usagef("a limit is a percentage from 1 to 95, or off")
+	}
+	return limit, nil
 }
 
 func runRemove(c *ctx, args []string) error {

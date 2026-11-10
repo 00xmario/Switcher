@@ -62,6 +62,7 @@ import (
 	"switcher/internal/sessionmeta"
 	"switcher/internal/settings"
 	"switcher/internal/store"
+	"switcher/internal/sysload"
 	"switcher/internal/update"
 	"switcher/internal/usage"
 )
@@ -457,7 +458,7 @@ func run(port, desktopRelayPort int) {
 		Store: st, Logins: logins, Proxy: proxyManager, Providers: providers,
 		DesktopRelay: desktopRelay, DesktopSettingsPath: desktopSettingsPath(),
 		DesktopSessionMetadata: metadataIndex,
-		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Usage: usageService,
+		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Load: sysload.New(), Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
 		Autostart: autostart.New(executablePath()),
 		// The tray's Quit Switcher: stop as on SIGTERM, which also tells

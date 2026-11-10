@@ -110,6 +110,9 @@ func Build(st State, status Status, now time.Time) []Item {
 	}
 
 	items = append(items, sep)
+	if limits, ok := limitsMenu(st); ok {
+		items = append(items, limits)
+	}
 	if a := st.Awake; a != nil && a.Supported {
 		items = append(items, awakeMenu(*a, now))
 	}
@@ -227,6 +230,12 @@ func accountItems(a Account, handedBack, bars bool, now time.Time) []Item {
 			}
 		}
 	}
+	switch {
+	case a.UsageLimit > 0 && a.AtLimit:
+		note(fmt.Sprintf("At its %d%% limit · Switcher uses another account", a.UsageLimit))
+	case a.UsageLimit > 0:
+		note(fmt.Sprintf("Keeps %d%% · switches away at %d%% left", a.UsageLimit, a.UsageLimit))
+	}
 	for _, w := range windows {
 		note(usageLine(w, bars, unix))
 	}
@@ -234,6 +243,51 @@ func accountItems(a Account, handedBack, bars bool, now time.Time) []Item {
 		note("No usage reported yet")
 	}
 	return items
+}
+
+// limitChoices are the usage limits the tray offers, as in the dashboard.
+var limitChoices = []int{0, 10, 20, 30, 50}
+
+// limitsMenu sets each account's usage limit: the share of its weekly or
+// monthly usage it keeps for what Switcher cannot route. Only accounts that
+// report such a window, or already keep a share, are listed.
+func limitsMenu(st State) (Item, bool) {
+	var children []Item
+	for _, a := range st.Accounts {
+		counted := a.UsageLimit > 0
+		if a.Usage != nil {
+			for _, w := range a.Usage.Windows {
+				counted = counted || w.Label == "Weekly" || w.Label == "Monthly"
+			}
+		}
+		if !counted {
+			continue
+		}
+		title := name(a.Provider) + " · " + a.Email
+		if a.UsageLimit > 0 {
+			title += fmt.Sprintf(" · keeps %d%%", a.UsageLimit)
+		}
+		choices := limitChoices
+		if !slices.Contains(choices, a.UsageLimit) {
+			choices = append(slices.Clone(choices), a.UsageLimit)
+			slices.Sort(choices)
+		}
+		var options []Item
+		for _, v := range choices {
+			label := "Off"
+			if v > 0 {
+				label = fmt.Sprintf("Switch away at %d%% left", v)
+			}
+			options = append(options, Item{Action: fmt.Sprintf("limit:%s:%d", a.ID, v), Title: label, Checkable: true,
+				Checked: a.UsageLimit == v, Disabled: st.HandedBack})
+		}
+		children = append(children, Item{Title: title, Children: options})
+	}
+	if len(children) == 0 {
+		return Item{}, false
+	}
+	return Item{Title: "Usage limits", Tooltip: "Keep a share of an account's weekly usage for the chat apps; Switcher moves to another account at that much left",
+		Children: children}, true
 }
 
 // usageLine is one usage window as what is left, the way the Mac menu, the

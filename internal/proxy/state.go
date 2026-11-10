@@ -16,13 +16,15 @@ type routingSnapshot struct {
 	managementKey         string
 	nativeCommit          string
 	keptLoginAligned      bool
+	limits                map[string]int
 }
 
 func (m *Manager) routingSnapshotLocked() routingSnapshot {
 	return routingSnapshot{active: maps.Clone(m.active), exhausted: maps.Clone(m.exhausted),
 		selection: maps.Clone(m.selectionRevision), exhaustion: maps.Clone(m.exhaustionRevision), quota: maps.Clone(m.quotaRevision),
 		order: append([]string(nil), m.order...), hidden: append([]string(nil), m.hidden...),
-		managementKey: m.managementKey, nativeCommit: m.nativeClaudeCommit, keptLoginAligned: m.keptLoginAligned}
+		managementKey: m.managementKey, nativeCommit: m.nativeClaudeCommit, keptLoginAligned: m.keptLoginAligned,
+		limits: maps.Clone(m.limits)}
 }
 
 func (s routingSnapshot) restore(m *Manager) {
@@ -30,6 +32,7 @@ func (s routingSnapshot) restore(m *Manager) {
 	m.selectionRevision, m.exhaustionRevision, m.quotaRevision = s.selection, s.exhaustion, s.quota
 	m.order, m.hidden, m.managementKey, m.nativeClaudeCommit = s.order, s.hidden, s.managementKey, s.nativeCommit
 	m.keptLoginAligned = s.keptLoginAligned
+	m.limits = s.limits
 }
 
 func (m *Manager) mutateStateLocked(change func()) error {
@@ -44,6 +47,7 @@ func (m *Manager) mutateStateLocked(change func()) error {
 
 func (m *Manager) removeRoutingLocked(id string) {
 	delete(m.exhausted, id)
+	delete(m.limits, id)
 	m.exhaustionRevision[id]++
 	for providerID, activeID := range m.active {
 		if activeID == id {

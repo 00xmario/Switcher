@@ -80,6 +80,10 @@ type State struct {
 	// KeptLoginAligned: with Claude Code's login kept (it goes through the
 	// Desktop relay), the selection already started at that login.
 	KeptLoginAligned bool `json:"kept_login_aligned,omitempty"`
+	// UsageLimits holds, per account, the share of its weekly or monthly
+	// usage to keep: at that much left, Switcher moves to another account.
+	// It lives here, not in the account file, so no token rewrite can lose it.
+	UsageLimits map[string]int `json:"usage_limits,omitempty"`
 }
 
 // ErrNotFound is returned when an account ID does not exist.

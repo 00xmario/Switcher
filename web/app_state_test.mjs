@@ -89,16 +89,17 @@ assert.equal(pendingRechecks.has('removed'), false,
 
 const formatStart = source.indexOf('function resetTime(untilUnix, description = ');
 const formatEnd = source.indexOf('\nfunction toast(', formatStart);
-const windowStart = source.indexOf('function windowHTML(win, providerID) {');
+const limitStart = source.indexOf('// Usage limits: an account keeps');
+const windowStart = source.indexOf('function windowHTML(win, providerID, limit = 0) {');
 const windowEnd = source.indexOf('\nfunction accountHTML(', windowStart);
-assert.ok(formatStart >= 0 && formatEnd > formatStart && windowStart >= 0 && windowEnd > windowStart);
+assert.ok(formatStart >= 0 && formatEnd > formatStart && limitStart >= 0 && windowStart > limitStart && windowEnd > windowStart);
 const hover = vm.createContext({
   PROVIDER_NAMES: { fake: 'Fake' }, PROVIDER_BAR_COLORS: { fake: '#000' },
   fmtRemaining: seconds => seconds > Date.now() / 1000 ? '1h' : null,
   escapeHTML: s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
   Date, Intl, Number, Math,
 });
-vm.runInContext(source.slice(formatStart, formatEnd) + '\n' + source.slice(windowStart, windowEnd) +
+vm.runInContext(source.slice(formatStart, formatEnd) + '\n' + source.slice(limitStart, windowEnd) +
   '\nthis.windowHTML = windowHTML;', hover);
 const reset = Math.floor(Date.now() / 1000) + 3600;
 const markup = hover.windowHTML({ label: 'Session', used_percent: 20, resets_at: reset }, 'fake');
@@ -129,7 +130,7 @@ const accountContext = vm.createContext({
   windowHTML: w => w.label,
   fmtRemaining: seconds => seconds > Date.now() / 1000 ? '1h' : null,
 });
-vm.runInContext(source.slice(formatStart, formatEnd) + '\n' +
+vm.runInContext(source.slice(formatStart, formatEnd) + '\n' + source.slice(limitStart, windowStart) +
   source.slice(windowEnd, source.indexOf('\n// Update banner:', windowEnd)) +
   '\nthis.accountHTML = accountHTML; this.accountMenuHTML = accountMenuHTML; this.mergedWindowsHTML = mergedWindowsHTML; this.accountInitials = accountInitials;', accountContext);
 const withoutCredit = accountContext.accountHTML({ id: 'active-id', provider: 'codex',
@@ -417,4 +418,28 @@ console.log('State ordering and fast Recheck reconciliation: OK');
   assert.match(merged, /acct-initials">MO<\/span><span class="bar-pct">100%/);
   assert.match(merged, /Monthly[\s\S]*<div class="merged-slot"><\/div>/, 'an account without the window leaves its slot empty');
   assert.equal(accountContext.accountInitials({ email: 'mario.makdis@x.y' }), 'MM');
+}
+
+// Usage limits in the dashboard: the ⋯ menu offers them for an account with
+// a weekly or monthly window, the card says what the limit does, and the bar
+// marks the kept share.
+{
+  const weekly = { windows: [{ label: 'Session', used_percent: 10 }, { label: 'Weekly', used_percent: 85 }] };
+  const menu = accountContext.accountMenuHTML({ id: 'kept-id', provider: 'codex', email: 'k@example.com', usage: weekly, usage_limit: 20 });
+  assert.match(menu, /class="menu-auto-reset menu-usage-limit"/);
+  assert.match(menu, /Usage limit · switch at 20% left/);
+  assert.match(menu, /aria-checked="true" data-act="usage-limit" data-limit="20"/);
+  assert.match(menu, /aria-checked="false" data-act="usage-limit" data-limit="0"/);
+  const custom = accountContext.accountMenuHTML({ id: 'kept-id', provider: 'codex', email: 'k@example.com', usage: weekly, usage_limit: 15 });
+  assert.match(custom, /data-limit="10"[\s\S]*data-limit="15"[\s\S]*data-limit="20"/, 'a limit set elsewhere is offered in order');
+  assert.doesNotMatch(accountContext.accountMenuHTML({ id: 'x', provider: 'codex', email: 'x@example.com', usage: { windows: [{ label: 'Session', used_percent: 1 }] } }),
+    /menu-usage-limit/, 'no weekly or monthly window: nothing to limit');
+  const card = accountContext.accountHTML({ id: 'kept-id', provider: 'codex', email: 'k@example.com', plan: 'pro', usage_limit: 20, at_limit: true,
+    health: { condition: 'usage_current' }, usage: weekly });
+  assert.match(card, /<span class="routing-warning"[^>]*>At its 20% limit<\/span>/);
+  assert.match(accountContext.accountHTML({ id: 'kept-id', provider: 'codex', email: 'k@example.com', usage_limit: 20, health: {}, usage: weekly }),
+    /<span class="limit-note"[^>]*>Keeps 20%<\/span>/);
+  const bar = hover.windowHTML({ label: 'Weekly', used_percent: 50, resets_at: null }, 'fake', 20);
+  assert.match(bar, /<span class="limit-zone" style="width:20%"/);
+  assert.doesNotMatch(hover.windowHTML({ label: 'Session', used_percent: 50, resets_at: null }, 'fake', 20), /limit-zone/);
 }

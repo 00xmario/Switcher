@@ -172,7 +172,9 @@ button.row-main:active .use { background: var(--surface-2); }
 .lines.no-bars .bar { display: none; }
 .line { display: contents; }
 .line-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
-.bar { display: block; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.bar { position: relative; display: block; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+/* Where a usage limit moves Switcher away: a short line across the bar. */
+.bar .limit-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); opacity: .6; }
 .bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .4s cubic-bezier(.2, .8, .2, 1); }
 .line-value { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .line-reset { justify-self: end; color: var(--dim); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }

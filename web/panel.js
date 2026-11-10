@@ -5,6 +5,7 @@
 import { switcherMark, playMark } from './brand.js';
 import * as cards from './account-cards.js';
 import { PROVIDERS, OUTCOMES, esc } from './account-cards.js';
+import * as loadCard from './load-card.js';
 
 // The panel marks the account the Mac menu marks: Claude Code's login for
 // Claude, the proxy's account otherwise.
@@ -12,7 +13,7 @@ export const selected = a => (a.native_switch_available ? a.native_active : a.ac
 
 // viewOf is how the cards draw here: on this computer, with the menu's
 // usage bars unless they are turned off in Settings.
-export const viewOf = state => ({ place: 'this computer', selected, bars: state.menu_usage_bars !== false });
+export const viewOf = state => ({ place: 'this computer', selected, bars: state.menu_usage_bars !== false, limits: !state.handed_back });
 
 // subtitle sits under the name, as the version does in the Mac menu; while
 // this computer uses a paired host's accounts, it names the host.
@@ -34,8 +35,10 @@ export function noticeHTML(state) {
   ].join('');
 }
 
-export function pageHTML(state, now = Date.now() / 1000) {
-  return `${noticeHTML(state)}${cards.stateHTML(state, now, viewOf(state))}
+// pageHTML is the panel: notices, the accounts, then the load card above the
+// footer, where the Mac menu has it above Keep awake.
+export function pageHTML(state, now = Date.now() / 1000, reading = null) {
+  return `${noticeHTML(state)}${cards.stateHTML(state, now, viewOf(state))}${loadCard.loadHTML(reading)}
     <footer class="foot"><a href="/" target="_blank" rel="noopener">Open dashboard</a></footer>`;
 }
 
@@ -105,7 +108,7 @@ export function watch({ get, onState, onError = () => {}, sleep = pause, pollMs 
 /* ---------- the page ---------- */
 
 const LOGIN = '/login?next=/panel';
-const app = { csrf: '', state: null, busy: false };
+const app = { csrf: '', state: null, busy: false, load: null };
 
 class HttpError extends Error {
   constructor(status, body) { super(body?.error || `HTTP ${status}`); this.status = status; this.body = body; }
@@ -136,7 +139,24 @@ const $ = id => document.getElementById(id);
 function render() {
   if (!app.state) return;
   $('top-sub').textContent = subtitle(app.state);
-  if (!app.busy) $('view').innerHTML = pageHTML(app.state);
+  if (!app.busy) $('view').innerHTML = pageHTML(app.state, Date.now() / 1000, app.load);
+}
+
+// readLoad takes a reading while the panel is in view, every two seconds,
+// and moves the rings to it; a hidden panel asks nothing.
+const LOAD_MS = 2000;
+async function readLoad() {
+  if (document.visibilityState === 'visible' && app.state) {
+    try {
+      const reading = await api('/api/system');
+      const shape = reading.available !== app.load?.available || reading.remote !== app.load?.remote || reading.machine !== app.load?.machine;
+      app.load = reading;
+      if (shape || app.busy || !loadCard.update($('view'), reading)) render();
+    } catch {
+      // An older server has no readings; the card stays away.
+    }
+  }
+  setTimeout(readLoad, LOAD_MS);
 }
 
 function toast(text) {
@@ -196,6 +216,7 @@ async function boot() {
   watch({ get: path => api(path), onState: state => { app.state = state; render(); }, onError: failed });
   // Countdowns move on between changes.
   setInterval(render, 30000);
+  readLoad();
 }
 
 async function act(button, run) {
@@ -218,6 +239,15 @@ async function act(button, run) {
 const account = id => app.state?.accounts?.find(a => a.id === id);
 
 if (typeof document !== 'undefined') {
+  document.addEventListener('change', event => {
+    const select = event.target.closest?.('select[data-limit]');
+    if (!select) return;
+    const limit = Number(select.value) || 0;
+    act(select, async () => {
+      await api(`/api/accounts/${encodeURIComponent(select.dataset.limit)}`, { method: 'PATCH', body: { usage_limit: limit } });
+      toast(limit ? `Switches to another account at ${limit}% left` : 'No usage limit');
+    });
+  });
   document.addEventListener('click', event => {
     const target = event.target.closest('button');
     if (!target) return;

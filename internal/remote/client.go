@@ -25,6 +25,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"switcher/internal/sysload"
 )
 
 type clientFile struct {
@@ -919,6 +921,44 @@ func (c *Client) markInstalling(u *HostUpdate) {
 	if u.Install == nil && c.hostInstalling.Load() {
 		u.Install = &HostUpdateSteps{Step: "updating"}
 	}
+}
+
+// SystemLoad asks the host how busy it is, for this Mac's load card while
+// it uses the host's accounts. The reading is kept to numbers in range and
+// named after the host as paired here; the host's own strings are not shown.
+// A host that does not answer, or an older one without load readings, gives
+// a view that says so.
+func (c *Client) SystemLoad(ctx context.Context) sysload.View {
+	view := sysload.View{Machine: c.Status().HostName, Remote: true}
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://switcher-host/api/system", nil)
+	resp, err := c.do(req)
+	if err != nil {
+		view.Reason = "unreachable"
+		return view
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		view.Reason = "update"
+		return view
+	case resp.StatusCode != http.StatusOK:
+		view.Reason = "unreachable"
+		return view
+	}
+	var got sysload.View
+	if json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&got) != nil {
+		view.Reason = "unreachable"
+		return view
+	}
+	reason := got.Reason
+	got.Sanitize()
+	got.Machine, got.Remote = view.Machine, true
+	if !got.Available && reason == "unsupported" {
+		got.Reason = reason
+	}
+	return got
 }
 
 // hostError is the host's answer to a request it refused.
