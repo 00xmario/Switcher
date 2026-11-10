@@ -340,6 +340,10 @@ func runLoadApps(c *ctx) error {
 		return nil
 	}
 	lines := []string{fmt.Sprintf("%s: CPU %d%% · Memory %d%% · %d processes", name, v.CPU, v.Memory, v.Processes)}
+	if v.AppsUnavailable {
+		c.result(v, lines[0]+"\nCould not list the apps this time; try again in a moment.")
+		return nil
+	}
 	top := func(title string, less func(a, b sysload.App) bool, show func(a sysload.App) string) {
 		apps := append([]sysload.App(nil), v.Apps...)
 		sort.SliceStable(apps, func(i, j int) bool { return less(apps[i], apps[j]) })

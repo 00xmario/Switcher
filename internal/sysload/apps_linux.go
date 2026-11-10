@@ -115,10 +115,21 @@ func (l *linuxProcs) process(pid int, dir string) (procInfo, bool) {
 		if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
 			p.name = programName(exe)
 		} else {
-			p.name, p.cut = comm, len(comm) >= 15
+			p.name, p.cut = kernelName(comm), len(comm) >= 15
 		}
 	}
 	return p, p.name != ""
+}
+
+// kernelName is the kernel's name for another user's program, which the
+// process may have set itself (node copies its title there): only its first
+// word, and none that looks like a setting or an address.
+func kernelName(comm string) string {
+	name, _, _ := strings.Cut(strings.TrimSpace(comm), " ")
+	if name == "" || strings.ContainsAny(name, "=:@/\\") {
+		return "Other programs"
+	}
+	return name
 }
 
 // programName names a program after its file. A file named after its
@@ -256,6 +267,7 @@ func parseDRMFdinfo(raw []byte) (drmClient, bool) {
 	var legacy uint64
 	c.busy = map[string]time.Duration{}
 	c.cycles = map[string][2]uint64{}
+	c.capacity = map[string]uint64{}
 	for _, line := range strings.Split(string(raw), "\n") {
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
@@ -267,7 +279,11 @@ func parseDRMFdinfo(raw []byte) (drmClient, bool) {
 			id = value
 		case key == "drm-pdev":
 			dev = value
-		case strings.HasPrefix(key, "drm-engine-") && !strings.HasPrefix(key, "drm-engine-capacity-"):
+		case strings.HasPrefix(key, "drm-engine-capacity-"):
+			if v, err := strconv.ParseUint(value, 10, 64); err == nil && v > 1 && v <= 64 {
+				c.capacity[strings.TrimPrefix(key, "drm-engine-capacity-")] = v
+			}
+		case strings.HasPrefix(key, "drm-engine-"):
 			n, unit, _ := strings.Cut(value, " ")
 			if unit != "ns" {
 				continue

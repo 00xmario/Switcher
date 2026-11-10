@@ -246,15 +246,18 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
   async function poll() {
     if (!active || inFlight) return;
     inFlight = true;
-    // The history is two minutes of time: after a long gap (the page was
-    // closed or hidden) it starts again, and a missed reading leaves a gap.
-    const now = Date.now();
-    if (lastAt && now - lastAt > 3 * POLL_MS + 4000) for (const k of Object.keys(history)) history[k] = [];
-    lastAt = now;
+    // The history is two minutes of time, one slot per two-second step:
+    // steps with no reading (a failure, a hidden tab, a slow answer) are
+    // gaps, and after a gap longer than the history it starts again.
     const push = next => {
+      const now = Date.now();
+      const missed = lastAt ? Math.round((now - lastAt) / POLL_MS) - 1 : 0;
+      lastAt = now;
       for (const m of METRICS) {
+        if (missed >= HISTORY) history[m.id] = [];
+        else for (let i = 0; i < missed; i++) history[m.id].push(NaN);
         history[m.id].push(value(next, m.id));
-        if (history[m.id].length > HISTORY) history[m.id].shift();
+        history[m.id].splice(0, Math.max(0, history[m.id].length - HISTORY));
       }
     };
     try {
@@ -270,6 +273,7 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
       view = next;
       push(view);
     } catch {
+      if (!active) return;
       failures++;
       push(null);
       if (failures > 2) view = null;
@@ -307,6 +311,7 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
     view = null;
     machine = null;
     lastAt = 0;
+    failures = 0;
     for (const k of Object.keys(history)) history[k] = [];
     root.innerHTML = shellHTML();
     bindControls();

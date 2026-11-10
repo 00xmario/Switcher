@@ -874,6 +874,13 @@ final class ClickableRow: NSView {
     override func mouseDown(with event: NSEvent) {
         if let handler = onClicked { handler() }
     }
+
+    // VoiceOver presses it as a click does.
+    override func accessibilityPerformPress() -> Bool {
+        guard let handler = onClicked else { return false }
+        handler()
+        return true
+    }
 }
 
 // HoverCard holds account rows. Hover is not driven by AppKit tracking

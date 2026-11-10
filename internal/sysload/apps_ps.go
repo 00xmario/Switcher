@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"hash/fnv"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -40,12 +41,33 @@ func parsePS(stats, paths []byte) procSnapshot {
 		if strings.HasPrefix(name, "<") || name == "" {
 			return // a zombie: no memory, no time
 		}
-		if path := pathOf[pid]; strings.HasPrefix(path, "/") && strings.HasPrefix(path[strings.LastIndexByte(path, '/')+1:], name) {
+		if path := pathOf[pid]; ownPath(path, name) {
 			name = appName(path)
 		}
 		snap.procs = append(snap.procs, procInfo{pid: pid, start: h.Sum64(), name: friendlyName(name), cpu: cpu, mem: rss << 10})
 	})
 	return snap
+}
+
+// isFile says a path is a program file on this computer; tests replace it.
+var isFile = func(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+// ownPath says the path a process was started as is its program's own: an
+// absolute path to a file whose name is the kernel's name for the program
+// (which the kernel cuts at 16 characters). A process that rewrote it, with
+// its arguments after the program or in its place, fails this.
+func ownPath(path, comm string) bool {
+	if !strings.HasPrefix(path, "/") || comm == "" {
+		return false
+	}
+	base := path[strings.LastIndexByte(path, '/')+1:]
+	if base != comm && !(len(comm) >= 16 && strings.HasPrefix(base, comm)) {
+		return false
+	}
+	return isFile(path)
 }
 
 // lines calls fn with the fields of each line of a listing.

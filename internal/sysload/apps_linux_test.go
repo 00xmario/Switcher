@@ -86,3 +86,30 @@ func TestParseDRMCyclesAndRegions(t *testing.T) {
 		t.Fatalf("cycles share: %+v", got.Apps)
 	}
 }
+
+// Another user's program goes by the kernel's name, which the process may
+// have set: only a first word that looks like a name.
+func TestKernelName(t *testing.T) {
+	for comm, want := range map[string]string{
+		"sshd": "sshd", "npm start --prod": "npm", "tok=hunter2 xyz": "Other programs",
+		"host:5432": "Other programs", "": "Other programs", "a/b": "Other programs",
+	} {
+		if got := kernelName(comm); got != want {
+			t.Errorf("kernelName(%q) = %q, want %q", comm, got, want)
+		}
+	}
+}
+
+// Engines of one kind share the time: two video engines busy 90% of a
+// second each are 90% busy, not 180%.
+func TestEngineCapacity(t *testing.T) {
+	c, _ := parseDRMFdinfo([]byte("drm-client-id:\t3\ndrm-engine-video:\t0 ns\ndrm-engine-capacity-video:\t2\n"))
+	if c.capacity["video"] != 2 || len(c.busy) != 1 {
+		t.Fatalf("%+v", c)
+	}
+	before := procSnapshot{gpuOK: true, procs: []procInfo{{pid: 1, name: "x"}}, gpu: []gpuClient{{key: "k", pid: 1, busy: map[string]time.Duration{"video": 0}, capacity: c.capacity}}}
+	after := procSnapshot{gpuOK: true, procs: []procInfo{{pid: 1, name: "x"}}, gpu: []gpuClient{{key: "k", pid: 1, busy: map[string]time.Duration{"video": 1800 * time.Millisecond}, capacity: c.capacity}}}
+	if got := breakdown(before, after, time.Second, 1); *got.Apps[0].GPU != 90 {
+		t.Fatalf("share %v", *got.Apps[0].GPU)
+	}
+}

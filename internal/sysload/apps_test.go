@@ -26,27 +26,44 @@ func TestAppNames(t *testing.T) {
 }
 
 func TestParsePS(t *testing.T) {
+	files := map[string]bool{
+		"/sbin/launchd": true,
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome":                                                                         true,
+		"/Applications/Google Chrome.app/Contents/Frameworks/X.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper": true,
+		"/opt/homebrew/opt/redis/bin/redis-server":                                                                                             true,
+	}
+	was := isFile
+	isFile = func(path string) bool { return files[path] }
+	defer func() { isFile = was }()
 	stats := []byte("    1   0:12.50  20480 Mon Nov 10 09:00:01 2026 launchd\n" +
 		"  501   1:02:03.00 102400 Mon Nov 10 09:00:02 2026 Google Chrome\n" +
 		"  502   2-00:00:01.00 1024 Mon Nov 10 09:00:03 2026 Google Chrome He\n" +
 		"  600   0:00.10  4096 Mon Nov 10 09:00:04 2026 postgres\n" +
 		"  601   0:00.00     0 Mon Nov 10 09:00:05 2026 <defunct>\n" +
 		"  602   0:00.01  2048 Mon Nov 10 09:00:06 2026 zsh\n" +
+		"  603   0:00.01  2048 Mon Nov 10 09:00:07 2026 redis-server\n" +
+		"  604   0:00.01  2048 Mon Nov 10 09:00:08 2026 mytool\n" +
+		"  605   0:00.01  2048 Mon Nov 10 09:00:09 2026 tool\n" +
 		"  bad line\n")
 	paths := []byte("    1 /sbin/launchd\n" +
 		"  501 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n" +
 		"  502 /Applications/Google Chrome.app/Contents/Frameworks/X.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper\n" +
 		"  600 postgres: alice orders 127.0.0.1(54321) idle\n" +
-		"  602 -zsh\n")
+		"  602 -zsh\n" +
+		"  603 /opt/homebrew/opt/redis/bin/redis-server 127.0.0.1:6379\n" +
+		"  604 /usr/local/bin/mytool --password=hunter2\n" +
+		"  605 /usr/local/bin/tool --url=https://site.app/tool\n")
 	snap := parsePS(stats, paths)
-	if len(snap.procs) != 5 || snap.gpuOK {
+	if len(snap.procs) != 8 || snap.gpuOK {
 		t.Fatalf("%+v", snap)
 	}
 	want := []struct {
 		name string
 		cpu  time.Duration
 	}{{"launchd", 12500 * time.Millisecond}, {"Google Chrome", time.Hour + 2*time.Minute + 3*time.Second},
-		{"Google Chrome", 48*time.Hour + time.Second}, {"PostgreSQL", 100 * time.Millisecond}, {"zsh", 10 * time.Millisecond}}
+		{"Google Chrome", 48*time.Hour + time.Second}, {"PostgreSQL", 100 * time.Millisecond}, {"zsh", 10 * time.Millisecond},
+		// Titles rewritten with arguments go by the kernel's name.
+		{"redis-server", 10 * time.Millisecond}, {"mytool", 10 * time.Millisecond}, {"tool", 10 * time.Millisecond}}
 	for i, w := range want {
 		if p := snap.procs[i]; p.name != w.name || p.cpu != w.cpu || p.start == 0 {
 			t.Errorf("%d: %+v, want %+v", i, p, w)

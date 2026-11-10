@@ -46,7 +46,10 @@ type gpuClient struct {
 	// cycles are an engine's busy cycles and its total cycles, as xe
 	// counts them instead of time.
 	cycles map[string][2]uint64
-	vram   uint64
+	// capacity is how many engines of a kind there are, when more than
+	// one: their busy time adds up past the time that passed.
+	capacity map[string]uint64
+	vram     uint64
 }
 
 type procSnapshot struct {
@@ -143,15 +146,21 @@ func breakdown(before, after procSnapshot, elapsed time.Duration, cores int) App
 			share := 0.0
 			if was, ok := prevGPU[c.key]; ok && elapsed > 0 {
 				// A client's share is its busiest engine's.
+				engines := func(engine string) float64 {
+					if n := c.capacity[engine]; n > 1 {
+						return float64(n)
+					}
+					return 1
+				}
 				for engine, busy := range c.busy {
 					if before, ok := was.busy[engine]; ok && busy >= before {
-						share = max(share, 100*float64(busy-before)/float64(elapsed))
+						share = max(share, 100*float64(busy-before)/float64(elapsed)/engines(engine))
 					}
 				}
 				for engine, now := range c.cycles {
 					before, ok := was.cycles[engine]
 					if ok && now[0] >= before[0] && now[1] > before[1] {
-						share = max(share, 100*float64(now[0]-before[0])/float64(now[1]-before[1]))
+						share = max(share, 100*float64(now[0]-before[0])/float64(now[1]-before[1])/engines(engine))
 					}
 				}
 			}

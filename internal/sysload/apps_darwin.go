@@ -32,12 +32,14 @@ func darwinProcs() (procSnapshot, error) {
 func runPS(format string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/ps", "-axo", format)
+	// -ww: whole paths, however wide; ps would cut them to a terminal's
+	// width otherwise.
+	cmd := exec.CommandContext(ctx, "/bin/ps", "-ww", "-axo", format)
 	cmd.WaitDelay = 500 * time.Millisecond
 	// Start times in one fixed form, and names as they are written.
 	env := []string{"LC_TIME=C", "LC_CTYPE=en_US.UTF-8"}
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "LC_") && !strings.HasPrefix(kv, "LANG=") {
+		if !strings.HasPrefix(kv, "LC_") && !strings.HasPrefix(kv, "LANG=") && !strings.HasPrefix(kv, "COLUMNS=") {
 			env = append(env, kv)
 		}
 	}
