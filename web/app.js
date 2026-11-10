@@ -417,6 +417,11 @@ function announceAutoSwitch(state) {
   } catch { /* still announce */ }
   const to = (state.accounts || []).find(a => a.id === event.to);
   const name = to?.email ? to.email : 'another account';
+  if (event.reason === 'limit') {
+    const from = (state.accounts || []).find(a => a.id === event.from);
+    toast(`${from?.email || 'An account'} reached its usage limit; ${event.where === 'claude_code' ? 'Claude Code' : PROVIDER_NAMES[event.provider] || 'Switcher'} now uses ${name}`);
+    return;
+  }
   toast(event.where === 'desktop'
     ? `A Claude Desktop conversation ran out of usage and moved to ${name}`
     : `Claude Code ran out of usage and now uses ${name}`);
@@ -491,7 +496,36 @@ const PROVIDER_BAR_COLORS = {
   copilot: 'var(--bar-copilot, var(--accent))',
 };
 
-function windowHTML(win, providerID) {
+// Usage limits: an account keeps a share of its weekly or monthly usage, and
+// Switcher moves away from it at that much left. The windows that count and
+// the shares offered in the account menu:
+const LIMIT_WINDOWS = ['Weekly', 'Monthly'];
+const LIMIT_CHOICES = [0, 10, 20, 30, 50];
+
+// limitZoneHTML marks the kept share on a quota bar: the part of the bar
+// left of the line is what the account keeps.
+// limitOf is an account's usage limit as a whole share, or 0: whatever else
+// a server sends is never printed.
+function limitOf(account) {
+  const limit = Number(account?.usage_limit);
+  return Number.isInteger(limit) && limit > 0 && limit <= 95 ? limit : 0;
+}
+
+function limitZoneHTML(win, rawLimit) {
+  const limit = limitOf({ usage_limit: rawLimit });
+  if (!limit || !LIMIT_WINDOWS.includes(win.label)) return '';
+  return `<span class="limit-zone" style="width:${Math.min(95, limit)}%" title="Switcher moves away at ${limit}% left"></span>`;
+}
+
+function limitMetaHTML(account) {
+  const limit = limitOf(account);
+  if (!limit) return '';
+  return account.at_limit === true
+    ? `<span class="routing-warning" title="This account reached its usage limit, so Switcher uses another account when one has room">At its ${limit}% limit</span>`
+    : `<span class="limit-note" title="Switcher moves to another account at ${limit}% left">Keeps ${limit}%</span>`;
+}
+
+function windowHTML(win, providerID, limit = 0) {
   const left = Math.max(0, Math.min(100, 100 - win.used_percent));
   const used = 100 - left;
   const remaining = fmtRemaining(win.resets_at);
@@ -512,7 +546,7 @@ function windowHTML(win, providerID) {
         ${recovery}
       </div>
       <div class="win-bar">
-        <div class="bar" role="progressbar" aria-label="${escapeHTML(win.label)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}">${fill}${hatch}<span class="bar-label"><span class="bar-name">${escapeHTML(PROVIDER_NAMES[providerID] || providerID)}</span><span class="bar-pct">${left}%</span></span></div>
+        <div class="bar" role="progressbar" aria-label="${escapeHTML(win.label)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}">${fill}${hatch}${limitZoneHTML(win, limit)}<span class="bar-label"><span class="bar-name">${escapeHTML(PROVIDER_NAMES[providerID] || providerID)}</span><span class="bar-pct">${left}%</span></span></div>
         ${reset}
       </div>
     </div>`;
@@ -529,7 +563,7 @@ function accountHTML(account) {
   const plan = PLAN_NAMES[account.plan] || account.plan || '';
   let windows;
   if (account.usage && account.usage.windows && account.usage.windows.length) {
-    windows = `<div class="windows">${account.usage.windows.map(w => windowHTML(w, account.provider)).join('')}</div>`;
+    windows = `<div class="windows">${account.usage.windows.map(w => windowHTML(w, account.provider, account.usage_limit)).join('')}</div>`;
   } else if (account.usage) {
     windows = `<div class="unknown">Usage unavailable right now.</div>`;
   } else {
@@ -543,6 +577,7 @@ function accountHTML(account) {
           <div class="meta">
             ${plan ? `<span>${escapeHTML(plan)}</span>` : ''}
             ${status.cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
+            ${limitMetaHTML(account)}
             ${account.reset_credits?.count > 0 ? `<span class="banked" title="Banked usage-limit resets available">⚡ ${account.reset_credits.count} banked</span>` : ''}
           </div>
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
@@ -559,7 +594,7 @@ function accountHTML(account) {
     </div>`;
 }
 
-function compactWindowHTML(win) {
+function compactWindowHTML(win, limit = 0) {
   const left = Math.max(0, Math.min(100, 100 - win.used_percent));
   const remaining = fmtRemaining(win.resets_at);
   const exact = remaining ? resetTime(win.resets_at) : null;
@@ -571,7 +606,7 @@ function compactWindowHTML(win) {
         ${exact ? `<time datetime="${exact.iso}" title="${escapeHTML(exact.title)}">${escapeHTML(exact.short)}</time><span class="compact-reset-relative">· in ${remaining}</span>` : `<span class="compact-reset-relative">${unknownResetText(win.resets_at)}</span>`}
       </div>
       <div class="compact-track" role="progressbar" aria-label="${escapeHTML(win.label)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}">
-        <span class="compact-fill ${left <= 20 ? 'low' : ''}" style="width:${left}%"></span>
+        <span class="compact-fill ${left <= 20 ? 'low' : ''}" style="width:${left}%"></span>${limitZoneHTML(win, limit)}
       </div>
     </div>`;
 }
@@ -595,7 +630,7 @@ function compactAccountHTML(account) {
   const health = recheckPending ? { condition: 'checking' } : (account.health || { condition: 'checking' });
   const plan = PLAN_NAMES[account.plan] || account.plan || 'Unknown';
   const windows = account.usage?.windows?.length
-    ? account.usage.windows.map(compactWindowHTML).join('')
+    ? account.usage.windows.map(w => compactWindowHTML(w, account.usage_limit)).join('')
     : `<p class="compact-unknown">${health.condition === 'checking' ? 'Checking usage…' : health.condition === 'needs_relogin' ? 'Relogin needed to check usage.' : 'Usage unavailable right now.'}</p>`;
   return `
     <div class="account compact-card ${isActive ? 'active' : ''}" data-id="${escapeHTML(account.id)}">
@@ -608,6 +643,7 @@ function compactAccountHTML(account) {
       </div>
       <div class="compact-plan"><span>Plan</span><strong>${escapeHTML(plan)}</strong>
         ${status.cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
+        ${limitMetaHTML(account)}
         ${account.reset_credits?.count > 0 ? `<span class="banked" title="Banked usage-limit resets available">⚡ ${account.reset_credits.count} banked</span>` : ''}
       </div>
       <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
@@ -644,6 +680,7 @@ function mergedAccountHTML(account) {
           <div class="meta">
             ${plan ? `<span>${escapeHTML(plan)}</span>` : ''}
             ${statusOf(account).cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
+            ${limitMetaHTML(account)}
             ${account.reset_credits?.count > 0 ? `<span class="banked" title="Banked usage-limit resets available">⚡ ${account.reset_credits.count} banked</span>` : ''}
           </div>
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
@@ -682,7 +719,7 @@ function mergedWindowsHTML(accounts, providerID) {
         : `<span class="acct-initials">${escapeHTML(accountInitials(account))}</span>`;
       return `<div class="merged-slot win-bar">
         <div class="bar" role="progressbar" aria-label="${escapeHTML(label)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}">
-          ${left > 0 ? `<div class="fill" style="width:${left}%; background-color:${color}"></div>` : ''}${left < 100 ? `<div class="hatch" style="width:${100 - left}%; color:${color}"></div>` : ''}
+          ${left > 0 ? `<div class="fill" style="width:${left}%; background-color:${color}"></div>` : ''}${left < 100 ? `<div class="hatch" style="width:${100 - left}%; color:${color}"></div>` : ''}${limitZoneHTML(win, account.usage_limit)}
           <span class="bar-label">${name}<span class="bar-pct">${left}%</span></span>
         </div>
         ${exact ? `<time class="reset-badge" datetime="${exact.iso}" title="${escapeHTML(exact.title)}">↻ ${remaining}</time>` : `<span class="reset-badge" title="${escapeHTML(unknownResetText(win.resets_at))}">—</span>`}
@@ -731,8 +768,54 @@ function accountMenuHTML(account) {
           ${['global', 'on', 'off'].map(v => `<button type="button" role="menuitemradio" aria-checked="${mode === v}" data-act="auto-reset" data-mode="${v}" data-account-id="${escapeHTML(account.id)}">${labels[v]}</button>`).join('')}
         </div>
       </div>` : ''}
+    ${usageLimitMenuHTML(account)}
     ${ADD_METHOD[account.provider] === 'key' || data.remote?.role === 'client' ? '' : `<button type="button" role="menuitem" data-act="relogin" data-provider="${escapeHTML(account.provider)}" data-account-id="${escapeHTML(account.id)}">Relogin</button>`}
     <button type="button" role="menuitem" data-act="delete" data-account-id="${escapeHTML(account.id)}">Remove</button>`;
+}
+
+// usageLimitMenuHTML offers the share of the weekly or monthly usage an
+// account keeps, for accounts that report such a window (or already keep a
+// share). A share set elsewhere, such as from the command line, shows too.
+function usageLimitMenuHTML(account) {
+  const limit = limitOf(account);
+  const counted = (account.usage?.windows || []).some(w => LIMIT_WINDOWS.includes(w.label));
+  if (!counted && !limit) return '';
+  const choices = LIMIT_CHOICES.includes(limit) ? LIMIT_CHOICES : [...LIMIT_CHOICES, limit].sort((a, b) => a - b);
+  const where = data.remote?.role === 'client' && data.remote.host ? ` It is kept on ${data.remote.host} and applies everywhere.` : '';
+  const help = `Keep a share of this account's weekly usage for what Switcher can't route, like the Claude and ChatGPT chat apps. At that much left, Switcher moves to the account with the most usage left.${where}`;
+  return `
+      <div class="menu-auto-reset menu-usage-limit" role="group" aria-label="Usage limit, currently ${limit ? `${limit}% kept` : 'off'}" title="${escapeHTML(help)}">
+        <span class="menu-group-label">Usage limit · ${limit ? `switch at ${limit}% left` : 'off'}</span>
+        <div class="menu-chips">
+          ${choices.map(v => `<button type="button" role="menuitemradio" aria-checked="${limit === v}" data-act="usage-limit" data-limit="${v}" data-account-id="${escapeHTML(account.id)}" aria-label="${v ? `Keep ${v}%` : 'No limit'}">${v ? `${v}%` : 'Off'}</button>`).join('')}
+        </div>
+      </div>`;
+}
+
+// agentSkillHTML is the Tools card that installs Switcher's skill for AI
+// agents into ~/.agents/skills, so they know how to use Switcher.
+function agentSkillHTML(skill) {
+  if (!skill) return '';
+  const state = skill.blocked ? 'Something else is in its place'
+    : !skill.installed ? 'Not installed'
+    : skill.current ? 'Installed' : skill.managed ? 'Update available' : 'Changed by hand';
+  const action = skill.blocked ? ''
+    : !skill.installed ? 'Install skill'
+    : !skill.current ? (skill.managed ? 'Update skill' : 'Replace with Switcher’s')
+    : !skill.claude_code ? 'Link for Claude Code' : '';
+  const where = skill.installed && !skill.blocked
+    ? (skill.claude_code ? ' · Claude Code sees it' : ' · Claude Code does not see it yet')
+    : '';
+  return `<div class="settings-card agent-skill-card">
+      <div class="set-card-head"><h3>Skill for AI agents</h3><p class="settings-sub">Teaches Claude Code, Codex and other agents what Switcher is and how to use it, so “keep 10% on this account and switch automatically” just works.</p></div>
+      <div class="settings-row">
+        <div><strong>${escapeHTML(state)}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${where}</span></div>
+        <div class="skill-actions">
+          ${action ? `<button type="button" class="button primary" data-skill="install"${skill.installed && !skill.managed ? ' data-replace="1"' : ''}>${action}</button>` : ''}
+          ${skill.installed && skill.managed ? '<button type="button" class="button" data-skill="remove">Remove</button>' : ''}
+        </div>
+      </div>
+    </div>`;
 }
 
 // Shown while this Switcher is paired with another one, and while its tools
@@ -1106,6 +1189,25 @@ async function runAccountAction(button) {
         toast(outcomes[res.outcome] || 'Done');
         await pollState();
       } finally { button.disabled = false; resetFeedback.end(id); }
+    } else if (button.dataset.act === 'usage-limit') {
+      const limit = Number(button.dataset.limit) || 0;
+      button.disabled = true;
+      try {
+        const res = await api(`/api/accounts/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ usage_limit: limit }),
+        });
+        stateEpoch++;
+        if (res.account) {
+          data = { ...data, accounts: data.accounts.map(a => a.id === id ? mergeAccountMutation(a, res.account) : a) };
+          render();
+        }
+        toast(limit ? `Switcher moves away from this account at ${limit}% left` : 'No usage limit on this account');
+        await refreshState();
+      } finally {
+        button.disabled = false;
+      }
     } else if (button.dataset.act === 'auto-reset') {
       const mode = button.dataset.mode;
       button.disabled = true;
@@ -2314,6 +2416,10 @@ async function renderSettings() {
   try {
     sharing = !!(await api('/api/remote'))?.host?.enabled;
   } catch { /* only this Mac sees sharing */ }
+  let skill = null;
+  try {
+    skill = await api('/api/agent-skill');
+  } catch { /* an older server has no skill */ }
   if (authState.locked || settingsPage.hidden || request !== settingsRenderGeneration || epoch !== stateEpoch) return;
   // Opened straight from a link: render again once the dashboard state is in.
   settingsWaitingForState = !data.version;
@@ -2361,6 +2467,9 @@ async function renderSettings() {
           <div><strong>Use banked resets automatically</strong><span class="dim">Codex. Each account can override this in its ⋯ menu.</span></div>
           <label class="switch-wrap"><input type="checkbox" id="auto-use-reset" aria-label="Use a banked reset automatically when an account is out of usage" ${status.auto_use_reset ? 'checked' : ''}><span class="switch-visual"></span></label>
         </div>
+        <div class="settings-row">
+          <div><strong>Usage limits</strong><span class="dim">Keep a share of an account's weekly usage for the Claude and ChatGPT chat apps: at that much left, Switcher moves to the account with the most left. Set it in the account's ⋯ menu, the menu bar, or with <code>switcher limit</code>.</span></div>
+        </div>
       </div>
       ${code ? `<div class="settings-card">
         <div class="set-card-head"><h3>Claude Code login</h3><p class="settings-sub">${status.claude_code_login_kept ? 'Claude Code stays signed in with this account, which keeps its Remote Control sessions. Its requests use the account you select, through the Desktop relay.' : code.available ? '“Use in Claude Code” switches Claude Code’s own login. Running sessions pick it up within about 30 seconds.' : 'Switching the Claude Code login is unavailable here.'}</p></div>
@@ -2376,6 +2485,7 @@ async function renderSettings() {
     sharing: `<div class="set-module remote-card" id="remote-settings" aria-label="Share between Macs"></div>`,
     phone: `<div class="set-module" id="phone-settings" aria-label="Phone access"></div>`,
     tools: `
+      ${agentSkillHTML(skill)}
       <div class="settings-card">
         <div class="set-card-head"><h3>Command line</h3><p class="settings-sub">Switch accounts, sign in, share between Macs and set up Claude Desktop from a terminal, over SSH or for an agent, with <code>--json</code> output.</p></div>
         <div class="set-terminal" aria-hidden="true"><div class="set-terminal-bar"><i></i><i></i><i></i><span>switcher</span></div>
@@ -2664,6 +2774,22 @@ async function renderSettings() {
       autostart.disabled = false;
     }
   });
+
+  settingsPage.querySelectorAll('button[data-skill]').forEach(button => button.addEventListener('click', async () => {
+    const install = button.dataset.skill === 'install';
+    button.disabled = true;
+    try {
+      await api('/api/agent-skill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installed: install, replace: button.dataset.replace === '1' }),
+      });
+      toast(install ? 'Skill installed: your agents pick it up in their next session' : 'Skill removed');
+      renderSettings();
+    } catch (err) {
+      toast(err.message);
+      button.disabled = false;
+    }
+  }));
 
   const autoSwitchClaude = settingsPage.querySelector('#auto-switch-claude');
   autoSwitchClaude?.addEventListener('change', async () => {

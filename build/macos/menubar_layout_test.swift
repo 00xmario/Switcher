@@ -627,6 +627,152 @@ func runLiveStateFixtures() {
     print("Live state wait, older server and backoff: OK")
 }
 
+func runLoadAndLimitFixtures() {
+    var requests: [URLRequest] = []
+    var completions: [(Data?, URLResponse?, Error?) -> Void] = []
+    func response(_ status: Int) -> HTTPURLResponse {
+        HTTPURLResponse(url: URL(string: "https://fixture.invalid/load")!, statusCode: status,
+            httpVersion: nil, headerFields: nil)!
+    }
+    func views<T: NSView>(_ type: T.Type, in menu: NSMenu) -> [T] {
+        func walk(_ view: NSView) -> [T] { ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap(walk) }
+        return menu.items.compactMap(\.view).flatMap(walk)
+    }
+    func texts(in menu: NSMenu) -> [String] { views(NSTextField.self, in: menu).map(\.stringValue) }
+    func itemIndex(_ text: String, in menu: NSMenu) -> Int? {
+        menu.items.firstIndex { item in
+            guard let view = item.view else { return false }
+            func walk(_ v: NSView) -> Bool { ((v as? NSTextField)?.stringValue == text) || v.subviews.contains(where: walk) }
+            return walk(view)
+        }
+    }
+    func json(_ request: URLRequest) -> [String: Any] {
+        guard let body = request.httpBody,
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return [:] }
+        return object
+    }
+    var runtime = MenuRuntime()
+    runtime.request = { request, completion in requests.append(request); completions.append(completion) }
+    runtime.deviceToken = { "fixture-device-token" }
+    var errors: [String] = []
+    runtime.showError = { title, message in errors.append(title + ": " + message) }
+    let now = Date().timeIntervalSince1970
+    let weekly = Usage(available: true, windows: [
+        UsageWindow(label: "Session", used_percent: 20, resets_at: now + 3600),
+        UsageWindow(label: "Weekly", used_percent: 92, resets_at: now + 4 * 86400)])
+    var kept = Account(id: "claude-kept", provider: "claude", email: "kept@example.test", plan: "claude_max_20x",
+        active: true, exhausted_until: nil, usage: weekly, reset_credits: nil)
+    kept.usage_limit = 10
+    kept.at_limit = true
+    let free = Account(id: "claude-free", provider: "claude", email: "free@example.test", plan: "claude_max_20x",
+        active: false, exhausted_until: nil, usage: weekly, reset_credits: nil)
+    let sessionOnly = Account(id: "grok-1", provider: "grok", email: "s@example.test", plan: nil, active: true,
+        exhausted_until: nil, usage: Usage(available: true, windows: [UsageWindow(label: "Session", used_percent: 1, resets_at: nil)]),
+        reset_credits: nil)
+    let awake = AwakeState(supported: true, active: false)
+    func state(_ accounts: [Account], remote: RemoteInfo? = nil) -> AppState {
+        AppState(accounts: accounts, order: ["claude", "grok"], hidden: [], version: "fixture-1", update: nil,
+            menu_usage_bars: true, reset_notifications: false, awake: awake, remote: remote)
+    }
+    let delegate = AppDelegate(runtime: runtime)
+    delegate.applyMenuState(state([kept, free, sessionOnly], remote: RemoteInfo(role: "client", host: "k12", connected: true)))
+
+    // Usage limits: the account at its limit says so and marks its weekly bar.
+    guard texts(in: delegate.menu).contains("At limit") else { fail("An account at its usage limit must say so: \(texts(in: delegate.menu))") }
+    let buttons = views(LimitButton.self, in: delegate.menu)
+    guard buttons.count == 2, buttons.filter(\.pinned).count == 1 else {
+        fail("Accounts with a weekly window offer a limit (shown while one is set); a session-only account does not")
+    }
+    guard views(NSView.self, in: delegate.menu).contains(where: { $0.toolTip == "Switcher moves away at 10% left" }) else {
+        fail("The weekly bar must mark where the limit moves Switcher away")
+    }
+    for row in views(ClickableRow.self, in: delegate.menu) {
+        let labels = row.subviews.filter { $0 is NSTextField || $0 is BlurredLabel }
+        for button in row.subviews.compactMap({ $0 as? LimitButton }) {
+            guard labels.allSatisfy({ !$0.frame.intersects(button.frame) }) else { fail("The limit button overlaps the account's title") }
+        }
+    }
+    guard let pinned = buttons.first(where: \.pinned) else { fail("No limit button for the limited account") }
+    pinned.onClicked?()
+    guard delegate.limitEditingID == "claude-kept" else { fail("The limit button must open the account's choices") }
+    // The limit chips come first; Keep awake's follow further down.
+    let chips = Array(views(ChipButton.self, in: delegate.menu).prefix(5))
+    guard chips.map(\.title) == ["Off", "10%", "20%", "30%", "50%"], chips.first(where: { $0.title == "10%" })?.selected == true,
+          texts(in: delegate.menu).contains("Switches away at 10% left, keeping it for the chat apps") else {
+        fail("Limit choices are incomplete: \(chips.map(\.title))")
+    }
+    requests.removeAll(); completions.removeAll()
+    chips.first(where: { $0.title == "20%" })?.onClicked?()
+    guard requests.count == 1, requests[0].url?.path == "/api/accounts/claude-kept", requests[0].httpMethod == "PATCH",
+          json(requests[0])["usage_limit"] as? Int == 20,
+          requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+        fail("A limit chip must save the limit for its account")
+    }
+    completions.removeFirst()(Data(#"{"status":"ok"}"#.utf8), response(200), nil)
+    guard delegate.limitEditingID == nil, texts(in: delegate.menu).contains("Switches away at 20% left · saved on k12") else {
+        fail("A saved limit closes the choices and says where it was saved: \(texts(in: delegate.menu))")
+    }
+    pinned.onClicked?()
+    delegate.menuDidClose(delegate.menu)
+    guard delegate.limitEditingID == nil, views(ChipButton.self, in: delegate.menu).allSatisfy({ !["Off", "50%"].contains($0.title) }) else {
+        fail("Open limit choices must close with the menu")
+    }
+
+    // The load card: three rings above Keep awake, the host's while its
+    // accounts are used.
+    requests.removeAll(); completions.removeAll()
+    delegate.fetchLoadAsync()
+    delegate.fetchLoadAsync()
+    guard requests.count == 1, requests[0].url?.path == "/api/system", requests[0].httpMethod == "GET", delegate.loadInFlight else {
+        fail("The load card must read /api/system, one reading at a time")
+    }
+    let gb = 1_073_741_824.0
+    completions.removeFirst()(Data(#"{"machine":"k12","remote":true,"platform":"linux","available":true,"cpu":23,"cores":16,"memory":72,"memory_used":\#(22.9 * gb),"memory_total":\#(31.8 * gb),"gpu":94}"#.utf8), response(200), nil)
+    guard !delegate.loadInFlight else { fail("An answered reading must let the next one go") }
+    guard let host = itemIndex("k12", in: delegate.menu), let keepAwake = itemIndex("Keep awake", in: delegate.menu), host < keepAwake else {
+        fail("The load card must sit above Keep awake: \(texts(in: delegate.menu))")
+    }
+    let gauges = views(LoadGaugeView.self, in: delegate.menu)
+    guard gauges.map(\.kind) == ["cpu", "memory", "gpu"], gauges[0].value == 23, gauges[0].valueText == "23%",
+          gauges[0].detailText == "16 cores", gauges[1].detailText == "22.9 of 31.8 GB", gauges[2].value == 94,
+          abs(gauges[0].arcEnd - 0.23) < 0.001, texts(in: delegate.menu).contains("Host load") else {
+        fail("Load rings are wrong: \(gauges.map { ($0.kind, $0.valueText, $0.detailText) })")
+    }
+    // A new reading of the same shape moves the rings without a new card.
+    var next = delegate.systemLoad!
+    next.cpu = 64
+    delegate.applyLoad(next)
+    guard views(LoadGaugeView.self, in: delegate.menu).first === gauges[0], gauges[0].value == 64, abs(gauges[0].arcEnd - 0.64) < 0.001 else {
+        fail("A new reading must move the existing rings")
+    }
+    next.gpu = nil
+    delegate.applyLoad(next)
+    guard let gpu = views(LoadGaugeView.self, in: delegate.menu).last, gpu.value == nil, gpu.detailText == "No reading", gpu.valueText == "–" else {
+        fail("A missing graphics reading must say so")
+    }
+    delegate.applyLoad(SystemLoad(available: false, machine: "k12", remote: true, reason: "update"))
+    guard views(LoadGaugeView.self, in: delegate.menu).isEmpty, texts(in: delegate.menu).contains("Update k12 to see its load") else {
+        fail("An older host must be named with what to do")
+    }
+    delegate.applyLoad(SystemLoad(available: true, machine: "mac", remote: false, cpu: 5, cores: 8, memory: 40, gpu: 2))
+    guard texts(in: delegate.menu).contains("This Mac"), views(LoadGaugeView.self, in: delegate.menu).count == 3 else {
+        fail("This Mac's own load must be titled This Mac")
+    }
+    guard loadLevelColor(69) == accentColor, loadLevelColor(70) == warnColor, loadLevelColor(90) == strainedColor,
+          gigabytesText(128 * gb) == "128", gigabytesText(16 * gb) == "16.0" else {
+        fail("Load levels or sizes are wrong")
+    }
+    // An older server has no readings: the card goes.
+    requests.removeAll(); completions.removeAll()
+    delegate.fetchLoadAsync()
+    completions.removeFirst()(Data("404 page not found".utf8), response(404), nil)
+    guard delegate.systemLoad == nil, views(LoadGaugeView.self, in: delegate.menu).isEmpty, itemIndex("This Mac", in: delegate.menu) == nil else {
+        fail("A server without load readings must show no card")
+    }
+    guard errors.isEmpty else { fail("Unexpected errors: \(errors)") }
+    print("Load card and usage limits: OK")
+}
+
 @main
 struct MenuBarLayoutTest {
     static func main() {
@@ -636,6 +782,7 @@ struct MenuBarLayoutTest {
         runKeepAwakeFixtures()
         runHostAndHandBackFixtures()
         runLiveStateFixtures()
+        runLoadAndLimitFixtures()
         guard planNames["free"] == "Free" else { fail("Free accounts must not display a paid tier") }
         guard planLabel("go") == "Go", planLabel("plus") == "Plus", planLabel("team") == "Team",
               planLabel("business") == "Business", planLabel("self_serve_business") == "Self Serve Business",

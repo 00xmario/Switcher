@@ -366,9 +366,11 @@ var remotePaths = []string{"/remote/", "/api/accounts/", "/api/usage/refresh", "
 // remoteExactPaths are single routes a paired device may use: the state, and
 // waiting for it to change, which answers only an opaque tag and whether the
 // state changed, so a paired Mac learns at once of a switch made elsewhere;
-// and checking for and installing an update of this Switcher, an official
-// release only.
-var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check"}
+// checking for and installing an update of this Switcher, an official
+// release only; and how busy this computer is, for the paired Mac's load
+// card: processor, memory and graphics shares, nothing that names a person
+// or a process.
+var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check", "/api/system"}
 
 func allowedRemotePath(path string) bool {
 	if slices.Contains(remoteExactPaths, path) {

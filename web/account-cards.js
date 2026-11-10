@@ -56,14 +56,27 @@ export function duration(seconds) {
 // windowHTML draws one usage line as what is left: label, a short bar, the
 // percentage and the reset countdown. The lines of one account share a grid,
 // so their columns line up like the menu's.
-export function windowHTML(w, now = Date.now() / 1000) {
+// LIMIT_WINDOWS are the windows a usage limit watches; LIMIT_CHOICES the
+// shares the panel offers, as in the dashboard.
+export const LIMIT_WINDOWS = ['Weekly', 'Monthly'];
+export const LIMIT_CHOICES = [0, 10, 20, 30, 50];
+
+// limitOf is an account's usage limit as a whole share, or 0: whatever else
+// a server sends is never printed.
+export function limitOf(a) {
+  const limit = Number(a?.usage_limit);
+  return Number.isInteger(limit) && limit > 0 && limit <= 95 ? limit : 0;
+}
+
+export function windowHTML(w, now = Date.now() / 1000, rawLimit = 0) {
+  const limit = limitOf({ usage_limit: rawLimit });
   const used = Math.min(100, Math.max(0, Number(w.used_percent) || 0));
   const left = Math.round(100 - used);
   const resets = w.resets_at > now ? duration(w.resets_at - now) : '';
   const low = left <= LOW ? ' is-low' : '';
   return `<span class="line${low}">
       <span class="line-label">${esc(w.label)}:</span>
-      <span class="bar" aria-hidden="true"><i style="width:${left}%"></i></span>
+      <span class="bar" aria-hidden="true"><i style="width:${left}%"></i>${limit > 0 && LIMIT_WINDOWS.includes(w.label) ? `<b class="limit-tick" style="left:${Math.min(95, limit)}%"></b>` : ''}</span>
       <span class="line-value">${left}% left</span>
       <span class="line-reset">${resets ? `<span aria-hidden="true">↻ </span><span class="sr">, resets in </span>${resets}` : ''}</span>
     </span>`;
@@ -72,12 +85,12 @@ export function windowHTML(w, now = Date.now() / 1000) {
 // A view says where Switcher runs, for the hints ("your Mac", "this
 // computer"), which account a card marks as in use, and whether usage lines
 // have bars. By default it is the phone's: the proxy's account, with bars.
-const phoneView = { place: 'your Mac', selected: a => a.active, bars: true };
+const phoneView = { place: 'your Mac', selected: a => a.active, bars: true, limits: false };
 
 // accountHTML draws one account row. A row that is not in use is one big
 // button that switches to it; a banked reset stays its own button.
 export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
-  const { place, selected, bars } = { ...phoneView, ...view };
+  const { place, selected, bars, limits } = { ...phoneView, ...view };
   const windows = a.usage?.windows || [];
   const credits = a.reset_credits?.count || 0;
   const out = a.exhausted_until > now;
@@ -95,19 +108,40 @@ export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
     out ? `<span class="note is-out">Out of usage · back in ${duration(a.exhausted_until - now)}</span>` : '',
     condition === 'needs_relogin' ? '<span class="note is-out">Sign in again</span>' : '',
     (condition === 'usage_stale' || condition === 'usage_unavailable') && windows.length ? '<span class="note">Usage stale</span>' : '',
+    limitOf(a) && a.at_limit === true ? `<span class="note is-out">At its ${limitOf(a)}% limit · Switcher uses another account</span>` : '',
+    limitOf(a) && a.at_limit !== true ? `<span class="note">Keeps ${limitOf(a)}% · switches away at ${limitOf(a)}% left</span>` : '',
     a.native_switch_available && !active ? `<span class="note">Use also switches Claude Code on ${esc(place)}.</span>` : '',
   ].join('');
   const usage = windows.length
-    ? `<span class="lines${bars ? '' : ' no-bars'}">${windows.map(w => windowHTML(w, now)).join('')}</span>`
+    ? `<span class="lines${bars ? '' : ' no-bars'}">${windows.map(w => windowHTML(w, now, a.usage_limit)).join('')}</span>`
     : '<span class="note">No usage reported yet</span>';
   const body = `${title}${notes}${usage}`;
   const main = active
     ? `<div class="row-main">${body}</div>`
     : `<button type="button" class="row-main" data-use="${esc(a.id)}">${body}</button>`;
-  const reset = credits > 0 && a.reset_credits?.next_id
-    ? `<div class="row-actions"><button type="button" class="button${out ? ' accent' : ''}" data-reset="${esc(a.id)}">Use banked reset</button></div>`
-    : '';
+  const actions = [
+    credits > 0 && a.reset_credits?.next_id
+      ? `<button type="button" class="button${out ? ' accent' : ''}" data-reset="${esc(a.id)}">Use banked reset</button>` : '',
+    limits ? limitPickHTML(a) : '',
+  ].join('');
+  const reset = actions ? `<div class="row-actions">${actions}</div>` : '';
   return `<article class="account${active ? ' is-active' : ''}${out ? ' is-out' : ''}" data-account="${esc(a.id)}">${main}${reset}</article>`;
+}
+
+// limitPickHTML chooses an account's usage limit: the share of its weekly or
+// monthly usage it keeps. Only accounts with such a window, or a limit
+// already, offer it.
+export function limitPickHTML(a) {
+  const limit = limitOf(a);
+  const counted = (a.usage?.windows || []).some(w => LIMIT_WINDOWS.includes(w.label));
+  if (!counted && !limit) return '';
+  const choices = LIMIT_CHOICES.includes(limit) ? LIMIT_CHOICES : [...LIMIT_CHOICES, limit].sort((x, y) => x - y);
+  return `<label class="limit-pick" title="Keep a share of the weekly usage for the chat apps; Switcher moves to another account at that much left">
+      <span>Limit</span>
+      <select data-limit="${esc(a.id)}" aria-label="Usage limit for ${esc(a.email || a.id)}">
+        ${choices.map(v => `<option value="${v}"${v === limit ? ' selected' : ''}>${v ? `keep ${v}%` : 'off'}</option>`).join('')}
+      </select>
+    </label>`;
 }
 
 // providerHeadHTML is the menu's section head: the provider's mark and name.

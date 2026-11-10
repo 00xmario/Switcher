@@ -61,6 +61,20 @@ stop_linux() {
 	fail "Switcher did not stop; stop it with: pkill -x switcher, and run this again."
 }
 
+# install_skill puts the skill that teaches AI agents (Claude Code, Codex and
+# others) to use Switcher in ~/.agents/skills, on a first install only: an
+# update leaves the skill to Switcher, which keeps its own copy current and
+# leaves one you removed or edited alone. SWITCHER_SKILL=0 skips it; a
+# release without the skill goes without.
+install_skill() {
+	[ "${SWITCHER_SKILL:-1}" = 0 ] && return 0
+	[ "$2" = fresh ] || return 0
+	grep -q "switcher skill install" "$1" 2>/dev/null || return 0
+	if "$1" skill install >/dev/null 2>&1; then
+		echo "Your AI agents know Switcher now: its skill is in ~/.agents/skills/switcher (SWITCHER_SKILL=0 skips this)."
+	fi
+}
+
 install_linux() {
 	case "$(uname -m)" in
 	x86_64 | amd64) arch=amd64 ;;
@@ -87,12 +101,15 @@ install_linux() {
 	# Stopping Switcher also closes its tray; remember to bring it back.
 	tray_running=$(pgrep -u "$(id -u)" -x -a switcher 2>/dev/null | grep -c ' tray' || true)
 	stop_linux
+	first=fresh
+	[ -e "$bin/switcher" ] && first=update
 	# Into place in one step, so a half-copied binary never runs.
 	cp "$tmp/$asset" "$bin/.switcher.new"
 	mv -f "$bin/.switcher.new" "$bin/switcher"
 
 	"$bin/switcher" autostart on >/dev/null
 	"$bin/switcher" start
+	install_skill "$bin/switcher" "$first"
 	if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
 		nohup "$bin/switcher" tray >/dev/null 2>&1 &
 	elif [ "${tray_running:-0}" != 0 ] && command -v systemd-run >/dev/null 2>&1 &&
@@ -149,7 +166,9 @@ main() {
 	# file, not lipo: lipo needs the developer tools, which most Macs lack.
 	/usr/bin/file -b "$tmp/mnt/Switcher.app/Contents/MacOS/Switcher" | grep -qw "$arch" ||
 		fail "Switcher $version does not run on this Mac ($arch); nothing was installed."
+	first=fresh
 	if [ -d "$apps/Switcher.app" ]; then
+		first=update
 		stop_switcher "$apps/Switcher.app"
 		rm -rf "$apps/Switcher.app"
 	fi
@@ -164,6 +183,7 @@ main() {
 	fi
 	"$server" install-cli
 	"$server" start
+	install_skill "$server" "$first"
 	if "$server" status --json 2>/dev/null | grep -q "\"version\":\"$version\""; then
 		echo
 		echo "Switcher $version is installed and running."

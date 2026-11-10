@@ -68,7 +68,36 @@ struct Account: Codable, Equatable {
     var native_switch_available: Bool? = nil
     var native_active: Bool? = nil
     var health: AccountHealth? = nil
+    // The share of the weekly or monthly usage this account keeps, and
+    // whether it reached it (Switcher then moves to another account).
+    var usage_limit: Int? = nil
+    var at_limit: Bool? = nil
     var selected: Bool { native_switch_available == true ? native_active == true : active }
+}
+
+// Usage limits: the windows a limit watches and the shares the menu offers,
+// as in the dashboard.
+let limitWindowLabels: Set<String> = ["Weekly", "Monthly"]
+let limitChoices = [0, 10, 20, 30, 50]
+
+// limitOffered: an account with a weekly or monthly window, or a limit
+// already, can keep a share.
+func limitOffered(_ account: Account) -> Bool {
+    (account.usage_limit ?? 0) > 0 || (account.usage?.windows ?? []).contains { limitWindowLabels.contains($0.label) }
+}
+
+// The chips for an account: the usual shares, and one set elsewhere (the
+// command line, the dashboard) in its place.
+func limitChoiceValues(for account: Account) -> [Int] {
+    let limit = account.usage_limit ?? 0
+    return limitChoices.contains(limit) ? limitChoices : (limitChoices + [limit]).sorted()
+}
+
+func limitTip(_ account: Account) -> String {
+    guard let limit = account.usage_limit, limit > 0 else { return "Set a usage limit: keep a share of this account for the chat apps" }
+    return account.at_limit == true
+        ? "Reached its \(limit)% limit: Switcher uses another account when one has room. Click to change"
+        : "Keeps \(limit)%: Switcher moves to another account at \(limit)% left. Click to change"
 }
 
 struct AccountHealth: Codable, Equatable {
@@ -183,6 +212,76 @@ struct AppState: Codable, Equatable {
     var pairedHost: String? {
         guard let remote = remote, remote.role == "client" || remote.role == "local" else { return nil }
         return remote.host
+    }
+}
+
+// SystemLoad mirrors GET /api/system: how busy the computer doing the work
+// is, this Mac or, while it uses a paired host's accounts, the host.
+struct SystemLoad: Codable, Equatable {
+    let available: Bool
+    var machine: String? = nil
+    var remote: Bool? = nil
+    var platform: String? = nil
+    var reason: String? = nil
+    var cpu: Int? = nil
+    var cores: Int? = nil
+    var memory: Int? = nil
+    var memory_used: Double? = nil
+    var memory_total: Double? = nil
+    var gpu: Int? = nil
+
+    // What decides the card's views; a new reading of the same shape only
+    // moves the rings.
+    var shape: String { "\(available)|\(remote == true)|\(machine ?? "")|\(gpu != nil)|\(reason ?? "")" }
+
+    func value(_ kind: String) -> Int? {
+        switch kind {
+        case "cpu": return cpu
+        case "memory": return memory
+        default: return gpu
+        }
+    }
+}
+
+let loadKinds: [(kind: String, title: String)] = [("cpu", "CPU"), ("memory", "Memory"), ("gpu", "GPU")]
+
+func loadTitle(_ load: SystemLoad) -> String {
+    guard load.remote == true else { return "This Mac" }
+    if let name = load.machine, !name.isEmpty { return name }
+    return "Host"
+}
+
+// Load reads calm in the accent colour, busy in amber from 70%, strained in
+// red from 90%.
+let strainedColor = NSColor(red: 0.88, green: 0.36, blue: 0.30, alpha: 1)
+func loadLevelColor(_ percent: Int) -> NSColor {
+    percent >= 90 ? strainedColor : percent >= 70 ? warnColor : accentColor
+}
+
+func gigabytesText(_ bytes: Double) -> String {
+    let gb = bytes / 1_073_741_824
+    return gb >= 100 ? String(format: "%.0f", gb) : String(format: "%.1f", gb)
+}
+
+func loadDetail(_ kind: String, _ load: SystemLoad) -> String {
+    switch kind {
+    case "cpu":
+        guard let cores = load.cores, cores > 0 else { return "" }
+        return "\(cores) cores"
+    case "memory":
+        guard let used = load.memory_used, let total = load.memory_total, total > 0 else { return "" }
+        return "\(gigabytesText(used)) of \(gigabytesText(total)) GB"
+    default:
+        return ""
+    }
+}
+
+func loadReasonText(_ load: SystemLoad) -> String {
+    let host = load.machine.flatMap { $0.isEmpty ? nil : $0 } ?? "the host"
+    switch load.reason {
+    case "unreachable": return "Can't reach \(host) right now"
+    case "update": return "Update \(host) to see its load"
+    default: return "Load readings are not available here"
     }
 }
 
@@ -941,6 +1040,130 @@ final class ChipButton: NSView {
     override func mouseDown(with event: NSEvent) { onClicked?() }
 }
 
+// LoadGaugeView is one ring of the load card: the share as an arc that eases
+// to each new reading, the number in the middle, a name and a detail below.
+// Layer animations, since AppKit's animator() stalls in the menu's run loop.
+final class LoadGaugeView: NSView {
+    static let ring: CGFloat = 50
+    static let height: CGFloat = ring + 6 + 15 + 14
+    let kind: String
+    private let track = CAShapeLayer()
+    private let arc = CAShapeLayer()
+    private let valueField: NSTextField
+    private let detailField: NSTextField
+    private(set) var value: Int?
+    var valueText: String { valueField.stringValue }
+    var detailText: String { detailField.stringValue }
+    var arcEnd: CGFloat { arc.strokeEnd }
+
+    init(kind: String, title: String, width: CGFloat) {
+        self.kind = kind
+        valueField = label("", font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold), color: inkColor)
+        detailField = label("", font: NSFont.systemFont(ofSize: 10.5), color: dimColor)
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: LoadGaugeView.height))
+        wantsLayer = true
+        let size = LoadGaugeView.ring, lineWidth: CGFloat = 4.5
+        let ringRect = CGRect(x: (width - size) / 2, y: LoadGaugeView.height - size, width: size, height: size)
+        // From twelve o'clock, clockwise.
+        let path = CGMutablePath()
+        path.addArc(center: CGPoint(x: ringRect.midX, y: ringRect.midY), radius: (size - lineWidth) / 2,
+            startAngle: .pi / 2, endAngle: .pi / 2 - 2 * .pi, clockwise: true)
+        for shape in [track, arc] {
+            shape.path = path
+            shape.fillColor = NSColor.clear.cgColor
+            shape.lineWidth = lineWidth
+            shape.contentsScale = 2
+            layer?.addSublayer(shape)
+        }
+        track.strokeColor = dimColor.withAlphaComponent(0.22).cgColor
+        arc.lineCap = .round
+        arc.strokeEnd = 0
+        valueField.alignment = .center
+        valueField.frame = NSRect(x: ringRect.minX, y: ringRect.midY - 9, width: size, height: 17)
+        addSubview(valueField)
+        let name = label(title, font: NSFont.systemFont(ofSize: 12, weight: .medium), color: inkColor)
+        name.alignment = .center
+        name.frame = NSRect(x: 0, y: ringRect.minY - 6 - 15, width: width, height: 15)
+        addSubview(name)
+        detailField.alignment = .center
+        detailField.frame = NSRect(x: 0, y: 0, width: width, height: 14)
+        addSubview(detailField)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.levelIndicator)
+        setAccessibilityLabel(title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    func show(_ reading: Int?, detail: String, animated: Bool) {
+        let v = reading.map { max(0, min(100, $0)) }
+        let end = CGFloat(v ?? 0) / 100
+        let color = (v.map(loadLevelColor) ?? dimColor.withAlphaComponent(0.4)).cgColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let grow = CABasicAnimation(keyPath: "strokeEnd")
+            grow.fromValue = arc.presentation()?.strokeEnd ?? arc.strokeEnd
+            grow.toValue = end
+            grow.duration = 0.6
+            grow.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+            arc.add(grow, forKey: "strokeEnd")
+            let tint = CABasicAnimation(keyPath: "strokeColor")
+            tint.fromValue = arc.presentation()?.strokeColor ?? arc.strokeColor
+            tint.toValue = color
+            tint.duration = 0.4
+            arc.add(tint, forKey: "strokeColor")
+        }
+        arc.strokeEnd = end
+        arc.strokeColor = color
+        CATransaction.commit()
+        value = v
+        let text = NSMutableAttributedString(string: v.map(String.init) ?? "–", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold), .foregroundColor: inkColor,
+            .paragraphStyle: centeredParagraph])
+        if v != nil {
+            text.append(NSAttributedString(string: "%", attributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .medium), .foregroundColor: dimColor,
+                .paragraphStyle: centeredParagraph]))
+        }
+        valueField.attributedStringValue = text
+        detailField.stringValue = v == nil ? "No reading" : detail
+        setAccessibilityValue(v.map { "\($0)%" } ?? "No reading")
+    }
+}
+
+// LimitButton opens an account's usage limit choices. It sits on the
+// account's title line: shown while the row is hovered, and always while a
+// limit is set, tinted by what the limit does.
+final class LimitButton: NSView {
+    var onClicked: (() -> Void)?
+    let pinned: Bool   // a limit is set or its choices are open: always shown
+
+    init(frame: NSRect, tint: NSColor, pinned: Bool, tip: String) {
+        self.pinned = pinned
+        super.init(frame: frame)
+        let icon = NSImageView(frame: bounds)
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        icon.image = (NSImage(systemSymbolName: "gauge.with.dots.needle.33percent", accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "gauge", accessibilityDescription: nil))?.withSymbolConfiguration(config)
+        icon.contentTintColor = tint
+        addSubview(icon)
+        toolTip = tip
+        alphaValue = pinned ? 1 : 0
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Usage limit")
+    }
+
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    func setHovered(_ hovered: Bool) { alphaValue = pinned || hovered ? 1 : 0 }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+
+    override func mouseDown(with event: NSEvent) { onClicked?() }
+}
+
 // TapArea turns a group of labels into one clickable control.
 final class TapArea: NSView {
     var onClicked: (() -> Void)?
@@ -1360,6 +1583,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var menuNote = ""              // a success note, gone when the menu closes
     private(set) var updateCheckNote: String?  // shown in the update button until the menu closes
     private var awakeBusy = false
+    private(set) var systemLoad: SystemLoad?           // the last load reading
+    private(set) var loadGauges: [String: LoadGaugeView] = [:]
+    private var loadShape: String?                      // the shape of the card on screen
+    private var loadTimer: Timer?
+    private var loadRequest = 0
+    private(set) var loadInFlight = false                // a reading is on its way; ticks wait for it
+    private(set) var limitEditingID: String?            // the account whose limit choices are open
+    private var limitSaving = false
     private var awakeChoice: String?        // the chip that started the running session
     private var awakeShowingTimes = false   // "Until…" shows clock times instead of durations
     private var awakeOptionsOpen = false
@@ -1448,6 +1679,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         menu.delegate = self
         rebuildMenu()
         fetchStateAsync()
+        fetchLoadAsync()
         watchStateChanges()
         // A wait that was open while the Mac slept may hang on a dead
         // connection; start a fresh one.
@@ -1487,6 +1719,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in self?.pollHover() }
         RunLoop.main.add(timer, forMode: .common)
         hoverTimer = timer
+        // The load card reads only while someone looks.
+        fetchLoadAsync()
+        loadTimer?.invalidate()
+        let load = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.fetchLoadAsync() }
+        RunLoop.main.add(load, forMode: .common)
+        loadTimer = load
     }
 
     // The menu is built ahead of the click. Only time-sensitive labels need
@@ -1564,11 +1802,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         menuOpen = false
         hoverTimer?.invalidate()
         hoverTimer = nil
+        loadTimer?.invalidate()
+        loadTimer = nil
         hoverCards.forEach { $0.clearHover() }
         // The menu opens on durations again, not on a half-made time choice,
-        // and without the notes of the last visit.
-        if awakeShowingTimes || !menuNote.isEmpty || updateCheckNote != nil {
+        // and without the notes of the last visit or open limit choices.
+        if awakeShowingTimes || !menuNote.isEmpty || updateCheckNote != nil || limitEditingID != nil {
             awakeShowingTimes = false
+            limitEditingID = nil
             menuNote = ""
             updateCheckNote = nil
             rebuildMenu()
@@ -1659,6 +1900,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self.updateResetAlerts()
             self.relaunchIfReplaced()
         }
+    }
+
+    // fetchLoadAsync takes a load reading off the main thread: this Mac's,
+    // or the host's while its accounts are used. One at a time: a tick while
+    // a reading is on its way waits for it, so a slow answer, such as a host
+    // that does not reply, still arrives and is shown. An older server has
+    // no readings (404) and shows no card.
+    func fetchLoadAsync() {
+        guard !quitting, !loadInFlight else { return }
+        loadInFlight = true
+        loadRequest += 1
+        let serial = loadRequest
+        performRequest(makeRequest(path: "api/system", timeout: 8)) { [weak self] data, response, _ in
+            guard let self = self else { return }
+            if serial == self.loadRequest { self.loadInFlight = false }
+            guard !self.quitting, serial == self.loadRequest else { return }
+            let status = (response as? HTTPURLResponse)?.statusCode
+            if status == 404, self.systemLoad != nil {
+                self.systemLoad = nil
+                self.rebuildMenu()
+                return
+            }
+            guard status == 200, let data = data,
+                  let load = try? JSONDecoder().decode(SystemLoad.self, from: data) else { return }
+            self.applyLoad(load)
+        }
+    }
+
+    // applyLoad moves the rings to a new reading, and draws the card anew
+    // only when it changes shape (another computer, a reading gone or back).
+    func applyLoad(_ load: SystemLoad) {
+        let previous = systemLoad
+        systemLoad = load
+        guard previous != load, cachedState != nil else { return }
+        if load.shape == loadShape, !load.available || !loadGauges.isEmpty {
+            for (kind, gauge) in loadGauges {
+                gauge.show(load.value(kind), detail: loadDetail(kind, load), animated: true)
+            }
+            return
+        }
+        rebuildMenu()
     }
 
     // watchStateChanges waits, off the main thread, for Switcher to say its
@@ -1964,6 +2246,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             }
         }
 
+        loadGauges = [:]
+        loadShape = nil
+        if state != nil, let load = systemLoad {
+            menu.addItem(menuItemWithView(spacerView(height: 12)))
+            menu.addItem(menuItemWithView(loadHead(load)))
+            menu.addItem(menuItemWithView(centered(loadCard(load, contentWidth: contentWidth))))
+            loadShape = load.shape
+        }
+
         awakeStatusLabel = nil
         awakeSummaryLabel = nil
         if let awake = state?.awake, awake.supported {
@@ -2059,11 +2350,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             .map { min(textWidth("· " + $0, font: measureFont), 120) }.max() ?? 0
         let emailColumn = accounts.map { textWidth($0.email, font: measureFont) }.max() ?? 0
         var y = height
+        let handedBack = cachedState?.handed_back == true
         for (index, account) in accounts.enumerated() {
-            let rowH = rowHeight(for: account)
-            y -= rowH
+            let fullH = rowHeight(for: account)
+            let editing = limitEditingID == account.id
+            let strip = editing ? limitStripHeight : 0
+            let rowH = fullH - strip
+            y -= fullH
+            if editing {
+                card.addSubview(limitStrip(account, contentWidth: contentWidth, y: y))
+            }
 
-            let row = ClickableRow(frame: NSRect(x: 0, y: y, width: contentWidth, height: rowH))
+            let row = ClickableRow(frame: NSRect(x: 0, y: y + strip, width: contentWidth, height: rowH))
             row.onClicked = { [weak self] in
                 self?.activateAccount(account)
             }
@@ -2085,6 +2383,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 badge = ("Sign in again", warnColor, "This account's login no longer refreshes; use Relogin in Switcher")
             case _ where exhausted:
                 badge = ("Out of usage", warnColor, "")
+            case _ where account.at_limit == true && (account.usage_limit ?? 0) > 0:
+                badge = ("At limit", warnColor, limitTip(account))
             case "usage_stale" where account.usage?.windows?.isEmpty == false,
                  "usage_unavailable" where account.usage?.windows?.isEmpty == false:
                 badge = ("Usage stale", dimColor, "Usage could not be checked recently; these numbers may be old")
@@ -2093,8 +2393,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             }
             let titleFont = NSFont.systemFont(ofSize: 12.5, weight: account.selected ? .medium : .regular)
             let titleColor = account.selected ? accentColor : inkColor
-            let trailingWidth = (badge != nil ? 90 + (account.selected ? 22 : 0) : (account.selected ? 14 : 0)) +
+            let clusterWidth = (badge != nil ? 90 + (account.selected ? 22 : 0) : (account.selected ? 14 : 0)) +
                 (bankedWidth > 0 ? bankedWidth + 8 : 0)
+            let offersLimit = limitOffered(account) && !handedBack
+            let limitSpace: CGFloat = offersLimit ? 16 + (clusterWidth > 0 ? 6 : 0) : 0
+            let trailingWidth = clusterWidth + limitSpace
             let titleWidth = contentWidth - textX - cardInset - trailingWidth - 8
             let titleY = rowH - rowTopPad - titleHeight
             let emailWidth = planColumn > 0 ? max(0, min(emailColumn, titleWidth - planColumn - 6)) : max(0, min(emailColumn, titleWidth))
@@ -2102,7 +2405,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             emailField.frame = NSRect(x: textX, y: titleY, width: emailWidth, height: titleHeight)
             let email = BlurredLabel(field: emailField)
             row.addSubview(email)
-            row.onHover = { hovering in email.reveal(hovering) }
+            var limitButton: LimitButton?
+            if offersLimit {
+                // Left of the badge, banked resets and check mark.
+                let clusterMinX: CGFloat
+                if badge != nil {
+                    clusterMinX = contentWidth - cardInset - 90 - (account.selected ? 22 : 0) - (bankedWidth > 0 ? bankedWidth + 8 : 0)
+                } else if bankedWidth > 0 {
+                    clusterMinX = contentWidth - cardInset - (account.selected ? 22 : 0) - bankedWidth
+                } else {
+                    clusterMinX = contentWidth - cardInset - (account.selected ? 14 : 0)
+                }
+                let limit = account.usage_limit ?? 0
+                let tint = account.at_limit == true && limit > 0 ? warnColor : limit > 0 || editing ? accentColor : dimColor
+                let button = LimitButton(frame: NSRect(x: clusterMinX - (clusterWidth > 0 ? 6 : 0) - 16, y: titleY - 0.5, width: 16, height: 16),
+                    tint: tint, pinned: limit > 0 || editing, tip: limitTip(account))
+                button.onClicked = { [weak self] in self?.toggleLimitChoices(account.id) }
+                row.addSubview(button)
+                limitButton = button
+            }
+            row.onHover = { hovering in
+                email.reveal(hovering)
+                limitButton?.setHovered(hovering)
+            }
             if !planText.isEmpty {
                 let plan = label(planText, font: titleFont, color: titleColor)
                 plan.frame = NSRect(x: textX + emailWidth + 6, y: titleY, width: planColumn, height: titleHeight)
@@ -2153,6 +2478,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                         track.addSubview(fill)
                     }
                     row.addSubview(track)
+                    // Where the usage limit moves Switcher away: a short
+                    // line across the bar, at the share the account keeps.
+                    if let limit = account.usage_limit, limit > 0, limitWindowLabels.contains(window.label) {
+                        let tick = NSView(frame: NSRect(x: barFrame.minX + barFrame.width * CGFloat(min(limit, 95)) / 100 - 0.75,
+                            y: barFrame.minY - 2.5, width: 1.5, height: barFrame.height + 5))
+                        tick.wantsLayer = true
+                        tick.layer?.backgroundColor = inkColor.withAlphaComponent(0.7).cgColor
+                        tick.layer?.cornerRadius = 0.75
+                        tick.toolTip = "Switcher moves away at \(limit)% left"
+                        row.addSubview(tick)
+                    }
                 }
                 let name = label(window.label + ":", font: usageFont, color: dimColor)
                 name.frame = line.label
@@ -2201,7 +2537,135 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let windows = CGFloat(account.usage?.windows?.count ?? 0)
         let usageBlock = windows > 0 ? titleUsageGap + windows * usageLineHeight : 0
         let selectionBlock = account.native_switch_available == true ? titleUsageGap + usageLineHeight : 0
-        return rowTopPad + titleHeight + selectionBlock + usageBlock + rowBottomPad
+        let strip = limitEditingID == account.id ? limitStripHeight : 0
+        return rowTopPad + titleHeight + selectionBlock + usageBlock + rowBottomPad + strip
+    }
+
+    // MARK: usage limits
+
+    // The limit choices open under their account: a line saying what a
+    // limit does, then one chip per share.
+    let limitStripHeight: CGFloat = 2 + 14 + 6 + 24 + 10
+
+    func limitStrip(_ account: Account, contentWidth: CGFloat, y: CGFloat) -> NSView {
+        let strip = NSView(frame: NSRect(x: 0, y: y, width: contentWidth, height: limitStripHeight))
+        let inner = contentWidth - 2 * cardInset
+        let limit = account.usage_limit ?? 0
+        let text = limit > 0 ? "Switches away at \(limit)% left, keeping it for the chat apps"
+            : "Keep a share of the weekly usage for the chat apps"
+        let note = label(text, font: NSFont.systemFont(ofSize: 10.5), color: dimColor)
+        note.frame = NSRect(x: cardInset, y: limitStripHeight - 2 - 14, width: inner, height: 14)
+        note.toolTip = "At that much left, Switcher moves to the account with the most usage left, and does not move back on its own."
+        strip.addSubview(note)
+        let choices = limitChoiceValues(for: account)
+        let gap: CGFloat = 6, chipHeight: CGFloat = 24
+        let chipWidth = floor((inner - gap * CGFloat(choices.count - 1)) / CGFloat(choices.count))
+        for (index, value) in choices.enumerated() {
+            let frame = NSRect(x: cardInset + CGFloat(index) * (chipWidth + gap), y: 10, width: chipWidth, height: chipHeight)
+            let chip = ChipButton(title: value == 0 ? "Off" : "\(value)%", selected: value == limit, frame: frame)
+            chip.setAccessibilityLabel(value == 0 ? "No usage limit" : "Keep \(value)%")
+            chip.onClicked = { [weak self] in
+                guard let self = self else { return }
+                if value == limit { self.toggleLimitChoices(account.id); return }
+                self.setUsageLimit(account, value)
+            }
+            strip.addSubview(chip)
+        }
+        return strip
+    }
+
+    func toggleLimitChoices(_ id: String) {
+        guard !limitSaving else { return }
+        limitEditingID = limitEditingID == id ? nil : id
+        rebuildMenu()
+    }
+
+    // setUsageLimit saves an account's limit. While this Mac uses a host's
+    // accounts the request goes to the host, where the limit applies for
+    // every Mac.
+    func setUsageLimit(_ account: Account, _ limit: Int) {
+        guard !quitting, !limitSaving else { return }
+        limitSaving = true
+        post(path: "api/accounts/\(account.id)", method: "PATCH", body: ["usage_limit": limit], timeout: 15) { [weak self] result in
+            guard let self = self else { return }
+            self.limitSaving = false
+            switch result {
+            case .success:
+                self.limitEditingID = nil
+                var note = limit > 0 ? "Switches away at \(limit)% left" : "No usage limit"
+                if let remote = self.cachedState?.remote, remote.role == "client", let host = remote.host, !host.isEmpty {
+                    note += " · saved on \(host)"
+                }
+                self.menuNote = note
+            case .failure(let error):
+                self.runtime.showError("Could not set the usage limit", error.localizedDescription)
+            }
+            self.rebuildMenu()
+            self.fetchStateAsync()
+        }
+    }
+
+    // MARK: load card
+
+    func loadHead(_ load: SystemLoad) -> NSView {
+        let head = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 32))
+        let icon = NSImageView(frame: NSRect(x: edgeInset, y: 5, width: 22, height: 22))
+        icon.image = NSImage(systemSymbolName: load.remote == true ? "server.rack" : "cpu", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+        icon.contentTintColor = inkColor
+        head.addSubview(icon)
+        let nameFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let title = loadTitle(load)
+        let name = label(title, font: nameFont, color: inkColor)
+        name.frame = NSRect(x: edgeInset + 22 + 10, y: 8,
+            width: min(ceil(textWidth(title, font: nameFont)), menuWidth - 2 * edgeInset - 32 - 80), height: 16)
+        head.addSubview(name)
+        // A live dot, breathing while readings come in.
+        let dot = NSView(frame: NSRect(x: menuWidth - edgeInset - 7, y: 12.5, width: 7, height: 7))
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 3.5
+        dot.layer?.backgroundColor = (load.available ? accentColor : dimColor.withAlphaComponent(0.5)).cgColor
+        #if !SWITCHER_LAYOUT_TEST
+        if load.available && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let breathe = CABasicAnimation(keyPath: "opacity")
+            breathe.fromValue = 1
+            breathe.toValue = 0.3
+            breathe.duration = 1
+            breathe.autoreverses = true
+            breathe.repeatCount = .infinity
+            dot.layer?.add(breathe, forKey: "breathe")
+        }
+        #endif
+        head.addSubview(dot)
+        let note = label(load.remote == true ? "Host load" : "Load", font: NSFont.systemFont(ofSize: 11), color: dimColor)
+        note.alignment = .right
+        note.frame = NSRect(x: name.frame.maxX + 8, y: 8, width: dot.frame.minX - 6 - name.frame.maxX - 8, height: 15)
+        head.addSubview(note)
+        head.toolTip = load.remote == true ? "How busy \(title) is: the Mac whose accounts this one uses" : "How busy this Mac is"
+        return head
+    }
+
+    func loadCard(_ load: SystemLoad, contentWidth: CGFloat) -> NSView {
+        guard load.available else {
+            let card = cardView(width: contentWidth, height: 40)
+            let note = label(loadReasonText(load), font: NSFont.systemFont(ofSize: 12), color: dimColor)
+            note.frame = NSRect(x: cardInset, y: 12, width: contentWidth - 2 * cardInset, height: 16)
+            card.addSubview(note)
+            return card
+        }
+        let pad: CGFloat = 6
+        let card = cardView(width: contentWidth, height: LoadGaugeView.height + 14 + 10)
+        let column = floor((contentWidth - 2 * pad) / 3)
+        var gauges: [String: LoadGaugeView] = [:]
+        for (index, spec) in loadKinds.enumerated() {
+            let gauge = LoadGaugeView(kind: spec.kind, title: spec.title, width: column)
+            gauge.frame.origin = NSPoint(x: pad + CGFloat(index) * column, y: 10)
+            gauge.show(load.value(spec.kind), detail: loadDetail(spec.kind, load), animated: false)
+            card.addSubview(gauge)
+            gauges[spec.kind] = gauge
+        }
+        loadGauges = gauges
+        return card
     }
 
     // Start at login, using the paired host, handing the tools back and,

@@ -192,10 +192,10 @@ func (m *Manager) ActivateForClient(ctx context.Context, id string) (*claudecode
 	if m.HandedBack() {
 		return nil, ErrHandedBack
 	}
-	// The user is in charge: an account they pick while it is at its limit
-	// stays picked for a while.
+	// The user is in charge: an account they pick while it is out of usage
+	// or at its usage limit stays picked for a while.
 	m.mu.Lock()
-	if m.outOfUsageLocked(id) {
+	if m.outOfUsageLocked(id) || m.atLimitLocked(id) {
 		m.manualHold[id] = time.Now().Add(manualHold)
 	}
 	m.mu.Unlock()

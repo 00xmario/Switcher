@@ -610,3 +610,37 @@ func TestOpenSwitcherShowsThePanel(t *testing.T) {
 		t.Fatalf("stopped server: %d starts, opened %v", starts, opened)
 	}
 }
+
+// Usage limits: a submenu per account that reports a weekly window, the
+// account's notes say what its limit does, and a click saves the limit.
+func TestUsageLimitsFromTheTray(t *testing.T) {
+	f, ui, c, _ := newFixture(t)
+	st := baseState()
+	accounts := st["accounts"].([]map[string]any)
+	accounts[0]["usage_limit"], accounts[0]["at_limit"] = 40, true
+	accounts[1]["usage_limit"] = 15
+	f.set("accounts", accounts)
+	ctx := context.Background()
+	c.Refresh(ctx)
+	items := ui.last()
+	limits := find(items, "Usage limits")
+	if limits == nil || len(limits.Children) != 2 {
+		t.Fatalf("limits menu:\n%s", titles(items))
+	}
+	work := find(limits.Children, "Claude · work@example.com · keeps 40%")
+	if work == nil || len(work.Children) != 6 || !find(work.Children, "Switch away at 40% left").Checked || find(work.Children, "Off").Action != "limit:claude-1:0" {
+		t.Fatalf("work account's limits: %+v", work)
+	}
+	if home := find(limits.Children, "Claude · home@example.com · keeps 15%"); home == nil || find(home.Children, "Switch away at 15% left") == nil {
+		t.Fatalf("a limit set elsewhere is not offered: %+v", home)
+	}
+	if find(items, detail+"At its 40% limit") == nil || find(items, detail+"Keeps 15%") == nil {
+		t.Fatalf("limit notes:\n%s", titles(items))
+	}
+	c.Click(ctx, "limit:claude-1:10")
+	c.Click(ctx, "limit:../x:10")
+	c.Click(ctx, "limit:claude-1:ten")
+	if got := f.posted(); len(got) != 1 || got[0] != `PATCH /api/accounts/claude-1 {"usage_limit":10}` {
+		t.Fatalf("requests: %v", got)
+	}
+}

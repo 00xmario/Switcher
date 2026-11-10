@@ -33,6 +33,7 @@ import (
 	"switcher/internal/sessionmeta"
 	"switcher/internal/settings"
 	"switcher/internal/store"
+	"switcher/internal/sysload"
 	"switcher/internal/update"
 	"switcher/internal/usage"
 	"sync"
@@ -67,7 +68,14 @@ type API struct {
 	Version               string
 	Updater               UpdateChecker
 	// Awake keeps the Mac awake on demand; nil or unsupported off macOS.
-	Awake    *awake.Manager
+	Awake *awake.Manager
+	// Home is this computer's home directory, for the agent skill; empty
+	// turns that off. ClaudeConfigDir is $CLAUDE_CONFIG_DIR, where Claude
+	// Code then looks for skills.
+	Home            string
+	ClaudeConfigDir string
+	// Load measures how busy this computer is; nil answers no readings.
+	Load     *sysload.Sampler
 	Usage    *usage.Service
 	Settings *settings.Store
 	Port     int
@@ -114,6 +122,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /api/state", a.handleState)
 	mux.HandleFunc("GET /api/state/changes", a.handleStateChanges)
+	mux.HandleFunc("GET /api/system", a.handleSystem)
+	mux.HandleFunc("GET /api/agent-skill", a.handleAgentSkill)
+	mux.HandleFunc("POST /api/agent-skill", a.handleAgentSkill)
 	a.registerRemoteRoutes(mux)
 	a.registerPhoneRoutes(mux)
 	mux.HandleFunc("POST /api/claude/sync", a.handleClaudeSync)
@@ -439,6 +450,11 @@ type accountView struct {
 	AutoUseResetEffective bool `json:"auto_use_reset_effective"`
 	NativeSwitchAvailable bool `json:"native_switch_available,omitempty"`
 	NativeActive          bool `json:"native_active,omitempty"`
+	// UsageLimit is the share of the weekly or monthly usage this account
+	// keeps (0 for none); AtLimit says its latest usage reached it, so
+	// Switcher moves to another account.
+	UsageLimit int  `json:"usage_limit,omitempty"`
+	AtLimit    bool `json:"at_limit,omitempty"`
 }
 
 // autoUseResetMode renders a per-account override for the API.
@@ -521,6 +537,9 @@ func viewBaseWithSettings(a *API, acc store.Account, preferences settings.Settin
 	v.AutoUseResetEffective = acc.AutoUseResetEnabled(preferences.AutoUseReset)
 	if until, ok := a.Proxy.Exhausted(acc.ID); ok {
 		v.ExhaustedUntil = until.Unix()
+	}
+	if v.UsageLimit = a.Proxy.UsageLimit(acc.ID); v.UsageLimit > 0 {
+		v.AtLimit = a.Proxy.AtUsageLimit(acc.ID)
 	}
 	v.Usage, v.LastReset, v.QuotaRevision, v.QuotaEpoch = a.Proxy.QuotaSnapshot(acc.ID)
 	if v.Usage != nil && v.Usage.Plan != "" {
@@ -1518,10 +1537,11 @@ func (a *API) handleProviderShow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "order": order, "hidden": hidden})
 }
 
-// handleAccountPatch stores per-account preferences. Today that is the
-// banked-reset auto-use override: "global" clears the override so the
-// account follows the global preference again, while "on" and "off" force
-// the behavior for this one account.
+// handleAccountPatch stores per-account preferences: the banked-reset
+// auto-use override ("global" clears the override so the account follows the
+// global preference again, while "on" and "off" force the behavior for this
+// one account) and the usage limit, the share of the weekly or monthly usage
+// to keep (0 removes it). A paired Mac's change arrives here on its host.
 func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validID(id) {
@@ -1538,17 +1558,34 @@ func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		AutoUseReset *string `json:"auto_use_reset"`
+		UsageLimit   *int    `json:"usage_limit"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 	if body.AutoUseReset != nil {
-		mode := *body.AutoUseReset
-		if mode != "global" && mode != "on" && mode != "off" {
+		if mode := *body.AutoUseReset; mode != "global" && mode != "on" && mode != "off" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "auto_use_reset must be global, on, or off"})
 			return
 		}
+	}
+	if body.UsageLimit != nil && (*body.UsageLimit < 0 || *body.UsageLimit > proxy.MaxUsageLimit) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": proxy.ErrInvalidLimit.Error()})
+		return
+	}
+	if body.UsageLimit != nil {
+		if err := a.Proxy.SetUsageLimit(id, *body.UsageLimit); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, store.ErrNotFound) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if body.AutoUseReset != nil {
+		mode := *body.AutoUseReset
 		// Written under the same per-account lock token rotation uses, so a
 		// concurrent refresh cannot be reverted by a stale save.
 		err := a.Proxy.UpdateAccount(id, func(account *store.Account) error {

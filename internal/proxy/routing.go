@@ -61,16 +61,19 @@ func (m *Manager) handleExhaustion(providerID, id string, until time.Time, expec
 }
 
 // failoverLocked picks the account to move to when exclude stops serving:
-// another paid account first, then a Free one. downgrade reports that only a
-// Free account is left for a paid exclude: Free tiers lack the paid models,
-// so a banked reset on exclude serves the user better. Requires m.mu.
+// another paid account first, then a Free one. An account at its usage limit
+// comes only when no other is left: a limit keeps usage back, it never
+// blocks a request. downgrade reports that what is left is worse than a
+// banked reset on exclude: only a Free account for a paid exclude (Free
+// tiers lack the paid models), or only an account at its usage limit, whose
+// kept share a reset spares. Requires m.mu.
 func (m *Manager) failoverLocked(exclude, providerID string) (next string, downgrade bool, err error) {
 	accounts, err := m.store.List()
 	if err != nil {
 		return "", false, err
 	}
 	excludeFree := false
-	free := ""
+	var free, limitedPaid, limitedFree string
 	for _, a := range accounts {
 		if a.Provider != providerID {
 			continue
@@ -82,14 +85,31 @@ func (m *Manager) failoverLocked(exclude, providerID string) (next string, downg
 		if !hasCredentials(a) || m.exhaustedNow(a.ID) {
 			continue
 		}
-		if !freePlan(a.Plan) {
+		limited := m.atLimitLocked(a.ID)
+		switch {
+		case !freePlan(a.Plan) && !limited:
 			return a.ID, false, nil
-		}
-		if free == "" {
-			free = a.ID
+		case !freePlan(a.Plan):
+			if limitedPaid == "" {
+				limitedPaid = a.ID
+			}
+		case !limited:
+			if free == "" {
+				free = a.ID
+			}
+		default:
+			if limitedFree == "" {
+				limitedFree = a.ID
+			}
 		}
 	}
-	return free, free != "" && !excludeFree, nil
+	switch {
+	case free != "":
+		return free, !excludeFree, nil
+	case limitedPaid != "":
+		return limitedPaid, true, nil
+	}
+	return limitedFree, limitedFree != "", nil
 }
 
 // freePlan reports a free tier ("free", "copilot_free"). An unknown plan

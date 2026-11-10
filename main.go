@@ -38,6 +38,7 @@ import (
 	"syscall"
 	"time"
 
+	"switcher/internal/agentskill"
 	"switcher/internal/autostart"
 	"switcher/internal/awake"
 	"switcher/internal/claudesync"
@@ -62,6 +63,7 @@ import (
 	"switcher/internal/sessionmeta"
 	"switcher/internal/settings"
 	"switcher/internal/store"
+	"switcher/internal/sysload"
 	"switcher/internal/update"
 	"switcher/internal/usage"
 )
@@ -332,6 +334,14 @@ func run(port, desktopRelayPort int) {
 		log.Fatalf("load state: %v", err)
 	}
 	home, _ := os.UserHomeDir()
+	// An agent skill this Switcher installed follows it to each release.
+	if home != "" {
+		if wrote, err := agentskill.Refresh(home, os.Getenv("CLAUDE_CONFIG_DIR")); err != nil {
+			log.Printf("agent skill: could not bring it up to date: %v", err)
+		} else if wrote {
+			log.Printf("agent skill: brought up to date at %s", agentskill.Path(home))
+		}
+	}
 	metadataIndex := sessionmeta.New(sessionMetadataRoots(runtime.GOOS, home, os.Getenv("CLAUDE_CONFIG_DIR"), os.Getenv("XDG_CONFIG_HOME")))
 	relayCtx, relayCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	desktopRelay, relayErr := resumeDesktopRelay(relayCtx, desktoprelay.Config{
@@ -457,7 +467,7 @@ func run(port, desktopRelayPort int) {
 		Store: st, Logins: logins, Proxy: proxyManager, Providers: providers,
 		DesktopRelay: desktopRelay, DesktopSettingsPath: desktopSettingsPath(),
 		DesktopSessionMetadata: metadataIndex,
-		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Usage: usageService,
+		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Load: sysload.New(), Home: home, ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
 		Autostart: autostart.New(executablePath()),
 		// The tray's Quit Switcher: stop as on SIGTERM, which also tells

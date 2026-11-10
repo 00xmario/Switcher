@@ -149,3 +149,30 @@ test('the page keeps the strict CSP: no inline scripts or handlers', () => {
   assert.match(page, /href="\/phone.css"/);
   assert.match(page, /href="\/panel.css"/);
 });
+
+test('usage limits: the panel offers them, marks the bar and says when an account reached its limit', () => {
+  const limited = { ...state, accounts: [{ ...state.accounts[0], usage_limit: 30, at_limit: true }, state.accounts[1], state.accounts[2]] };
+  const html = pageHTML(limited, now);
+  assert.match(html, /<select data-limit="claude-a"/);
+  assert.match(html, /<option value="30" selected>keep 30%<\/option>/);
+  assert.match(html, /class="limit-tick" style="left:30%"/);
+  assert.equal((html.match(/limit-tick/g) || []).length, 1, 'only the weekly window carries the line');
+  assert.match(text(html), /At its 30% limit · Switcher uses another account/);
+  assert.doesNotMatch(html, /data-limit="claude-b"/, 'an account without a weekly window offers no limit');
+  assert.doesNotMatch(pageHTML({ ...limited, handed_back: true }, now), /<select data-limit/);
+});
+
+test('the load card sits above the footer', () => {
+  const html = pageHTML(state, now, { machine: 'k12', remote: true, available: true, cpu: 5, memory: 40, cores: 8 });
+  assert.ok(html.indexOf('class="provider load"') > html.indexOf('data-account="codex-a"'));
+  assert.ok(html.indexOf('class="provider load"') < html.indexOf('class="foot"'));
+  assert.doesNotMatch(pageHTML(state, now), /class="provider load"/);
+});
+
+test('a usage limit that is not a whole share is never printed', () => {
+  const evil = { ...state, accounts: [{ ...state.accounts[0], usage_limit: '"><img src=x onerror=alert(1)>', at_limit: true }] };
+  const html = pageHTML(evil, now);
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /At its/);
+  assert.match(html, /<option value="0" selected>off<\/option>/);
+});

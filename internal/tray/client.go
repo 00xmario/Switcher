@@ -77,6 +77,10 @@ type Account struct {
 	ResetCredits *struct {
 		Count int `json:"count"`
 	} `json:"reset_credits"`
+	// UsageLimit is the share of the weekly or monthly usage the account
+	// keeps; AtLimit says it reached it.
+	UsageLimit int  `json:"usage_limit"`
+	AtLimit    bool `json:"at_limit"`
 }
 
 // Selected is the account the account card marks: Claude Code's login for

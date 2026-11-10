@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -25,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"switcher/internal/sysload"
 )
 
 type clientFile struct {
@@ -921,6 +924,44 @@ func (c *Client) markInstalling(u *HostUpdate) {
 	}
 }
 
+// SystemLoad asks the host how busy it is, for this Mac's load card while
+// it uses the host's accounts. The reading is kept to numbers in range and
+// named after the host as paired here; the host's own strings are not shown.
+// A host that does not answer, or an older one without load readings, gives
+// a view that says so.
+func (c *Client) SystemLoad(ctx context.Context) sysload.View {
+	view := sysload.View{Machine: c.Status().HostName, Remote: true}
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://switcher-host/api/system", nil)
+	resp, err := c.do(req)
+	if err != nil {
+		view.Reason = "unreachable"
+		return view
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		view.Reason = "update"
+		return view
+	case resp.StatusCode != http.StatusOK:
+		view.Reason = "unreachable"
+		return view
+	}
+	var got sysload.View
+	if json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&got) != nil {
+		view.Reason = "unreachable"
+		return view
+	}
+	reason := got.Reason
+	got.Sanitize()
+	got.Machine, got.Remote = view.Machine, true
+	if !got.Available && reason == "unsupported" {
+		got.Reason = reason
+	}
+	return got
+}
+
 // hostError is the host's answer to a request it refused.
 type hostError struct {
 	status  int
@@ -1192,6 +1233,7 @@ func sanitizeHostState(state map[string]any) {
 		if account, ok := a.(map[string]any); ok && validID(account["id"]) && validID(account["provider"]) {
 			delete(account, "native_switch_available")
 			delete(account, "native_active")
+			sanitizeLimit(account)
 			kept = append(kept, account)
 		}
 	}
@@ -1218,6 +1260,21 @@ func sanitizeHostState(state map[string]any) {
 	}
 	state["active"] = selected
 	delete(state, "claude_code")
+}
+
+// sanitizeLimit keeps an account's usage limit only as what a limit can be:
+// a whole share from 1 to 95, with at_limit a plain true. Anything else
+// from a host is dropped, so no screen ever prints it.
+func sanitizeLimit(account map[string]any) {
+	limit, ok := account["usage_limit"].(float64)
+	if !ok || limit != math.Trunc(limit) || limit < 1 || limit > 95 {
+		delete(account, "usage_limit")
+		delete(account, "at_limit")
+		return
+	}
+	if at, ok := account["at_limit"].(bool); !ok || !at {
+		delete(account, "at_limit")
+	}
 }
 
 // validID accepts only the identifiers Switcher itself generates.

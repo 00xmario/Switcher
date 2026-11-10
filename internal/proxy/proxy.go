@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -107,9 +108,11 @@ type Manager struct {
 	keptLoginRetry     time.Time
 	keptLoginWaiting   time.Time
 	autoSwitching      atomic.Bool
+	autoSwitchAgain    atomic.Bool
 	autoSwitchAt       map[string]time.Time
 	manualHold         map[string]time.Time
 	claudeReroute      map[string]string
+	limits             map[string]int // usage limits (limits.go), persisted
 	autoSwitchSerial   uint64
 	lastAutoSwitch     AutoSwitch
 	probeClient        *http.Client // optional internal test seam; production uses a fresh direct client
@@ -193,6 +196,7 @@ func New(st *store.Store, providers map[string]provider.Provider, registration [
 		autoSwitchAt:       map[string]time.Time{},
 		manualHold:         map[string]time.Time{},
 		claudeReroute:      map[string]string{},
+		limits:             validLimits(state.UsageLimits),
 		planChecked:        map[string]time.Time{},
 		resetEvents:        map[string]ResetEvent{},
 		quotaRevision:      map[string]uint64{},
@@ -1076,6 +1080,7 @@ func (m *Manager) persistLocked() error {
 		ManagementKey:      m.managementKey,
 		NativeClaudeCommit: m.nativeClaudeCommit,
 		KeptLoginAligned:   m.keptLoginAligned,
+		UsageLimits:        maps.Clone(m.limits),
 	})
 }
 

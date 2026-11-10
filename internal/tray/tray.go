@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -302,6 +303,19 @@ func (c *Controller) Click(ctx context.Context, action string) {
 			}
 		}
 		run("Switching to "+email, "Now using "+email, func() error { return api.Post(ctx, "/api/accounts/"+id+"/activate", nil) })
+	case strings.HasPrefix(action, "limit:"):
+		id, value, ok := strings.Cut(strings.TrimPrefix(action, "limit:"), ":")
+		limit, err := strconv.Atoi(value)
+		if !ok || err != nil || id == "" || strings.ContainsAny(id, "/?#") {
+			return
+		}
+		done := "No usage limit"
+		if limit > 0 {
+			done = fmt.Sprintf("Switches away at %d%% left", limit)
+		}
+		run("Saving", done, func() error {
+			return api.Patch(ctx, "/api/accounts/"+url.PathEscape(id), map[string]int{"usage_limit": limit})
+		})
 	case action == "awake:off":
 		run("Letting the computer sleep", "", func() error { return api.Post(ctx, "/api/awake", map[string]any{"on": false}) })
 	case strings.HasPrefix(action, "awake:"):

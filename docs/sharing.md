@@ -123,6 +123,11 @@ is at the other end when pairing without a code.
   client shows one made on the host, on another client or by automatic
   switching just as fast. A host that runs an older Switcher cannot say when
   it changes; its clients then read its accounts every few seconds.
+- Usage limits are the host's: a limit set on a client is saved on the host
+  and applies to every Mac that uses it, and the host does the switching.
+- The menu's load card shows the host's CPU, memory and GPU load, named after
+  the host, since that is where the work runs. Working without the host, it
+  shows this Mac's again.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the
