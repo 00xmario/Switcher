@@ -44,3 +44,10 @@ test('levels and sizes', () => {
   assert.equal(gigabytes(16 * 2 ** 30), '16.0');
   assert.equal(gigabytes(128 * 2 ** 30), '128');
 });
+
+test('a card that says why there is no reading is kept, not redrawn', async () => {
+  const { update } = await import('./load-card.js');
+  const off = { querySelector: s => (s === '.load-card .load-off' ? {} : null) };
+  assert.equal(update(off, { available: false, reason: 'unreachable' }), true);
+  assert.equal(update({ querySelector: () => null }, { available: false }), false);
+});

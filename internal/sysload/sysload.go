@@ -51,8 +51,10 @@ const (
 	// fresh is how long a reading answers repeated requests; a menu asks
 	// every two seconds and several screens may ask at once.
 	fresh = 900 * time.Millisecond
-	// gpuFresh spaces out the graphics reading, which may start a process.
-	gpuFresh = 1800 * time.Millisecond
+	// gpuFresh spaces out the graphics reading, which may start a process
+	// (ioreg, nvidia-smi). After the first, it is taken in the background,
+	// so a slow one never holds up a reading.
+	gpuFresh = 5 * time.Second
 	// window is the shortest span a processor share is measured over. Asked
 	// with no recent reading, the sampler waits this long for a second one.
 	window = 250 * time.Millisecond
@@ -68,14 +70,15 @@ type Sampler struct {
 	r   reader
 	now func() time.Time
 
-	mu     sync.Mutex
-	prev   cpuTimes
-	prevAt time.Time
-	last   Sample
-	lastAt time.Time
-	gpu    float64
-	hasGPU bool
-	gpuAt  time.Time
+	mu      sync.Mutex
+	prev    cpuTimes
+	prevAt  time.Time
+	last    Sample
+	lastAt  time.Time
+	gpu     float64
+	hasGPU  bool
+	gpuAt   time.Time
+	gpuBusy bool // a background graphics reading is on its way
 }
 
 // New returns a sampler for this platform.
@@ -125,16 +128,33 @@ func (s *Sampler) Read(ctx context.Context) (Sample, error) {
 		}
 	}
 	if s.r.gpu != nil {
-		if s.gpuAt.IsZero() || now.Sub(s.gpuAt) >= gpuFresh || !now.After(s.gpuAt) {
+		switch {
+		case s.gpuAt.IsZero():
+			// The first reading waits for the graphics too, so the card
+			// does not show it missing for a moment.
 			gctx, cancel := context.WithTimeout(ctx, gpuTimeout)
 			s.gpu, s.hasGPU = s.r.gpu(gctx)
 			cancel()
 			s.gpuAt = now
+		case !s.gpuBusy && (now.Sub(s.gpuAt) >= gpuFresh || !now.After(s.gpuAt)):
+			s.gpuBusy, s.gpuAt = true, now
+			go s.readGPU()
 		}
 		sample.GPU, sample.HasGPU = clamp(s.gpu), s.hasGPU
 	}
 	s.last, s.lastAt = sample, now
 	return sample, nil
+}
+
+// readGPU takes a graphics reading in the background and keeps it for the
+// next reading.
+func (s *Sampler) readGPU() {
+	ctx, cancel := context.WithTimeout(context.Background(), gpuTimeout)
+	gpu, ok := s.r.gpu(ctx)
+	cancel()
+	s.mu.Lock()
+	s.gpu, s.hasGPU, s.gpuBusy = gpu, ok, false
+	s.mu.Unlock()
 }
 
 // share is the busy part of the ticks between two readings, in percent.

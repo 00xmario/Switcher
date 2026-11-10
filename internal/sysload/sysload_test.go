@@ -46,8 +46,74 @@ func TestReadingsMeasureTheProcessorBetweenTwoTicks(t *testing.T) {
 	}
 	clock.t = clock.t.Add(2 * time.Second)
 	got, err = s.Read(context.Background())
-	if err != nil || got.CPU != 100 || gpuCalls != 2 {
+	if err != nil || got.CPU != 100 || gpuCalls != 1 || got.GPU != 37.4 {
 		t.Fatalf("second reading: %+v %v gpu calls %d", got, err, gpuCalls)
+	}
+}
+
+// After the first, the graphics reading is refreshed in the background, at
+// most every few seconds, and a reading never waits for it.
+func TestTheGraphicsReadingNeverHoldsUpAReading(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	var ticks []cpuTimes
+	for i := 1; i <= 20; i++ {
+		ticks = append(ticks, cpuTimes{busy: uint64(i * 10), total: uint64(i * 100)})
+	}
+	release := make(chan struct{})
+	calls := make(chan struct{}, 4)
+	slow := false
+	s := &Sampler{now: clock.now}
+	s.r = reader{
+		cpu: func() (cpuTimes, error) {
+			t := ticks[0]
+			ticks = ticks[1:]
+			clock.t = clock.t.Add(window)
+			return t, nil
+		},
+		gpu: func(context.Context) (float64, bool) {
+			calls <- struct{}{}
+			if slow {
+				<-release
+				return 80, true
+			}
+			return 10, true
+		},
+	}
+	if got, _ := s.Read(context.Background()); got.GPU != 10 {
+		t.Fatalf("first: %v", got.GPU)
+	}
+	<-calls
+	s.mu.Lock()
+	slow = true
+	s.mu.Unlock()
+	clock.t = clock.t.Add(gpuFresh)
+	done := make(chan Sample)
+	go func() { got, _ := s.Read(context.Background()); done <- got }()
+	select {
+	case got := <-done:
+		if got.GPU != 10 {
+			t.Fatalf("a reading while the graphics refresh: %v", got.GPU)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a reading waited for the graphics")
+	}
+	<-calls
+	clock.t = clock.t.Add(gpuFresh)
+	s.Read(context.Background()) // the refresh still runs: no second one
+	close(release)
+	for wait := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		s.mu.Lock()
+		gpu, busy := s.gpu, s.gpuBusy
+		s.mu.Unlock()
+		if gpu == 80 && !busy {
+			break
+		}
+		if time.Now().After(wait) {
+			t.Fatalf("the background reading never landed: %v %v", gpu, busy)
+		}
+	}
+	if len(calls) != 0 {
+		t.Fatal("a second graphics reading started while one ran")
 	}
 }
 

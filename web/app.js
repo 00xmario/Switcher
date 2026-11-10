@@ -504,16 +504,25 @@ const LIMIT_CHOICES = [0, 10, 20, 30, 50];
 
 // limitZoneHTML marks the kept share on a quota bar: the part of the bar
 // left of the line is what the account keeps.
-function limitZoneHTML(win, limit) {
-  if (!(limit > 0) || !LIMIT_WINDOWS.includes(win.label)) return '';
+// limitOf is an account's usage limit as a whole share, or 0: whatever else
+// a server sends is never printed.
+function limitOf(account) {
+  const limit = Number(account?.usage_limit);
+  return Number.isInteger(limit) && limit > 0 && limit <= 95 ? limit : 0;
+}
+
+function limitZoneHTML(win, rawLimit) {
+  const limit = limitOf({ usage_limit: rawLimit });
+  if (!limit || !LIMIT_WINDOWS.includes(win.label)) return '';
   return `<span class="limit-zone" style="width:${Math.min(95, limit)}%" title="Switcher moves away at ${limit}% left"></span>`;
 }
 
 function limitMetaHTML(account) {
-  if (!(account.usage_limit > 0)) return '';
-  return account.at_limit
-    ? `<span class="routing-warning" title="This account reached its usage limit, so Switcher uses another account when one has room">At its ${account.usage_limit}% limit</span>`
-    : `<span class="limit-note" title="Switcher moves to another account at ${account.usage_limit}% left">Keeps ${account.usage_limit}%</span>`;
+  const limit = limitOf(account);
+  if (!limit) return '';
+  return account.at_limit === true
+    ? `<span class="routing-warning" title="This account reached its usage limit, so Switcher uses another account when one has room">At its ${limit}% limit</span>`
+    : `<span class="limit-note" title="Switcher moves to another account at ${limit}% left">Keeps ${limit}%</span>`;
 }
 
 function windowHTML(win, providerID, limit = 0) {
@@ -768,7 +777,7 @@ function accountMenuHTML(account) {
 // account keeps, for accounts that report such a window (or already keep a
 // share). A share set elsewhere, such as from the command line, shows too.
 function usageLimitMenuHTML(account) {
-  const limit = account.usage_limit || 0;
+  const limit = limitOf(account);
   const counted = (account.usage?.windows || []).some(w => LIMIT_WINDOWS.includes(w.label));
   if (!counted && !limit) return '';
   const choices = LIMIT_CHOICES.includes(limit) ? LIMIT_CHOICES : [...LIMIT_CHOICES, limit].sort((a, b) => a - b);

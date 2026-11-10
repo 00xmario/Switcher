@@ -721,11 +721,13 @@ func runLoadAndLimitFixtures() {
     // accounts are used.
     requests.removeAll(); completions.removeAll()
     delegate.fetchLoadAsync()
-    guard requests.count == 1, requests[0].url?.path == "/api/system", requests[0].httpMethod == "GET" else {
-        fail("The load card must read /api/system")
+    delegate.fetchLoadAsync()
+    guard requests.count == 1, requests[0].url?.path == "/api/system", requests[0].httpMethod == "GET", delegate.loadInFlight else {
+        fail("The load card must read /api/system, one reading at a time")
     }
     let gb = 1_073_741_824.0
     completions.removeFirst()(Data(#"{"machine":"k12","remote":true,"platform":"linux","available":true,"cpu":23,"cores":16,"memory":72,"memory_used":\#(22.9 * gb),"memory_total":\#(31.8 * gb),"gpu":94}"#.utf8), response(200), nil)
+    guard !delegate.loadInFlight else { fail("An answered reading must let the next one go") }
     guard let host = itemIndex("k12", in: delegate.menu), let keepAwake = itemIndex("Keep awake", in: delegate.menu), host < keepAwake else {
         fail("The load card must sit above Keep awake: \(texts(in: delegate.menu))")
     }

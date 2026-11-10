@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"switcher/internal/claudecode"
 	"switcher/internal/provider"
 	"switcher/internal/store"
 )
@@ -152,7 +153,8 @@ func TestFailoverLeavesLimitedAccountsForLast(t *testing.T) {
 	m.exhausted["free"] = time.Now().Add(time.Hour)
 	next, downgrade, err = m.failoverLocked("x", "codex")
 	m.mu.Unlock()
-	if err != nil || next != "kept" || downgrade {
+	// A banked reset on x comes first: it spares the share kept.
+	if err != nil || next != "kept" || !downgrade {
 		t.Fatalf("last resort: %q %v %v", next, downgrade, err)
 	}
 }
@@ -269,5 +271,48 @@ func TestSettingALimitSwitchesAtOnce(t *testing.T) {
 			t.Fatalf("still on %q", active)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Saving the limit an account already has changes nothing: an account the
+// user picked while at its limit stays picked.
+func TestSavingTheSameLimitKeepsTheUsersPick(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	native.status.ActiveID = "b"
+	if err := m.SetUsageLimit("a", 10); err != nil {
+		t.Fatal(err)
+	}
+	m.setUsage("a", windows(0, 95))
+	m.setUsage("b", windows(0, 0))
+	if _, err := m.ActivateForClient(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetUsageLimit("a", 10); err != nil {
+		t.Fatal(err)
+	}
+	m.AutoSwitchNative()
+	if native.status.ActiveID != "a" {
+		t.Fatalf("saving the same limit undid the pick: %v", native.switched)
+	}
+}
+
+// With no Claude Code login Switcher can move (signed out, or one it does
+// not manage), a limit still moves the selection, which other tools use,
+// and leaves the login alone.
+func TestALimitMovesTheSelectionWithoutAUsableLogin(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	native.status = claudecode.Status{Condition: "logged_out"}
+	if err := m.Activate("a"); err != nil {
+		t.Fatal(err)
+	}
+	m.limit("a", 10)
+	m.setUsage("a", windows(0, 95))
+	m.setUsage("b", windows(0, 0))
+	m.AutoSwitchNative()
+	if m.ActiveID("claude") != "b" || len(native.switched) != 0 {
+		t.Fatalf("route %q, login switched %v", m.ActiveID("claude"), native.switched)
+	}
+	if event := m.LastAutoSwitch(); event == nil || event.Where != "proxy" || event.Reason != "limit" {
+		t.Fatalf("event %+v", event)
 	}
 }

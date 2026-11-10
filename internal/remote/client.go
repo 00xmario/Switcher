@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -1232,6 +1233,7 @@ func sanitizeHostState(state map[string]any) {
 		if account, ok := a.(map[string]any); ok && validID(account["id"]) && validID(account["provider"]) {
 			delete(account, "native_switch_available")
 			delete(account, "native_active")
+			sanitizeLimit(account)
 			kept = append(kept, account)
 		}
 	}
@@ -1258,6 +1260,21 @@ func sanitizeHostState(state map[string]any) {
 	}
 	state["active"] = selected
 	delete(state, "claude_code")
+}
+
+// sanitizeLimit keeps an account's usage limit only as what a limit can be:
+// a whole share from 1 to 95, with at_limit a plain true. Anything else
+// from a host is dropped, so no screen ever prints it.
+func sanitizeLimit(account map[string]any) {
+	limit, ok := account["usage_limit"].(float64)
+	if !ok || limit != math.Trunc(limit) || limit < 1 || limit > 95 {
+		delete(account, "usage_limit")
+		delete(account, "at_limit")
+		return
+	}
+	if at, ok := account["at_limit"].(bool); !ok || !at {
+		delete(account, "at_limit")
+	}
 }
 
 // validID accepts only the identifiers Switcher itself generates.

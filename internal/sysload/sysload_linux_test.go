@@ -53,6 +53,38 @@ func TestSysfsGPU(t *testing.T) {
 	}
 }
 
+// A powered-down card is idle and never asked, so a look at the load does
+// not wake a laptop's graphics.
+func TestSuspendedCardsAreIdle(t *testing.T) {
+	root := t.TempDir()
+	card := func(name, vendor, busy, status string) {
+		device := filepath.Join(root, name, "device")
+		os.MkdirAll(filepath.Join(device, "power"), 0o755)
+		os.WriteFile(filepath.Join(device, "vendor"), []byte(vendor+"\n"), 0o644)
+		if busy != "" {
+			os.WriteFile(filepath.Join(device, "gpu_busy_percent"), []byte(busy), 0o644)
+		}
+		os.WriteFile(filepath.Join(device, "power", "runtime_status"), []byte(status+"\n"), 0o644)
+	}
+	card("card0", "0x1002", "77", "suspended")
+	if v, ok := sysfsGPU(root)(); !ok || v != 0 {
+		t.Fatalf("suspended AMD card: %v %v", v, ok)
+	}
+	asked := 0
+	nvidia := func(context.Context) (float64, bool) { asked++; return 50, true }
+	card("card1", "0x10de", "", "suspended")
+	if v, ok := sleepingNvidia(root, nvidia)(context.Background()); !ok || v != 0 || asked != 0 {
+		t.Fatalf("sleeping NVIDIA card was asked: %v %v %d", v, ok, asked)
+	}
+	card("card1", "0x10de", "", "active")
+	if v, _ := sleepingNvidia(root, nvidia)(context.Background()); v != 50 || asked != 1 {
+		t.Fatalf("awake NVIDIA card: %v %d", v, asked)
+	}
+	if v, _ := sleepingNvidia(t.TempDir(), nvidia)(context.Background()); v != 50 {
+		t.Fatal("without drm cards nvidia-smi is still asked")
+	}
+}
+
 func TestNvidiaAndFallback(t *testing.T) {
 	if v, ok := parseNvidia([]byte("12\n 87 \n[N/A]\n")); !ok || v != 87 {
 		t.Fatalf("nvidia: %v %v", v, ok)

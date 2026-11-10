@@ -258,6 +258,9 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 	}
 	status := native.NativeStatus()
 	if !kept && status.Condition != "ready" {
+		// No login Switcher manages to move: the selection, which the proxy
+		// and other tools use, still leaves an account at its limit.
+		m.autoSwitchRoute(providerID)
 		return
 	}
 	from := status.ActiveID
@@ -326,8 +329,10 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 	log.Printf("proxy: Claude Code's account %s; switched to the account with the most usage left", why)
 }
 
-// autoSwitchRoute moves the proxy's selection of a provider without a native
-// login off an account at its usage limit.
+// autoSwitchRoute moves the proxy's selection off an account at its usage
+// limit: for a provider without a native login, and for Claude while Claude
+// Code's login is not one Switcher can move. Only the selection moves, never
+// a native login.
 func (m *Manager) autoSwitchRoute(providerID string) {
 	from := m.ActiveID(providerID)
 	if from == "" {
@@ -351,9 +356,7 @@ func (m *Manager) autoSwitchRoute(providerID string) {
 		defer m.mu.Unlock()
 		return m.active[providerID] == from && m.atLimitLocked(from) && time.Now().After(m.manualHold[from])
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	_, err = m.activateNative(ctx, to, still)
-	cancel()
+	err = m.selectUnder(to, still)
 	if errors.Is(err, errSwitchOvertaken) {
 		return
 	}
@@ -367,6 +370,18 @@ func (m *Manager) autoSwitchRoute(providerID string) {
 	m.lastAutoSwitch.Reason = "limit"
 	m.mu.Unlock()
 	log.Printf("proxy: a %s account reached its usage limit; switched to the account with the most usage left", providerID)
+}
+
+// selectUnder selects an account for the proxy alone, under the native
+// activation lock so it never interleaves with a switch of the login; still
+// runs under that lock first, and false abandons the switch.
+func (m *Manager) selectUnder(id string, still func() bool) error {
+	m.nativeActivation.Lock()
+	defer m.nativeActivation.Unlock()
+	if !still() {
+		return errSwitchOvertaken
+	}
+	return m.Activate(id)
 }
 
 // leaveDueLocked reports whether an account should be left now: it should be

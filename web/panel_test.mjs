@@ -168,3 +168,11 @@ test('the load card sits above the footer', () => {
   assert.ok(html.indexOf('class="provider load"') < html.indexOf('class="foot"'));
   assert.doesNotMatch(pageHTML(state, now), /class="provider load"/);
 });
+
+test('a usage limit that is not a whole share is never printed', () => {
+  const evil = { ...state, accounts: [{ ...state.accounts[0], usage_limit: '"><img src=x onerror=alert(1)>', at_limit: true }] };
+  const html = pageHTML(evil, now);
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /At its/);
+  assert.match(html, /<option value="0" selected>off<\/option>/);
+});

@@ -56,3 +56,25 @@ func TestOnlyTheLoadRouteItselfIsOpen(t *testing.T) {
 		}
 	}
 }
+
+// A host's usage limits reach this Mac's screens only as whole shares from
+// 1 to 95: anything else, markup included, is dropped.
+func TestAHostsUsageLimitsAreOnlyNumbers(t *testing.T) {
+	state := map[string]any{"accounts": []any{
+		map[string]any{"id": "a", "provider": "claude", "usage_limit": `"><img src=x onerror=alert(1)>`, "at_limit": true},
+		map[string]any{"id": "b", "provider": "claude", "usage_limit": 10.5, "at_limit": "yes"},
+		map[string]any{"id": "c", "provider": "claude", "usage_limit": 96.0},
+		map[string]any{"id": "d", "provider": "claude", "usage_limit": 20.0, "at_limit": "true"},
+		map[string]any{"id": "e", "provider": "claude", "usage_limit": 30.0, "at_limit": true},
+	}}
+	sanitizeHostState(state)
+	accounts := state["accounts"].([]any)
+	for i, want := range []map[string]any{{}, {}, {}, {"usage_limit": 20.0}, {"usage_limit": 30.0, "at_limit": true}} {
+		account := accounts[i].(map[string]any)
+		for _, key := range []string{"usage_limit", "at_limit"} {
+			if account[key] != want[key] {
+				t.Errorf("account %v: %s = %v, want %v", account["id"], key, account[key], want[key])
+			}
+		}
+	}
+}

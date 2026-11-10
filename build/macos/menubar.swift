@@ -1588,6 +1588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var loadShape: String?                      // the shape of the card on screen
     private var loadTimer: Timer?
     private var loadRequest = 0
+    private(set) var loadInFlight = false                // a reading is on its way; ticks wait for it
     private(set) var limitEditingID: String?            // the account whose limit choices are open
     private var limitSaving = false
     private var awakeChoice: String?        // the chip that started the running session
@@ -1902,14 +1903,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     // fetchLoadAsync takes a load reading off the main thread: this Mac's,
-    // or the host's while its accounts are used. An older server has no
-    // readings (404) and shows no card.
+    // or the host's while its accounts are used. One at a time: a tick while
+    // a reading is on its way waits for it, so a slow answer, such as a host
+    // that does not reply, still arrives and is shown. An older server has
+    // no readings (404) and shows no card.
     func fetchLoadAsync() {
-        guard !quitting else { return }
+        guard !quitting, !loadInFlight else { return }
+        loadInFlight = true
         loadRequest += 1
         let serial = loadRequest
-        performRequest(makeRequest(path: "api/system", timeout: 6)) { [weak self] data, response, _ in
-            guard let self = self, !self.quitting, serial == self.loadRequest else { return }
+        performRequest(makeRequest(path: "api/system", timeout: 8)) { [weak self] data, response, _ in
+            guard let self = self else { return }
+            if serial == self.loadRequest { self.loadInFlight = false }
+            guard !self.quitting, serial == self.loadRequest else { return }
             let status = (response as? HTTPURLResponse)?.statusCode
             if status == 404, self.systemLoad != nil {
                 self.systemLoad = nil

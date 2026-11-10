@@ -149,9 +149,12 @@ async function readLoad() {
   if (document.visibilityState === 'visible' && app.state) {
     try {
       const reading = await api('/api/system');
-      const shape = reading.available !== app.load?.available || reading.remote !== app.load?.remote || reading.machine !== app.load?.machine;
+      const same = JSON.stringify(reading) === JSON.stringify(app.load);
+      const shape = reading.available !== app.load?.available || reading.remote !== app.load?.remote ||
+        reading.machine !== app.load?.machine || reading.reason !== app.load?.reason;
       app.load = reading;
-      if (shape || app.busy || !loadCard.update($('view'), reading)) render();
+      // Redraw only for a new shape: a redraw closes an open picker.
+      if (!same && !app.busy && (shape || !loadCard.update($('view'), reading))) render();
     } catch {
       // An older server has no readings; the card stays away.
     }

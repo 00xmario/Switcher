@@ -61,7 +61,15 @@ export function duration(seconds) {
 export const LIMIT_WINDOWS = ['Weekly', 'Monthly'];
 export const LIMIT_CHOICES = [0, 10, 20, 30, 50];
 
-export function windowHTML(w, now = Date.now() / 1000, limit = 0) {
+// limitOf is an account's usage limit as a whole share, or 0: whatever else
+// a server sends is never printed.
+export function limitOf(a) {
+  const limit = Number(a?.usage_limit);
+  return Number.isInteger(limit) && limit > 0 && limit <= 95 ? limit : 0;
+}
+
+export function windowHTML(w, now = Date.now() / 1000, rawLimit = 0) {
+  const limit = limitOf({ usage_limit: rawLimit });
   const used = Math.min(100, Math.max(0, Number(w.used_percent) || 0));
   const left = Math.round(100 - used);
   const resets = w.resets_at > now ? duration(w.resets_at - now) : '';
@@ -100,8 +108,8 @@ export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
     out ? `<span class="note is-out">Out of usage · back in ${duration(a.exhausted_until - now)}</span>` : '',
     condition === 'needs_relogin' ? '<span class="note is-out">Sign in again</span>' : '',
     (condition === 'usage_stale' || condition === 'usage_unavailable') && windows.length ? '<span class="note">Usage stale</span>' : '',
-    a.usage_limit > 0 && a.at_limit ? `<span class="note is-out">At its ${a.usage_limit}% limit · Switcher uses another account</span>` : '',
-    a.usage_limit > 0 && !a.at_limit ? `<span class="note">Keeps ${a.usage_limit}% · switches away at ${a.usage_limit}% left</span>` : '',
+    limitOf(a) && a.at_limit === true ? `<span class="note is-out">At its ${limitOf(a)}% limit · Switcher uses another account</span>` : '',
+    limitOf(a) && a.at_limit !== true ? `<span class="note">Keeps ${limitOf(a)}% · switches away at ${limitOf(a)}% left</span>` : '',
     a.native_switch_available && !active ? `<span class="note">Use also switches Claude Code on ${esc(place)}.</span>` : '',
   ].join('');
   const usage = windows.length
@@ -124,7 +132,7 @@ export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
 // monthly usage it keeps. Only accounts with such a window, or a limit
 // already, offer it.
 export function limitPickHTML(a) {
-  const limit = a.usage_limit || 0;
+  const limit = limitOf(a);
   const counted = (a.usage?.windows || []).some(w => LIMIT_WINDOWS.includes(w.label));
   if (!counted && !limit) return '';
   const choices = LIMIT_CHOICES.includes(limit) ? LIMIT_CHOICES : [...LIMIT_CHOICES, limit].sort((x, y) => x - y);

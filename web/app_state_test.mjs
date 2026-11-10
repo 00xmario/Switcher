@@ -443,3 +443,11 @@ console.log('State ordering and fast Recheck reconciliation: OK');
   assert.match(bar, /<span class="limit-zone" style="width:20%"/);
   assert.doesNotMatch(hover.windowHTML({ label: 'Session', used_percent: 50, resets_at: null }, 'fake', 20), /limit-zone/);
 }
+
+{
+  const evil = accountContext.accountMenuHTML({ id: 'x', provider: 'codex', email: 'x@example.com',
+    usage: { windows: [{ label: 'Weekly', used_percent: 1 }] }, usage_limit: '"><img src=x onerror=alert(1)>' });
+  assert.doesNotMatch(evil, /<img/);
+  assert.match(evil, /Usage limit · off/);
+  assert.doesNotMatch(hover.windowHTML({ label: 'Weekly', used_percent: 1, resets_at: null }, 'fake', '50%"><b>'), /<b>|limit-zone/);
+}

@@ -77,8 +77,10 @@ const SERVER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 // they ease from one value to the next instead of redrawing. It answers
 // false when the card has to be drawn anew (it changed shape).
 export function update(root, view) {
+  // A card that says why there is no reading stays as it is.
+  if (view && !view.available) return Boolean(root?.querySelector?.('.load-card .load-off'));
   const card = root?.querySelector?.('.load-card .gauges');
-  if (!card || !view?.available) return false;
+  if (!card) return false;
   for (const [kind, value] of [['cpu', view.cpu], ['memory', view.memory], ['gpu', view.gpu ?? NaN]]) {
     const gauge = card.querySelector(`[data-gauge="${kind}"]`);
     if (!gauge || gauge.classList.contains('is-unknown') !== !Number.isFinite(value)) return false;

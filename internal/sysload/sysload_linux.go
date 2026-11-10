@@ -19,7 +19,7 @@ func platform() reader {
 	return reader{
 		cpu:    func() (cpuTimes, error) { return procStat("/proc/stat") },
 		memory: func() (uint64, uint64, error) { return procMeminfo("/proc/meminfo") },
-		gpu:    linuxGPU(sysfsGPU("/sys/class/drm"), nvidiaSMI()),
+		gpu:    linuxGPU(sysfsGPU("/sys/class/drm"), sleepingNvidia("/sys/class/drm", nvidiaSMI())),
 		cores:  runtime.NumCPU,
 	}
 }
@@ -101,8 +101,16 @@ func parseMeminfo(raw []byte) (used, total uint64, err error) {
 // connectors (card0-HDMI-A-1).
 var cardName = regexp.MustCompile(`^card[0-9]+$`)
 
+// suspended reports a card the kernel has powered down: it is idle, and
+// asking it anything could wake it.
+func suspended(device string) bool {
+	raw, err := os.ReadFile(filepath.Join(device, "power", "runtime_status"))
+	return err == nil && strings.TrimSpace(string(raw)) == "suspended"
+}
+
 // sysfsGPU reads the busy share AMD's driver (and others that follow it)
-// keeps for each card, and answers the busiest.
+// keeps for each card, and answers the busiest. A suspended card counts as
+// idle and is not asked.
 func sysfsGPU(root string) func() (float64, bool) {
 	return func() (float64, bool) {
 		entries, err := os.ReadDir(root)
@@ -114,7 +122,12 @@ func sysfsGPU(root string) func() (float64, bool) {
 			if !cardName.MatchString(e.Name()) {
 				continue
 			}
-			raw, err := os.ReadFile(filepath.Join(root, e.Name(), "device", "gpu_busy_percent"))
+			device := filepath.Join(root, e.Name(), "device")
+			if _, err := os.Stat(filepath.Join(device, "gpu_busy_percent")); err == nil && suspended(device) {
+				found = true
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(device, "gpu_busy_percent"))
 			if err != nil {
 				continue
 			}
@@ -125,6 +138,43 @@ func sysfsGPU(root string) func() (float64, bool) {
 			best, found = max(best, clamp(v)), true
 		}
 		return best, found
+	}
+}
+
+// nvidiaAsleep reports that every NVIDIA card the kernel lists is powered
+// down, as on a laptop running on its other graphics: nvidia-smi would wake
+// one, so the reading is idle instead.
+func nvidiaAsleep(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	seen := false
+	for _, e := range entries {
+		if !cardName.MatchString(e.Name()) {
+			continue
+		}
+		device := filepath.Join(root, e.Name(), "device")
+		raw, err := os.ReadFile(filepath.Join(device, "vendor"))
+		if err != nil || strings.TrimSpace(string(raw)) != "0x10de" {
+			continue
+		}
+		if !suspended(device) {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+// sleepingNvidia answers idle for NVIDIA cards that are all powered down,
+// and asks nvidia-smi otherwise.
+func sleepingNvidia(root string, nvidia func(context.Context) (float64, bool)) func(context.Context) (float64, bool) {
+	return func(ctx context.Context) (float64, bool) {
+		if nvidiaAsleep(root) {
+			return 0, true
+		}
+		return nvidia(ctx)
 	}
 }
 

@@ -65,26 +65,34 @@ func (m *Manager) SetUsageLimit(id string, limit int) error {
 	if limit < 0 || limit > MaxUsageLimit {
 		return ErrInvalidLimit
 	}
+	// Under the lock, so an account deleted meanwhile (DeleteAccount holds
+	// it too) cannot be left with a limit.
+	m.mu.Lock()
 	if _, err := m.store.Get(id); err != nil {
+		m.mu.Unlock()
 		return err
 	}
-	m.mu.Lock()
-	err := m.mutateStateLocked(func() {
-		if m.limits == nil {
-			m.limits = map[string]int{}
-		}
-		if limit == 0 {
-			delete(m.limits, id)
-		} else {
-			m.limits[id] = limit
-		}
-		// A new limit is a new decision: the cooldown of an earlier switch
-		// or a hold from picking the account does not delay it.
-		delete(m.autoSwitchAt, id)
-		delete(m.manualHold, id)
-	})
+	changed := m.limits[id] != limit
+	var err error
+	if changed {
+		err = m.mutateStateLocked(func() {
+			if m.limits == nil {
+				m.limits = map[string]int{}
+			}
+			if limit == 0 {
+				delete(m.limits, id)
+			} else {
+				m.limits[id] = limit
+			}
+			// A new limit is a new decision: the cooldown of an earlier
+			// switch or a hold from picking the account does not delay it.
+			// Saving the same limit again changes nothing, the hold included.
+			delete(m.autoSwitchAt, id)
+			delete(m.manualHold, id)
+		})
+	}
 	m.mu.Unlock()
-	if err == nil && limit > 0 {
+	if err == nil && changed && limit > 0 {
 		go m.AutoSwitchNative()
 	}
 	return err
