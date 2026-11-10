@@ -353,10 +353,14 @@ func (m *Manager) autoSwitchRoute(providerID string, cooldown bool) {
 		return
 	}
 	// Right before switching: nobody switched meanwhile, from is still at
-	// its limit and not held, and to has not run out or reached its own.
+	// its limit and not held, and to still exists with room: not deleted,
+	// run out or at its own limit meanwhile.
 	still := func() bool {
-		return m.active[providerID] == from && m.atLimitLocked(from) && time.Now().After(m.manualHold[from]) &&
-			!m.exhaustedNow(to) && !m.atLimitLocked(to)
+		if m.active[providerID] != from || !m.atLimitLocked(from) || !time.Now().After(m.manualHold[from]) {
+			return false
+		}
+		a, err := m.store.Get(to)
+		return err == nil && a.Provider == providerID && m.headroomLocked(a) > 0
 	}
 	err = m.selectUnder(providerID, to, still)
 	if errors.Is(err, errSwitchOvertaken) {

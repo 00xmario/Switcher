@@ -30,6 +30,7 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Installed *bool `json:"installed"`
+		Replace   bool  `json:"replace"` // also replace a skill file Switcher did not write
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil || body.Installed == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `send {"installed": true} or {"installed": false}`})
@@ -38,7 +39,7 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 	var st agentskill.Status
 	var err error
 	if *body.Installed {
-		st, err = agentskill.Install(a.Home, a.ClaudeConfigDir)
+		st, err = agentskill.Install(a.Home, a.ClaudeConfigDir, body.Replace)
 	} else {
 		st, err = agentskill.Remove(a.Home, a.ClaudeConfigDir)
 	}

@@ -15,6 +15,9 @@ automatically".
 
   switcher skill            show whether the skill is installed
   switcher skill install    install it, or bring it up to date
+  switcher skill install --replace
+                            also replace a skill file Switcher did not write
+                            or that was edited
   switcher skill remove     remove it
 
 The skill is ~/.agents/skills/switcher/SKILL.md, read by agents that use
@@ -36,7 +39,9 @@ func (c *ctx) home() (string, error) {
 }
 
 func runSkill(c *ctx, args []string) error {
-	pos, err := c.parse(c.flags("skill"), args, 0, 1)
+	fs := c.flags("skill")
+	replace := fs.Bool("replace", false, "")
+	pos, err := c.parse(fs, args, 0, 1)
 	if err != nil {
 		return err
 	}
@@ -71,7 +76,10 @@ func runSkill(c *ctx, args []string) error {
 			human += " Claude Code does not see it yet: switcher skill install links it in " + st.ClaudeLink + "."
 		}
 	case "install":
-		st, err = agentskill.Install(home, claude)
+		st, err = agentskill.Install(home, claude, *replace)
+		if errors.Is(err, agentskill.ErrNotOurs) {
+			return fmt.Errorf("%s holds a skill Switcher did not write or that was edited; switcher skill install --replace replaces it", st.Path)
+		}
 		human = "Installed the Switcher skill at " + st.Path + ". Your agents pick it up in their next session."
 		if err == nil && !st.ClaudeCode {
 			human += " " + st.ClaudeLink + " is taken, so Claude Code does not see it there."

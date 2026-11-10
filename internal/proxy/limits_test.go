@@ -363,3 +363,25 @@ func TestAnAutomaticSwitchKeepsAnExhaustionMark(t *testing.T) {
 		t.Fatalf("moved onto an exhausted account: %q", m.ActiveID("codex"))
 	}
 }
+
+// An account deleted between choosing it and switching to it is not
+// selected.
+func TestAnAutomaticSwitchSkipsADeletedAccount(t *testing.T) {
+	m := codexManager(t, codexAccount("x", "plus"), codexAccount("y", "plus"))
+	m.limit("x", 10)
+	m.setUsage("x", monthlyUsage(95))
+	m.setUsage("y", monthlyUsage(0))
+	m.mu.Lock()
+	to, _ := m.takeoverLocked("codex", "x", false)
+	m.mu.Unlock()
+	if to != "y" {
+		t.Fatalf("takeover %q", to)
+	}
+	if err := m.DeleteAccount("y"); err != nil {
+		t.Fatal(err)
+	}
+	m.AutoSwitchNative()
+	if got := m.ActiveID("codex"); got != "x" {
+		t.Fatalf("selected %q", got)
+	}
+}

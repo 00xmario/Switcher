@@ -8,8 +8,8 @@
 // The skill is part of this binary. Switcher records the hash of the copy it
 // wrote beside it; a copy that still matches is Switcher's, brought up to
 // date when Switcher updates and removed on request. A copy the user edited
-// no longer matches and is left alone, and nothing but a plain file Switcher
-// wrote is ever replaced or removed.
+// no longer matches and is left alone: it is replaced only when asked, and
+// anything but a plain file never is.
 package agentskill
 
 import (
@@ -101,8 +101,10 @@ func Check(home, claudeConfigDir string) (Status, error) {
 		return st, err
 	case exists:
 		stamp, _, _ := read(stampPath(home))
-		st.Managed = raw != nil && strings.TrimSpace(string(stamp)) == digest(raw)
 		st.Current = bytes.Equal(raw, content)
+		// This release's own bytes are Switcher's even without the record,
+		// as after a crash between writing the skill and its record.
+		st.Managed = raw != nil && (st.Current || strings.TrimSpace(string(stamp)) == digest(raw))
 	}
 	if info, err := os.Stat(filepath.Join(st.ClaudeLink, "SKILL.md")); err == nil && info.Mode().IsRegular() {
 		st.ClaudeCode = true
@@ -132,15 +134,25 @@ func writeAtomic(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// Install writes this release's skill, replacing an earlier copy, and links
-// it for Claude Code. It refuses to replace anything but a plain file.
-func Install(home, claudeConfigDir string) (Status, error) {
+// ErrNotOurs refuses to replace a skill file Switcher did not write, or one
+// that was edited since, unless the caller asks to replace it.
+var ErrNotOurs = errors.New("a skill file that Switcher did not write, or that was edited, is in its place")
+
+// Install writes this release's skill, replacing a copy Switcher wrote, and
+// links it for Claude Code. A file Switcher did not write, or one edited
+// since, is replaced only with replace; anything but a plain file never is.
+func Install(home, claudeConfigDir string, replace bool) (Status, error) {
 	if home == "" {
 		return Status{}, errors.New("no home directory")
 	}
-	if _, _, err := read(Path(home)); err != nil {
-		st, _ := Check(home, claudeConfigDir)
+	st, err := Check(home, claudeConfigDir)
+	switch {
+	case err != nil:
 		return st, err
+	case st.Blocked:
+		return st, errBlocked
+	case st.Installed && !st.Managed && !replace:
+		return st, ErrNotOurs
 	}
 	if err := os.MkdirAll(Dir(home), 0o755); err != nil {
 		return Status{Path: Path(home)}, err
@@ -161,19 +173,42 @@ func Install(home, claudeConfigDir string) (Status, error) {
 func linkClaude(home, claudeConfigDir string) {
 	link := ClaudeLink(home, claudeConfigDir)
 	if _, err := os.Lstat(link); err == nil {
-		return
+		// Taken. Only a link of Switcher's own that leads nowhere, as after
+		// its folder moved, is made again.
+		if _, err := os.Stat(link); err == nil || !ownsClaudeLink(home, link) {
+			return
+		}
+		if err := os.Remove(link); err != nil {
+			return
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 		return
 	}
+	_ = os.Symlink(linkTarget(home, filepath.Dir(link)), link)
+}
+
+// linkTarget is how a link in dir leads to the skill's folder: relative,
+// like the other shared skills, when both sit under home without links in
+// between (the system resolves a relative link from where the link really
+// is), otherwise absolute.
+func linkTarget(home, dir string) string {
 	target := Dir(home)
-	inside := func(p string) bool { return strings.HasPrefix(p, filepath.Clean(home)+string(filepath.Separator)) }
-	if inside(link) && inside(target) {
-		if rel, err := filepath.Rel(filepath.Dir(link), target); err == nil {
-			target = rel
-		}
+	realDir, err1 := filepath.EvalSymlinks(dir)
+	realParent, err2 := filepath.EvalSymlinks(filepath.Dir(target))
+	realHome, err3 := filepath.EvalSymlinks(home)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return target
 	}
-	_ = os.Symlink(target, link)
+	inside := func(p string) bool { return strings.HasPrefix(p, realHome+string(filepath.Separator)) }
+	// The relative path must come out the same whether read from the paths
+	// as written or as resolved; links in between make them differ.
+	written, err4 := filepath.Rel(dir, target)
+	resolved, err5 := filepath.Rel(realDir, filepath.Join(realParent, filepath.Base(target)))
+	if err4 != nil || err5 != nil || written != resolved || !inside(realDir) || !inside(realParent) {
+		return target
+	}
+	return written
 }
 
 // ownsClaudeLink reports whether Claude Code's entry is the link Switcher
@@ -183,14 +218,17 @@ func ownsClaudeLink(home, link string) bool {
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
 		return false
 	}
-	target, err := os.Readlink(link)
+	raw, err := os.Readlink(link)
 	if err != nil {
 		return false
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(link), target)
+	if raw == linkTarget(home, filepath.Dir(link)) || raw == Dir(home) {
+		return true
 	}
-	return filepath.Clean(target) == filepath.Clean(Dir(home))
+	if !filepath.IsAbs(raw) {
+		raw = filepath.Join(filepath.Dir(link), raw)
+	}
+	return filepath.Clean(raw) == filepath.Clean(Dir(home))
 }
 
 // Remove deletes the skill when Switcher wrote it unchanged, its record, the
@@ -234,6 +272,6 @@ func Refresh(home, claudeConfigDir string) (bool, error) {
 	if st.Current {
 		return false, nil
 	}
-	_, err = Install(home, claudeConfigDir)
+	_, err = Install(home, claudeConfigDir, false)
 	return err == nil, err
 }

@@ -811,7 +811,7 @@ function agentSkillHTML(skill) {
       <div class="settings-row">
         <div><strong>${escapeHTML(state)}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${where}</span></div>
         <div class="skill-actions">
-          ${action ? `<button type="button" class="button primary" data-skill="install">${action}</button>` : ''}
+          ${action ? `<button type="button" class="button primary" data-skill="install"${skill.installed && !skill.managed ? ' data-replace="1"' : ''}>${action}</button>` : ''}
           ${skill.installed && skill.managed ? '<button type="button" class="button" data-skill="remove">Remove</button>' : ''}
         </div>
       </div>
@@ -2781,7 +2781,7 @@ async function renderSettings() {
     try {
       await api('/api/agent-skill', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ installed: install }),
+        body: JSON.stringify({ installed: install, replace: button.dataset.replace === '1' }),
       });
       toast(install ? 'Skill installed: your agents pick it up in their next session' : 'Skill removed');
       renderSettings();

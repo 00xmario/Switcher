@@ -104,8 +104,10 @@ required; OpenCode Go uses its own API key.
   (`SWITCHER_SKILL=0` skips it), as do Settings → Tools → **Install skill**
   and `switcher skill install`. Switcher records the hash of the copy it
   wrote: that copy is brought up to date when Switcher starts after an
-  update, while one you edited, or removed, stays as you left it, and
-  nothing but a plain file it wrote is ever replaced or removed.
+  update, while one you edited, or removed, stays as you left it. A skill
+  file Switcher did not write, or one edited since, is replaced only when
+  you ask (`switcher skill install --replace`, or **Replace with
+  Switcher's**), and anything but a plain file never is.
 - **Automatic failover on exhaustion**: when the active account reports it
   is out of usage (HTTP 429 `usage_limit_reached`), Switcher marks it with
   the upstream reset time and, if another account is usable, retries your

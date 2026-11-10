@@ -26,7 +26,7 @@ func TestInstallUpdateAndRemove(t *testing.T) {
 	if st, err := Check(home, ""); err != nil || st.Installed || st.ClaudeCode || st.Path != filepath.Join(home, ".agents", "skills", "switcher", "SKILL.md") {
 		t.Fatalf("before: %+v %v", st, err)
 	}
-	st, err := Install(home, "")
+	st, err := Install(home, "", false)
 	if err != nil || !st.Installed || !st.Current || !st.Managed || !st.ClaudeCode {
 		t.Fatalf("install: %+v %v", st, err)
 	}
@@ -70,7 +70,7 @@ func TestInstallUpdateAndRemove(t *testing.T) {
 // no removal; only an explicit install replaces it.
 func TestAnEditedSkillIsTheUsers(t *testing.T) {
 	home := t.TempDir()
-	if _, err := Install(home, ""); err != nil {
+	if _, err := Install(home, "", false); err != nil {
 		t.Fatal(err)
 	}
 	edited := append(Content(), []byte("\nMy own note.\n")...)
@@ -87,8 +87,77 @@ func TestAnEditedSkillIsTheUsers(t *testing.T) {
 	if raw, _ := os.ReadFile(Path(home)); string(raw) != string(edited) {
 		t.Fatal("the edited skill changed")
 	}
-	if st, err := Install(home, ""); err != nil || !st.Current || !st.Managed {
-		t.Fatalf("explicit install: %+v %v", st, err)
+	if _, err := Install(home, "", false); err == nil {
+		t.Fatal("an install replaced an edited skill without being asked")
+	}
+	if st, err := Install(home, "", true); err != nil || !st.Current || !st.Managed {
+		t.Fatalf("install asked to replace: %+v %v", st, err)
+	}
+}
+
+// A skill file some other tool or the user put there before Switcher is
+// kept by a plain install, as the install script runs it.
+func TestAnUnownedSkillIsKept(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(Dir(home), 0o755)
+	os.WriteFile(Path(home), []byte("---\nname: switcher\n---\nsomeone else's\n"), 0o644)
+	if _, err := Install(home, "", false); err == nil {
+		t.Fatal("replaced a skill Switcher did not write")
+	}
+	if raw, _ := os.ReadFile(Path(home)); !strings.Contains(string(raw), "someone else's") {
+		t.Fatal("the skill changed")
+	}
+}
+
+// This release's own bytes count as Switcher's even without the record, as
+// after a crash between writing the skill and its record.
+func TestThisReleasesSkillIsSwitchersWithoutItsRecord(t *testing.T) {
+	home := t.TempDir()
+	if _, err := Install(home, "", false); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(stampPath(home))
+	if st, _ := Check(home, ""); !st.Managed {
+		t.Fatalf("status: %+v", st)
+	}
+	if _, err := Remove(home, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With ~/.claude itself a link into dotfiles, a relative link would lead
+// nowhere: the link is absolute and works.
+func TestTheClaudeLinkWorksThroughALinkedClaudeFolder(t *testing.T) {
+	home := t.TempDir()
+	dotfiles := filepath.Join(home, "dotfiles", "claude")
+	os.MkdirAll(dotfiles, 0o755)
+	if err := os.Symlink(dotfiles, filepath.Join(home, ".claude")); err != nil {
+		t.Skip(err)
+	}
+	st, err := Install(home, "", false)
+	if err != nil || !st.ClaudeCode {
+		t.Fatalf("install: %+v %v", st, err)
+	}
+	if target, _ := os.Readlink(st.ClaudeLink); target != Dir(home) {
+		t.Fatalf("link target %q", target)
+	}
+	if st, err := Remove(home, ""); err != nil || st.ClaudeCode {
+		t.Fatalf("remove: %+v %v", st, err)
+	}
+	if _, err := os.Lstat(st.ClaudeLink); !os.IsNotExist(err) {
+		t.Fatal("the link stayed")
+	}
+	// A link of Switcher's that leads nowhere is made again.
+	os.MkdirAll(filepath.Join(dotfiles, "skills"), 0o755)
+	os.Symlink(filepath.Join(home, "gone"), st.ClaudeLink)
+	if st, _ := Install(home, "", false); st.ClaudeCode {
+		t.Fatal("replaced a dangling link that is not Switcher's")
+	}
+	os.Remove(st.ClaudeLink)
+	os.Symlink(Dir(home)+"/../switcher", st.ClaudeLink)
+	os.RemoveAll(Dir(home))
+	if st, err := Install(home, "", false); err != nil || !st.ClaudeCode {
+		t.Fatalf("own link not made again: %+v %v", st, err)
 	}
 }
 
@@ -105,7 +174,7 @@ func TestALinkInTheSkillsPlaceStays(t *testing.T) {
 	if st, _ := Check(home, ""); !st.Blocked || st.Managed {
 		t.Fatalf("status: %+v", st)
 	}
-	if _, err := Install(home, ""); err == nil {
+	if _, err := Install(home, "", false); err == nil {
 		t.Fatal("installed over a link")
 	}
 	if _, err := Remove(home, ""); err == nil {
@@ -132,7 +201,7 @@ func TestTheUsersLinksStay(t *testing.T) {
 	mine := filepath.Join(home, ".claude", "skills", "switcher")
 	os.MkdirAll(mine, 0o755)
 	os.WriteFile(filepath.Join(mine, "SKILL.md"), []byte("mine"), 0o644)
-	if st, err := Install(home, ""); err != nil || !st.Current || !st.ClaudeCode {
+	if st, err := Install(home, "", false); err != nil || !st.Current || !st.ClaudeCode {
 		t.Fatalf("install: %+v %v", st, err)
 	}
 	if raw, _ := os.ReadFile(filepath.Join(mine, "SKILL.md")); string(raw) != "mine" {
@@ -153,7 +222,7 @@ func TestTheUsersLinksStay(t *testing.T) {
 func TestClaudeConfigDirIsHonoured(t *testing.T) {
 	home := t.TempDir()
 	config := filepath.Join(t.TempDir(), "claude")
-	st, err := Install(home, config)
+	st, err := Install(home, config, false)
 	if err != nil || !st.ClaudeCode || st.ClaudeLink != filepath.Join(config, "skills", "switcher") {
 		t.Fatalf("install: %+v %v", st, err)
 	}
