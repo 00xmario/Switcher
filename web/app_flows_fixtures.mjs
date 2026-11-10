@@ -361,6 +361,7 @@ function logoutFixture(logoutResponse, stateResponse = () => Promise.resolve(rep
     usageState: { summary: { private: 'private-usage-total' }, generation: 0, timer: 903 },
     stateTimer: 901, usageTimer: 902, stateEpoch: 0, pollRequest: 0, stateRequestId: 0, lastAppliedStateRequestId: 0, lastRenderMinute: 0,
     pendingRechecks: new Map(), pendingActivations: new Set(), closeAccountMenu() {},
+    loadPage: { resets: 0, reset() { this.resets++; } },
     settleRechecks: () => false, resetFeedback: { observe() {} },
     render: () => assert.fail('private dashboard repainted'), renderAddProviderMenu: () => assert.fail('private controls repainted'),
     toast: () => assert.fail('logout must use its dedicated view'),
@@ -393,6 +394,7 @@ test('logout persistence failure clears private UI and retains an explicit logou
   assert.equal(context.data.accounts.length, 0);
   assert.equal(context.data.hub_management_key, undefined);
   assert.equal(context.usageState.summary, null);
+  assert.equal(context.loadPage.resets, 1, 'logout must stop and clear the load page');
   oldState.resolve(reply({ auth_required: true }, 401));
   await oldPoll;
   assert.equal(storage.get('switcher-csrf'), 'logout-csrf', 'late 401 must not destroy retry proof');

@@ -36,3 +36,10 @@ test('apps rank by the chosen metric, as shares of the machine', () => {
   assert.deepEqual(rank(view, 'gpu').map(r => r.app.name), ['a', 'c', 'b']);
   assert.deepEqual(rank(null, 'cpu'), []);
 });
+
+test('a missed reading breaks the history line', () => {
+  const { line, area } = sparkPath([10, 20, NaN, 30, 40]);
+  assert.equal((line.match(/M/g) || []).length, 2);
+  assert.equal((area.match(/Z/g) || []).length, 2);
+  assert.equal(sparkPath([10, NaN, 20]).line, '', 'single points draw nothing');
+});

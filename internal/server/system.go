@@ -67,7 +67,7 @@ func (a *API) handleSystemApps(w http.ResponseWriter, r *http.Request) {
 	if err != nil && r.Context().Err() != nil {
 		return
 	}
-	view.Apps, view.Processes, view.GPUApps = apps.Apps, apps.Processes, apps.GPUApps
+	view.Apps, view.Processes, view.GPUApps, view.AppsUnavailable = apps.Apps, apps.Processes, apps.GPUApps, err != nil
 	if view.Apps == nil {
 		view.Apps = []sysload.App{}
 	}

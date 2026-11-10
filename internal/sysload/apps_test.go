@@ -2,6 +2,7 @@ package sysload
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -25,22 +26,38 @@ func TestAppNames(t *testing.T) {
 }
 
 func TestParsePS(t *testing.T) {
-	out := []byte("    1   0:12.50  20480 /sbin/launchd\n" +
-		"  501   1:02:03.00 102400 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n" +
-		"  502   2-00:00:01.00 1024 /Applications/Google Chrome.app/Contents/Frameworks/X.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper\n" +
+	stats := []byte("    1   0:12.50  20480 Mon Nov 10 09:00:01 2026 launchd\n" +
+		"  501   1:02:03.00 102400 Mon Nov 10 09:00:02 2026 Google Chrome\n" +
+		"  502   2-00:00:01.00 1024 Mon Nov 10 09:00:03 2026 Google Chrome He\n" +
+		"  600   0:00.10  4096 Mon Nov 10 09:00:04 2026 postgres\n" +
+		"  601   0:00.00     0 Mon Nov 10 09:00:05 2026 <defunct>\n" +
+		"  602   0:00.01  2048 Mon Nov 10 09:00:06 2026 zsh\n" +
 		"  bad line\n")
-	snap := parsePS(out)
-	if len(snap.procs) != 3 || snap.gpuOK {
+	paths := []byte("    1 /sbin/launchd\n" +
+		"  501 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n" +
+		"  502 /Applications/Google Chrome.app/Contents/Frameworks/X.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper\n" +
+		"  600 postgres: alice orders 127.0.0.1(54321) idle\n" +
+		"  602 -zsh\n")
+	snap := parsePS(stats, paths)
+	if len(snap.procs) != 5 || snap.gpuOK {
 		t.Fatalf("%+v", snap)
 	}
-	if p := snap.procs[0]; p.name != "launchd" || p.cpu != 12500*time.Millisecond || p.mem != 20480<<10 {
-		t.Fatalf("launchd: %+v", p)
+	want := []struct {
+		name string
+		cpu  time.Duration
+	}{{"launchd", 12500 * time.Millisecond}, {"Google Chrome", time.Hour + 2*time.Minute + 3*time.Second},
+		{"Google Chrome", 48*time.Hour + time.Second}, {"PostgreSQL", 100 * time.Millisecond}, {"zsh", 10 * time.Millisecond}}
+	for i, w := range want {
+		if p := snap.procs[i]; p.name != w.name || p.cpu != w.cpu || p.start == 0 {
+			t.Errorf("%d: %+v, want %+v", i, p, w)
+		}
 	}
-	if p := snap.procs[1]; p.name != "Google Chrome" || p.cpu != time.Hour+2*time.Minute+3*time.Second {
-		t.Fatalf("chrome: %+v", p)
+	if snap.procs[0].mem != 20480<<10 || snap.procs[0].start == snap.procs[1].start {
+		t.Fatalf("memory or start: %+v", snap.procs[:2])
 	}
-	if p := snap.procs[2]; p.name != "Google Chrome" || p.cpu != 48*time.Hour+time.Second {
-		t.Fatalf("helper: %+v", p)
+	// Without the paths, the kernel's names still serve.
+	if snap := parsePS(stats, nil); snap.procs[1].name != "Google Chrome" || snap.procs[2].name != "Google Chrome He" {
+		t.Fatalf("without paths: %+v", snap.procs)
 	}
 	for _, bad := range []string{"", "1:2:3:4", "x:10", "1-x:00.0"} {
 		if _, ok := psTime(bad); ok {
@@ -84,15 +101,26 @@ func TestBreakdown(t *testing.T) {
 	}
 }
 
-// Only the leaders of some ranking are kept.
+// Only apps that lead some ranking with a use are kept, the same ones from
+// one reading to the next: idle programs never fill the list.
 func TestLeaders(t *testing.T) {
 	var all []App
 	for i := 0; i < 40; i++ {
 		all = append(all, App{Name: string(rune('A' + i)), CPU: float64(i), Memory: uint64(40 - i)})
 	}
-	got := leaders(all)
-	if len(got) != 2*appsTop {
+	if got := leaders(all); len(got) != 2*appsTop {
 		t.Fatalf("kept %d", len(got))
+	}
+	var idle []App
+	for i := 0; i < 100; i++ {
+		zero := 0.0
+		idle = append(idle, App{Name: fmt.Sprintf("idle%03d", i), GPU: &zero})
+	}
+	busy := 5.0
+	idle = append(idle, App{Name: "busy", CPU: 3, Memory: 10, GPU: &busy})
+	got := leaders(idle)
+	if len(got) != 1 || got[0].Name != "busy" {
+		t.Fatalf("idle apps kept: %d, first %q", len(got), got[0].Name)
 	}
 }
 

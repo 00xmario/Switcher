@@ -34,6 +34,7 @@ type procInfo struct {
 	name  string // the application it belongs to
 	cpu   time.Duration
 	mem   uint64
+	cut   bool // the name is the kernel's, cut at 15 characters
 }
 
 // gpuClient is one graphics client of a process: its busy time per engine,
@@ -42,7 +43,10 @@ type gpuClient struct {
 	key  string // the device and the driver's client id
 	pid  int
 	busy map[string]time.Duration
-	vram uint64
+	// cycles are an engine's busy cycles and its total cycles, as xe
+	// counts them instead of time.
+	cycles map[string][2]uint64
+	vram   uint64
 }
 
 type procSnapshot struct {
@@ -126,9 +130,9 @@ func breakdown(before, after procSnapshot, elapsed time.Duration, cores int) App
 		}
 	}
 	if after.gpuOK {
-		prevGPU := make(map[string]map[string]time.Duration, len(before.gpu))
+		prevGPU := make(map[string]gpuClient, len(before.gpu))
 		for _, c := range before.gpu {
-			prevGPU[c.key] = c.busy
+			prevGPU[c.key] = c
 		}
 		for _, c := range after.gpu {
 			app := byName[nameOf[c.pid]]
@@ -140,8 +144,14 @@ func breakdown(before, after procSnapshot, elapsed time.Duration, cores int) App
 			if was, ok := prevGPU[c.key]; ok && elapsed > 0 {
 				// A client's share is its busiest engine's.
 				for engine, busy := range c.busy {
-					if busy >= was[engine] {
-						share = max(share, 100*float64(busy-was[engine])/float64(elapsed))
+					if before, ok := was.busy[engine]; ok && busy >= before {
+						share = max(share, 100*float64(busy-before)/float64(elapsed))
+					}
+				}
+				for engine, now := range c.cycles {
+					before, ok := was.cycles[engine]
+					if ok && now[0] >= before[0] && now[1] > before[1] {
+						share = max(share, 100*float64(now[0]-before[0])/float64(now[1]-before[1]))
 					}
 				}
 			}
@@ -170,10 +180,18 @@ func breakdown(before, after procSnapshot, elapsed time.Duration, cores int) App
 
 // leaders keeps the applications that lead any ranking, by processor first.
 func leaders(all []App) []App {
+	// Each ranking keeps only apps that use some of it, so the list never
+	// fills up with idle programs, and orders ties by name, so it is the
+	// same from one reading to the next.
 	keep := map[string]bool{}
-	rank := func(less func(a, b App) bool) {
-		sort.SliceStable(all, func(i, j int) bool { return less(all[i], all[j]) })
-		for i := 0; i < len(all) && i < appsTop; i++ {
+	rank := func(of func(a App) float64) {
+		sort.SliceStable(all, func(i, j int) bool {
+			if x, y := of(all[i]), of(all[j]); x != y {
+				return x > y
+			}
+			return all[i].Name < all[j].Name
+		})
+		for i := 0; i < len(all) && i < appsTop && of(all[i]) > 0; i++ {
 			keep[all[i].Name] = true
 		}
 	}
@@ -183,12 +201,10 @@ func leaders(all []App) []App {
 		}
 		return *a.GPU
 	}
-	rank(func(a, b App) bool {
-		return a.GPUMemory > b.GPUMemory || a.GPUMemory == b.GPUMemory && gpuOf(a) > gpuOf(b)
-	})
-	rank(func(a, b App) bool { return gpuOf(a) > gpuOf(b) })
-	rank(func(a, b App) bool { return a.Memory > b.Memory })
-	rank(func(a, b App) bool { return a.CPU > b.CPU || a.CPU == b.CPU && a.Memory > b.Memory })
+	rank(func(a App) float64 { return float64(a.GPUMemory) })
+	rank(gpuOf)
+	rank(func(a App) float64 { return float64(a.Memory) })
+	rank(func(a App) float64 { return a.CPU })
 	out := make([]App, 0, len(keep))
 	for _, app := range all {
 		if keep[app.Name] {

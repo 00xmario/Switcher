@@ -34,20 +34,55 @@ func TestParseDRMFdinfo(t *testing.T) {
 	}
 }
 
-func TestProcessName(t *testing.T) {
-	for _, c := range []struct{ comm, exe, want string }{
-		{"claude", "/home/u/.local/share/claude/versions/2.1.322", "claude"},
-		{"2.1.318", "/home/u/.local/share/claude/versions/2.1.318", "claude"},
-		{"2.1.318", "/home/u/.local/share/claude/versions/2.1.318 (deleted)", "claude"},
-		{"chrome-headless", "/opt/chrome/chrome-headless-shell", "chrome-headless-shell"},
-		{"node-MainThread", "/usr/bin/node", "node"},
-		{"", "/usr/bin/worker", "worker"},
-		{"bash", "", "bash"},
-		{"gnome-remote-de", "/usr/libexec/gnome-remote-desktop-daemon", "gnome-remote-desktop-daemon"},
-		{"1.2", "/1.2", "1.2"},
+func TestProgramName(t *testing.T) {
+	for exe, want := range map[string]string{
+		"/home/u/.local/share/claude/versions/2.1.322":           "claude",
+		"/home/u/.local/share/claude/versions/2.1.318 (deleted)": "claude",
+		"/opt/chrome/chrome-headless-shell":                      "chrome-headless-shell",
+		"/usr/bin/node":                                          "node",
+		"/1.2":                                                   "1.2",
 	} {
-		if got := processName(c.comm, c.exe); got != c.want {
-			t.Errorf("processName(%q, %q) = %q, want %q", c.comm, c.exe, got, c.want)
+		if got := programName(exe); got != want {
+			t.Errorf("programName(%q) = %q, want %q", exe, got, want)
 		}
+	}
+}
+
+// A name the kernel cut is completed from the one program that starts with
+// it, then given the name people know.
+func TestCompleteNames(t *testing.T) {
+	procs := []procInfo{
+		{name: "gnome-remote-desktop-daemon"},
+		{name: "gnome-remote-de", cut: true},
+		{name: "some-long-name-", cut: true}, // nothing to complete it
+		{name: "chrome"},
+		{name: "duplicate-name-", cut: true},
+		{name: "duplicate-name-one"}, {name: "duplicate-name-two"},
+	}
+	completeNames(procs)
+	for i, want := range []string{"gnome-remote-desktop-daemon", "gnome-remote-desktop-daemon", "some-long-name-", "Chrome", "duplicate-name-"} {
+		if procs[i].name != want {
+			t.Errorf("%d: %q, want %q", i, procs[i].name, want)
+		}
+	}
+}
+
+func TestParseDRMCyclesAndRegions(t *testing.T) {
+	raw := []byte("drm-client-id:\t7\ndrm-pdev:\t0000:00:02.0\ndrm-cycles-rcs:\t500\ndrm-total-cycles-rcs:\t10000\n" +
+		"drm-resident-vram0:\t2 MiB\ndrm-resident-local0:\t1 MiB\ndrm-resident-system0:\t9 MiB\n")
+	c, ok := parseDRMFdinfo(raw)
+	if !ok || !c.ok || c.cycles["rcs"] != [2]uint64{500, 10000} || c.vram != 3<<20 {
+		t.Fatalf("%+v", c)
+	}
+	old, _ := parseDRMFdinfo([]byte("drm-client-id:\t1\ndrm-memory-vram:\t4 MiB\n"))
+	if old.vram != 4<<20 {
+		t.Fatalf("older amdgpu memory: %d", old.vram)
+	}
+	// Cycles give a share of the engine's own total.
+	before := procSnapshot{gpuOK: true, procs: []procInfo{{pid: 1, name: "x"}}, gpu: []gpuClient{{key: "k", pid: 1, cycles: map[string][2]uint64{"rcs": {500, 10000}}}}}
+	after := procSnapshot{gpuOK: true, procs: []procInfo{{pid: 1, name: "x"}}, gpu: []gpuClient{{key: "k", pid: 1, cycles: map[string][2]uint64{"rcs": {2500, 20000}}}}}
+	got := breakdown(before, after, time.Second, 1)
+	if len(got.Apps) != 1 || got.Apps[0].GPU == nil || *got.Apps[0].GPU != 20 {
+		t.Fatalf("cycles share: %+v", got.Apps)
 	}
 }

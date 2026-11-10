@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"switcher/internal/sysload"
 )
 
 // A paired Mac shows its host's load: numbers kept in range, named after the
@@ -243,5 +245,17 @@ func TestAnOlderHostHasNoApps(t *testing.T) {
 	}
 	if !allowedRemotePath("/api/system/apps") || allowedRemotePath("/api/system/apps/x") {
 		t.Fatal("the apps route is not open exactly")
+	}
+}
+
+// Names that are the same once made plain are one row.
+func TestAHostsDuplicateAppNamesMerge(t *testing.T) {
+	v := sysload.AppsView{View: sysload.View{Available: true}, GPUApps: true, Apps: []sysload.App{
+		{Name: "Chrome\x07", Processes: 2, CPU: 60, Memory: 10},
+		{Name: "Chrome", Processes: 3, CPU: 50, Memory: 5},
+	}}
+	v.Sanitize()
+	if len(v.Apps) != 1 || v.Apps[0].Processes != 5 || v.Apps[0].CPU != 100 || v.Apps[0].Memory != 15 {
+		t.Fatalf("%+v", v.Apps)
 	}
 }

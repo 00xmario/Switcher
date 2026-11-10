@@ -71,6 +71,8 @@ type AppsView struct {
 	Apps      []App `json:"apps"`
 	Processes int   `json:"processes"`
 	GPUApps   bool  `json:"gpu_apps"`
+	// AppsUnavailable says the processes could not be listed this time.
+	AppsUnavailable bool `json:"apps_unavailable,omitempty"`
 }
 
 // maxApps bounds the applications another computer may list.
@@ -87,6 +89,7 @@ func (v *AppsView) Sanitize() {
 		v.Processes = 0
 	}
 	kept := v.Apps[:0]
+	at := map[string]int{}
 	for _, a := range v.Apps {
 		a.Name = plainName(a.Name)
 		if a.Name == "" {
@@ -107,6 +110,23 @@ func (v *AppsView) Sanitize() {
 		if !v.GPUApps {
 			a.GPU, a.GPUMemory = nil, 0
 		}
+		// Names the same once made plain are one row.
+		if i, ok := at[a.Name]; ok {
+			k := &kept[i]
+			k.Processes = min(k.Processes+a.Processes, 1<<22)
+			k.CPU = clamp(k.CPU + a.CPU)
+			k.Memory = min(k.Memory+a.Memory, maxMemory)
+			k.GPUMemory = min(k.GPUMemory+a.GPUMemory, maxMemory)
+			if a.GPU != nil {
+				g := *a.GPU
+				if k.GPU != nil {
+					g = clamp(g + *k.GPU)
+				}
+				k.GPU = &g
+			}
+			continue
+		}
+		at[a.Name] = len(kept)
 		kept = append(kept, a)
 	}
 	v.Apps = kept

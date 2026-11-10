@@ -749,10 +749,10 @@ func runLoadAndLimitFixtures() {
           abs(gauges[0].arcEnd - 0.23) < 0.001, texts(in: delegate.menu).contains("Host load") else {
         fail("Load rings are wrong: \(gauges.map { ($0.kind, $0.valueText, $0.detailText) })")
     }
-    // The card opens the load page; the rings let the click through.
-    guard let card = gauges[0].superview, gauges[0].hitTest(NSPoint(x: 5, y: 5)) == nil,
-          let link = card.subviews.first as? ClickableRow, link.frame == card.bounds else {
-        fail("The load card must be one link behind its rings")
+    // The card opens the load page: one link over its rings, lit on hover.
+    guard let card = gauges[0].superview as? HoverCard, let link = card.subviews.last as? ClickableRow,
+          link.frame == card.bounds, delegate.hoverCards.contains(where: { $0 === card }) else {
+        fail("The load card must be one link over its rings")
     }
     link.onClicked?()
     guard delegate.openedLoadPage == 1 else { fail("Clicking the load card must open the load page") }

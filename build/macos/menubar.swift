@@ -1056,9 +1056,6 @@ final class LoadGaugeView: NSView {
     var detailText: String { detailField.stringValue }
     var arcEnd: CGFloat { arc.strokeEnd }
 
-    // Clicks go through to the card, which opens the load page.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
     init(kind: String, title: String, width: CGFloat) {
         self.kind = kind
         valueField = label("", font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold), color: inkColor)
@@ -1550,6 +1547,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     var serverProcess: OwnedServer?
     var cachedState: AppState? { didSet { refreshStatusIcon() } }
     var hoverCards: [HoverCard] = []
+    // The load card, lit on hover like the account cards.
+    var loadHover: HoverCard?
     var hoverTimer: Timer?
     var menuOpen = false
     private var stateRequest = 0
@@ -1779,7 +1778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             providerItems[providerID]?.view = centered(card)
             providerHovers[providerID] = card as? HoverCard
         }
-        hoverCards = Array(providerHovers.values)
+        hoverCards = Array(providerHovers.values) + [loadHover].compactMap { $0 }
         // Discard references to labels in replaced provider cards.
         countdownLabels.removeAll { label, _ in
             !providerHovers.values.contains { label.isDescendant(of: $0) }
@@ -2169,6 +2168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         palette = Palette.current()
         let state = cachedState
         hoverCards = []
+        loadHover = nil
         let headerView = NSView(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 58))
         let nameFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
         let versionFont = NSFont.systemFont(ofSize: 11)
@@ -2643,15 +2643,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
         #endif
         head.addSubview(dot)
-        // The card opens the load page; a chevron says so.
-        let chevron = NSImageView(frame: NSRect(x: dot.frame.minX - 6 - 9, y: 9, width: 9, height: 14))
-        chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-        chevron.contentTintColor = dimColor
-        head.addSubview(chevron)
+        // A card with a reading opens the load page; a chevron says so.
+        var noteEnd = dot.frame.minX - 6
+        if load.available {
+            let chevron = NSImageView(frame: NSRect(x: dot.frame.minX - 6 - 9, y: 9, width: 9, height: 14))
+            chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+            chevron.contentTintColor = dimColor
+            head.addSubview(chevron)
+            noteEnd = chevron.frame.minX - 4
+        }
         let note = label(load.remote == true ? "Host load" : "Load", font: NSFont.systemFont(ofSize: 11), color: dimColor)
         note.alignment = .right
-        note.frame = NSRect(x: name.frame.maxX + 8, y: 8, width: chevron.frame.minX - 4 - name.frame.maxX - 8, height: 15)
+        note.frame = NSRect(x: name.frame.maxX + 8, y: 8, width: noteEnd - name.frame.maxX - 8, height: 15)
         head.addSubview(note)
         head.toolTip = load.remote == true ? "How busy \(title) is: the Mac whose accounts this one uses" : "How busy this Mac is"
         return head
@@ -2667,15 +2671,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
         let pad: CGFloat = 6
         let card = cardView(width: contentWidth, height: LoadGaugeView.height + 14 + 10)
-        // The whole card opens the load page: what is using the computer,
-        // by app. The rings let clicks through to it.
-        let link = ClickableRow(frame: card.bounds)
-        link.layer?.cornerRadius = 10
-        link.toolTip = "See what is using \(loadTitle(load))"
-        link.setAccessibilityRole(.button)
-        link.setAccessibilityLabel("Open the load page")
-        link.onClicked = { [weak self] in self?.openLoadPage() }
-        card.addSubview(link)
         let column = floor((contentWidth - 2 * pad) / 3)
         var gauges: [String: LoadGaugeView] = [:]
         for (index, spec) in loadKinds.enumerated() {
@@ -2685,6 +2680,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             card.addSubview(gauge)
             gauges[spec.kind] = gauge
         }
+        // The whole card opens the load page: what is using the computer,
+        // by app. It lies over the rings, tinting them on hover.
+        let link = ClickableRow(frame: card.bounds)
+        link.layer?.cornerRadius = 10
+        link.toolTip = "See what is using \(loadTitle(load))"
+        link.setAccessibilityElement(true)
+        link.setAccessibilityRole(.button)
+        link.setAccessibilityLabel("See what is using \(loadTitle(load))")
+        link.onClicked = { [weak self] in self?.openLoadPage() }
+        card.addSubview(link)
+        loadHover = card as? HoverCard
+        if let hover = loadHover { hoverCards.append(hover) }
         loadGauges = gauges
         return card
     }

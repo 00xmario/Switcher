@@ -82,6 +82,7 @@ func (l *linuxProcs) read() (procSnapshot, error) {
 			delete(l.drm, pid)
 		}
 	}
+	completeNames(snap.procs)
 	return snap, nil
 }
 
@@ -107,23 +108,23 @@ func (l *linuxProcs) process(pid int, dir string) (procInfo, bool) {
 	case fields.flags&pfKthread != 0:
 		p.name = "Linux kernel"
 	default:
-		// The process's own name, as it was started (a link's name, such as
-		// claude for a binary named after its version). The kernel cuts it
-		// at 15 characters, and some programs name it after a thread
-		// (node-MainThread); the program's file name says it then.
-		p.name = comm
+		// Named after the program file, never the name a process gives
+		// itself, which can hold its arguments (npm sets it to the command
+		// it runs). Another user's program file is not ours to read: then
+		// the kernel's name for it, cut at 15 characters.
 		if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
-			p.name = processName(comm, exe)
+			p.name = programName(exe)
+		} else {
+			p.name, p.cut = comm, len(comm) >= 15
 		}
 	}
-	p.name = friendlyName(p.name)
 	return p, p.name != ""
 }
 
-// processName picks between a process's own name and its program's. A
-// program file named after its version (claude/versions/2.1.318) is named
-// after the folder that holds its versions.
-func processName(comm, exe string) string {
+// programName names a program after its file. A file named after its
+// version (claude/versions/2.1.318) is named after the folder that holds
+// its versions.
+func programName(exe string) string {
 	base := appName(exe)
 	if versionLike(base) {
 		dir := filepath.Dir(strings.TrimSuffix(exe, " (deleted)"))
@@ -133,19 +134,37 @@ func processName(comm, exe string) string {
 		if name := filepath.Base(dir); dir != "/" && dir != "." && name != "" {
 			base = name
 		}
-		if comm == appName(exe) {
-			comm = base
+	}
+	return base
+}
+
+// completeNames gives a name the kernel cut at 15 characters the full name
+// of the one program seen that starts with it, and the names people know.
+func completeNames(procs []procInfo) {
+	full := map[string]bool{}
+	for _, p := range procs {
+		if !p.cut {
+			full[p.name] = true
 		}
 	}
-	switch {
-	case base == "":
-		return comm
-	case comm == "",
-		len(comm) >= 15 && (strings.HasPrefix(base, comm) || strings.HasPrefix(comm, base)),
-		strings.HasSuffix(comm, "MainThread"):
-		return base
+	for i, p := range procs {
+		if p.cut {
+			match := ""
+			for name := range full {
+				if strings.HasPrefix(name, p.name) {
+					if match != "" {
+						match = ""
+						break
+					}
+					match = name
+				}
+			}
+			if match != "" {
+				procs[i].name = match
+			}
+		}
+		procs[i].name = friendlyName(procs[i].name)
 	}
-	return comm
 }
 
 // versionLike says a name is a version number, such as 2.1.318.
@@ -227,12 +246,16 @@ func (l *linuxProcs) clients(pid int, start uint64, dir string, now time.Time) [
 	return out
 }
 
-// parseDRMFdinfo reads one DRM file's fdinfo: the client id and device, the
-// busy time of each engine in nanoseconds, and resident graphics memory.
+// parseDRMFdinfo reads one DRM file's fdinfo: the client id and device, each
+// engine's busy time (nanoseconds, or cycles out of the engine's total, as
+// xe counts it), and the graphics memory it holds (amdgpu's vram, Intel's
+// local and vram regions).
 func parseDRMFdinfo(raw []byte) (drmClient, bool) {
 	var c drmClient
 	var id, dev string
+	var legacy uint64
 	c.busy = map[string]time.Duration{}
+	c.cycles = map[string][2]uint64{}
 	for _, line := range strings.Split(string(raw), "\n") {
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
@@ -253,12 +276,30 @@ func parseDRMFdinfo(raw []byte) (drmClient, bool) {
 				c.busy[strings.TrimPrefix(key, "drm-engine-")] = time.Duration(v)
 				c.ok = true
 			}
-		case key == "drm-resident-vram" || key == "drm-memory-vram":
-			c.vram = max(c.vram, drmBytes(value))
+		case strings.HasPrefix(key, "drm-total-cycles-"), strings.HasPrefix(key, "drm-cycles-"):
+			total := strings.HasPrefix(key, "drm-total-cycles-")
+			engine := strings.TrimPrefix(strings.TrimPrefix(key, "drm-total-cycles-"), "drm-cycles-")
+			if v, err := strconv.ParseUint(value, 10, 64); err == nil {
+				pair := c.cycles[engine]
+				if total {
+					pair[1] = v
+				} else {
+					pair[0] = v
+				}
+				c.cycles[engine] = pair
+				c.ok = true
+			}
+		case key == "drm-memory-vram":
+			legacy = drmBytes(value)
+		case strings.HasPrefix(key, "drm-resident-vram"), strings.HasPrefix(key, "drm-resident-local"):
+			c.vram += drmBytes(value)
 		}
 	}
 	if id == "" {
 		return drmClient{}, false
+	}
+	if c.vram == 0 {
+		c.vram = legacy // amdgpu before drm-resident-*
 	}
 	c.key = dev + "/" + id
 	return c, true

@@ -3,34 +3,60 @@ package sysload
 import (
 	"bufio"
 	"bytes"
+	"hash/fnv"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// parsePS reads ps's pid, processor time, resident kilobytes and path.
-func parsePS(out []byte) procSnapshot {
+// parsePS reads two ps listings: pid, processor time, resident kilobytes,
+// start and the kernel's name for the program (16 characters at most); and
+// pid and the path each was started as. That path is used only when it is
+// the program's own (absolute, ending in the kernel's name): a process may
+// rewrite it with its arguments, as PostgreSQL does.
+func parsePS(stats, paths []byte) procSnapshot {
+	pathOf := map[int]string{}
+	lines(paths, func(f []string) {
+		if pid, err := strconv.Atoi(f[0]); err == nil && len(f) > 1 {
+			pathOf[pid] = strings.Join(f[1:], " ")
+		}
+	})
 	var snap procSnapshot
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	for scanner.Scan() {
-		f := strings.Fields(scanner.Text())
-		if len(f) < 4 {
-			continue
+	lines(stats, func(f []string) {
+		// pid time rss, then the start (Mon Nov 10 18:01:02 2026), then the
+		// name, which may hold spaces.
+		if len(f) < 9 {
+			return
 		}
 		pid, err1 := strconv.Atoi(f[0])
 		cpu, ok := psTime(f[1])
 		rss, err2 := strconv.ParseUint(f[2], 10, 64)
 		if err1 != nil || err2 != nil || !ok || pid <= 0 {
-			continue
+			return
 		}
-		name := friendlyName(appName(strings.Join(f[3:], " ")))
-		if name == "" {
-			continue
+		h := fnv.New64a()
+		h.Write([]byte(strings.Join(f[3:8], " ")))
+		name := strings.Join(f[8:], " ")
+		if strings.HasPrefix(name, "<") || name == "" {
+			return // a zombie: no memory, no time
 		}
-		snap.procs = append(snap.procs, procInfo{pid: pid, name: name, cpu: cpu, mem: rss << 10})
-	}
+		if path := pathOf[pid]; strings.HasPrefix(path, "/") && strings.HasPrefix(path[strings.LastIndexByte(path, '/')+1:], name) {
+			name = appName(path)
+		}
+		snap.procs = append(snap.procs, procInfo{pid: pid, start: h.Sum64(), name: friendlyName(name), cpu: cpu, mem: rss << 10})
+	})
 	return snap
+}
+
+// lines calls fn with the fields of each line of a listing.
+func lines(out []byte, fn func(f []string)) {
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for scanner.Scan() {
+		if f := strings.Fields(scanner.Text()); len(f) > 0 {
+			fn(f)
+		}
+	}
 }
 
 // psTime reads ps's processor time: [[dd-]hh:]mm:ss.ss.

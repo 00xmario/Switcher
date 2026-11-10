@@ -11,6 +11,10 @@ import { mergeInstallProgress, installProgressHTML, paintInstallProgress } from 
 import { createLiveState } from './live-state.js';
 import { SECTIONS, navHTML, sectionHeadHTML, accountLayout, LAYOUTS, layoutChooserHTML, menuPreviewHTML, ladderHTML, securityHeroHTML } from './settings-visuals.js';
 
+// The load page: what is using this computer, or the host. The menu bar's
+// and the tray's load card open it as #load.
+const loadPage = createLoadPage({ api, root: document.getElementById('load-page') });
+
 const providersEl = document.getElementById('providers');
 const resetFeedback = createResetFeedback({ getCard: id => [...providersEl.querySelectorAll('.account')].find(card => card.dataset.id === id) });
 const claudeSessionSync = createClaudeSync({
@@ -218,6 +222,7 @@ function clearPrivateDashboard() {
   pendingRechecks.clear();
   pendingActivations.clear();
   settingsPage.desktopRelay?.clear();
+  loadPage.reset();
   closeAccountMenu();
   for (const node of [providersEl, settingsPage, usagePage, usageHeadline, usageSub,
     usageProviders, usageTotals, usageChartBox, usageChartTitle, usageBreakdownTable, accountStatusAnnouncer]) node.replaceChildren();
@@ -1769,9 +1774,6 @@ const USAGE_PROVIDER_NAMES = { codex: 'Codex', claude: 'Claude Code', grok: 'Gro
 document.getElementById('tab-accounts').addEventListener('click', () => setPage('accounts'));
 document.getElementById('tab-usage').addEventListener('click', () => setPage('usage'));
 document.getElementById('tab-load').addEventListener('click', () => setPage('load'));
-// The load page: what is using this computer, or the host. The menu bar's
-// and the tray's load card open it as #load.
-const loadPage = createLoadPage({ api, root: document.getElementById('load-page') });
 
 function setPage(page) {
   if (authState.locked) return;

@@ -8,8 +8,6 @@ const POLL_MS = 2000;
 const HISTORY = 60; // two minutes of readings
 const ROWS = 12;
 
-const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
 const METRICS = [
   { id: 'cpu', label: 'CPU', sort: 'Processor' },
   { id: 'memory', label: 'Memory', sort: 'Memory' },
@@ -46,15 +44,24 @@ function detail(view, id) {
 }
 
 // sparkPath draws the history as a line and the area under it, newest on
-// the right, in a 120 by 40 box.
+// the right, in a 120 by 40 box. A missed reading breaks the line.
 export function sparkPath(points) {
-  const known = points.map((p, i) => [i, p]).filter(([, p]) => Number.isFinite(p));
-  if (known.length < 2) return { line: '', area: '' };
   const x = i => (120 * (i + HISTORY - points.length)) / (HISTORY - 1);
   const y = p => 38 - (Math.max(0, Math.min(100, p)) / 100) * 34;
-  const line = known.map(([i, p], n) => `${n ? 'L' : 'M'}${x(i).toFixed(2)} ${y(p).toFixed(2)}`).join('');
-  const first = x(known[0][0]).toFixed(2), last = x(known[known.length - 1][0]).toFixed(2);
-  return { line, area: `${line}L${last} 40L${first} 40Z` };
+  const runs = [];
+  let run = [];
+  points.forEach((p, i) => {
+    if (Number.isFinite(p)) run.push([i, p]);
+    else if (run.length) { runs.push(run); run = []; }
+  });
+  if (run.length) runs.push(run);
+  let line = '', area = '';
+  for (const r of runs.filter(r => r.length > 1)) {
+    const path = r.map(([i, p], n) => `${n ? 'L' : 'M'}${x(i).toFixed(2)} ${y(p).toFixed(2)}`).join('');
+    line += path;
+    area += `${path}L${x(r[r.length - 1][0]).toFixed(2)} 40L${x(r[0][0]).toFixed(2)} 40Z`;
+  }
+  return { line, area };
 }
 
 function metricHTML(m) {
@@ -122,22 +129,27 @@ function monogram(name) {
 }
 
 export function createLoadPage({ api, root, onVisible = () => {} }) {
-  let active = false, timer = null, inFlight = false, view = null, machine = null;
+  let active = false, timer = null, inFlight = false, view = null, machine = null, lastAt = 0;
   let sort = 'cpu', expanded = false, failures = 0;
   const history = { cpu: [], memory: [], gpu: [] };
   root.innerHTML = shellHTML();
   const $ = sel => root.querySelector(sel);
 
-  root.querySelectorAll('[data-load-sort]').forEach(button => button.addEventListener('click', () => {
-    if (button.disabled) return;
-    sort = button.dataset.loadSort;
-    root.querySelectorAll('[data-load-sort]').forEach(b => {
-      b.classList.toggle('active', b === button);
-      b.setAttribute('aria-checked', String(b === button));
-    });
-    renderApps(true);
-  }));
-  $('[data-load-more]').addEventListener('click', () => { expanded = !expanded; renderApps(true); });
+  function bindControls() {
+    sort = 'cpu';
+    expanded = false;
+    root.querySelectorAll('[data-load-sort]').forEach(button => button.addEventListener('click', () => {
+      if (button.disabled) return;
+      sort = button.dataset.loadSort;
+      root.querySelectorAll('[data-load-sort]').forEach(b => {
+        b.classList.toggle('active', b === button);
+        b.setAttribute('aria-checked', String(b === button));
+      });
+      renderApps(true);
+    }));
+    $('[data-load-more]').addEventListener('click', () => { expanded = !expanded; renderApps(true); });
+  }
+  bindControls();
 
   function renderMetrics() {
     for (const m of METRICS) {
@@ -163,13 +175,14 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
     const gpuButton = root.querySelector('[data-load-sort="gpu"]');
     const gpuApps = !!view?.gpu_apps;
     gpuButton.disabled = !gpuApps;
-    gpuButton.title = gpuApps ? '' : 'This computer does not report graphics use per app';
+    gpuButton.title = gpuApps ? '' : `${view?.remote ? view.machine || 'The host' : 'This computer'} does not report graphics use per app`;
     if (sort === 'gpu' && !gpuApps) {
       sort = 'cpu';
       root.querySelectorAll('[data-load-sort]').forEach(b => { b.classList.toggle('active', b.dataset.loadSort === 'cpu'); b.setAttribute('aria-checked', String(b.dataset.loadSort === 'cpu')); });
     }
     const ranked = view?.available ? rank(view, sort) : [];
     note.textContent = !view?.available ? ''
+      : view.apps_unavailable ? 'Could not list the apps this time; trying again.'
       : ranked.length === 0 ? 'No apps to show yet.'
       : `${view.processes} processes running${view.remote ? ` on ${view.machine}` : ''}`;
     const shown = expanded ? ranked : ranked.slice(0, ROWS);
@@ -233,8 +246,20 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
   async function poll() {
     if (!active || inFlight) return;
     inFlight = true;
+    // The history is two minutes of time: after a long gap (the page was
+    // closed or hidden) it starts again, and a missed reading leaves a gap.
+    const now = Date.now();
+    if (lastAt && now - lastAt > 3 * POLL_MS + 4000) for (const k of Object.keys(history)) history[k] = [];
+    lastAt = now;
+    const push = next => {
+      for (const m of METRICS) {
+        history[m.id].push(value(next, m.id));
+        if (history[m.id].length > HISTORY) history[m.id].shift();
+      }
+    };
     try {
       const next = await api('/api/system/apps');
+      if (!active) return;
       failures = 0;
       // Another computer's history is not this one's.
       const id = `${next.remote ? 'host' : 'here'}:${next.machine}`;
@@ -243,12 +268,10 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
         for (const k of Object.keys(history)) history[k] = [];
       }
       view = next;
-      for (const m of METRICS) {
-        history[m.id].push(value(view, m.id));
-        if (history[m.id].length > HISTORY) history[m.id].shift();
-      }
+      push(view);
     } catch {
       failures++;
+      push(null);
       if (failures > 2) view = null;
     } finally {
       inFlight = false;
@@ -278,5 +301,16 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
     if (!document.hidden) poll();
   });
 
-  return { setActive, get active() { return active; } };
+  // reset forgets every reading, as on logout.
+  function reset() {
+    setActive(false);
+    view = null;
+    machine = null;
+    lastAt = 0;
+    for (const k of Object.keys(history)) history[k] = [];
+    root.innerHTML = shellHTML();
+    bindControls();
+  }
+
+  return { setActive, reset, get active() { return active; } };
 }
