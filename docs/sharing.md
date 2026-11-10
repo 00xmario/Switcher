@@ -128,6 +128,10 @@ is at the other end when pairing without a code.
 - The menu's load card shows the host's CPU, memory and GPU load, named after
   the host, since that is where the work runs. Working without the host, it
   shows this Mac's again.
+- The skill for AI agents can be set up on both computers from the client:
+  Settings → Command line & tools shows each and **Install on both**, and
+  `switcher skill install` on the client installs it on both (`--on here` or
+  `--on host` for one). The host needs Switcher 1.27.0 or later for this.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the
@@ -188,8 +192,9 @@ not take updates from its clients yet: update it on the host once.
   connection. Ten attempts per device and per address in ten minutes.
 - Only paired Macs are served, with their own revocable token, and only for
   account views and actions, waiting for the accounts to change, provider
-  proxies, the hub, Claude inference, updating the host and dropping their
-  own pairing, which a client does when it disconnects or switches to another
+  proxies, the hub, Claude inference, updating the host, its load reading,
+  installing or removing its skill for AI agents (always the host's own
+  release's text) and dropping their own pairing, which a client does when it disconnects or switches to another
   host. The wait answers only an opaque tag and whether the accounts changed.
   An update installs only the newest official release,
   checked against its published SHA-256 (and its signature on a Mac), and a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +77,52 @@ func TestAHostsUsageLimitsAreOnlyNumbers(t *testing.T) {
 				t.Errorf("account %v: %s = %v, want %v", account["id"], key, account[key], want[key])
 			}
 		}
+	}
+}
+
+func TestOnlyTheSkillRouteItselfIsOpen(t *testing.T) {
+	if !allowedRemotePath("/api/agent-skill") {
+		t.Fatal("/api/agent-skill closed to paired devices")
+	}
+	for _, path := range []string{"/api/agent-skill/", "/api/agent-skills", "/api/agent"} {
+		if allowedRemotePath(path) {
+			t.Errorf("%s open to paired devices", path)
+		}
+	}
+}
+
+// An older host has no skill route: reading says so, installing explains.
+func TestAnOlderHostHasNoSkill(t *testing.T) {
+	_, client := pairedWith(t, http.NotFoundHandler())
+	if got, err := client.HostSkill(context.Background(), nil, false); err != nil || got.Reason != "update" || got.Skill != nil {
+		t.Fatalf("older host: %+v %v", got, err)
+	}
+	yes := true
+	if _, err := client.HostSkill(context.Background(), &yes, false); err == nil || !strings.Contains(err.Error(), "1.27.0") {
+		t.Fatalf("install on an older host: %v", err)
+	}
+}
+
+// The host's refusal reaches this Mac as plain text, and its paths too.
+func TestAHostsSkillAnswerIsPlainText(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := PairedDevice(r); !ok {
+			t.Error("asked without the paired device")
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "edited\x1b[31m by hand"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true, "path": "/home/x/SKILL.md\x07", "claude_link": "a\nb"})
+	})
+	_, client := pairedWith(t, next)
+	got, err := client.HostSkill(context.Background(), nil, false)
+	if err != nil || got.Skill == nil || !got.Skill.Current || got.Skill.Path != "/home/x/SKILL.md" || got.Skill.ClaudeLink != "ab" {
+		t.Fatalf("status: %+v %v", got.Skill, err)
+	}
+	yes := true
+	if _, err := client.HostSkill(context.Background(), &yes, false); err == nil || strings.ContainsAny(err.Error(), "\x1b") || !strings.Contains(err.Error(), "edited") {
+		t.Fatalf("refusal: %v", err)
 	}
 }

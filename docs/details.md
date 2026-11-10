@@ -101,8 +101,11 @@ required; OpenCode Go uses its own API key.
   `$CLAUDE_CONFIG_DIR/skills`), made only where that name is free. It explains
   how to turn "when my account reaches 10% switch to my other account" into
   `switcher limit <account> 10`. A first install by the script puts it there
-  (`SWITCHER_SKILL=0` skips it), as do Settings → Tools → **Install skill**
-  and `switcher skill install`. Switcher records the hash of the copy it
+  (`SWITCHER_SKILL=0` skips it), as do Settings → Command line & tools →
+  **Install** and `switcher skill install`. A computer that uses a host's
+  accounts shows the host's skill beside its own and sets up either or both
+  (**Install on both**, `switcher skill install --on both`); the host takes
+  only install and remove of its own release's skill from it. Switcher records the hash of the copy it
   wrote: that copy is brought up to date when Switcher starts after an
   update, while one you edited, or removed, stays as you left it. A skill
   file Switcher did not write, or one edited since, is replaced only when

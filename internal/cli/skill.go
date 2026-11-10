@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"switcher/internal/agentskill"
 	"switcher/internal/sysload"
@@ -20,11 +21,25 @@ automatically".
                             or that was edited
   switcher skill remove     remove it
 
+On a computer that uses another computer's accounts (a host), install and
+remove act on both computers; --on picks one:
+
+  --on here                 only this computer
+  --on host                 only the host (needs Switcher running here)
+  --on both                 both computers
+
 The skill is ~/.agents/skills/switcher/SKILL.md, read by agents that use
 ~/.agents/skills; Claude Code finds it through a link in ~/.claude/skills (or
 $CLAUDE_CONFIG_DIR/skills). Switcher keeps it up to date when it updates,
-unless you edit it. It needs no running Switcher.
+unless you edit it. On this computer it needs no running Switcher.
 `
+
+// hostSkill is the host's skill as the running Switcher reports it.
+type hostSkill struct {
+	Host   string             `json:"host"`
+	Skill  *agentskill.Status `json:"skill,omitempty"`
+	Reason string             `json:"reason,omitempty"`
+}
 
 // home is the user's home directory, from HOME when it is set.
 func (c *ctx) home() (string, error) {
@@ -38,12 +53,56 @@ func (c *ctx) home() (string, error) {
 	return home, nil
 }
 
+// skillState says in a sentence what state a skill is in.
+func skillState(st agentskill.Status, where, fix string) string {
+	switch {
+	case st.Blocked:
+		return "Something other than the skill file is at " + st.Path + where + "; Switcher leaves it."
+	case !st.Installed:
+		return "The Switcher skill for agents is not installed" + where + ". Install it with: " + fix
+	case st.Current:
+		return "The Switcher skill is installed at " + st.Path + where + "."
+	case st.Managed:
+		return "An older Switcher skill is installed at " + st.Path + where + "; update it with: " + fix
+	default:
+		return "A skill Switcher did not write, or one you changed, is at " + st.Path + where + "; " + fix + " --replace replaces it."
+	}
+}
+
+// hostSkillOf asks the running Switcher for the host's skill; nil when this
+// computer uses no host or Switcher is not running.
+func (c *ctx) hostSkillOf() *hostSkill {
+	var v struct {
+		Host *hostSkill `json:"host"`
+	}
+	if c.cl == nil || c.cl.call("GET", "/api/agent-skill", nil, &v) != nil {
+		return nil
+	}
+	return v.Host
+}
+
+// setHostSkill installs or removes the host's skill through the running
+// Switcher.
+func (c *ctx) setHostSkill(install, replace bool) (*hostSkill, error) {
+	var v struct {
+		Host *hostSkill `json:"host"`
+	}
+	err := c.cl.call("POST", "/api/agent-skill", map[string]any{"installed": install, "replace": replace, "where": "host"}, &v)
+	return v.Host, err
+}
+
 func runSkill(c *ctx, args []string) error {
 	fs := c.flags("skill")
 	replace := fs.Bool("replace", false, "")
+	on := fs.String("on", "", "")
 	pos, err := c.parse(fs, args, 0, 1)
 	if err != nil {
 		return err
+	}
+	switch *on {
+	case "", "here", "host", "both":
+	default:
+		return usagef("--on is here, host or both")
 	}
 	home, err := c.home()
 	if err != nil {
@@ -54,55 +113,104 @@ func runSkill(c *ctx, args []string) error {
 		action = pos[0]
 	}
 	claude := c.opt.Getenv("CLAUDE_CONFIG_DIR")
+	host := c.hostSkillOf()
+	target := *on
+	if target == "" {
+		target = "here"
+		if host != nil && action != "" {
+			target = "both"
+		}
+	}
+	if target != "here" && host == nil {
+		return errors.New("this computer uses no host, or Switcher is not running here (switcher start)")
+	}
+	here, onHost := target != "host", target != "here"
+	hostName := ""
+	if host != nil {
+		hostName = host.Host
+	}
 	var st agentskill.Status
-	var human string
+	var human []string
 	switch action {
 	case "":
 		st, err = agentskill.Check(home, claude)
-		switch {
-		case err != nil:
-		case st.Blocked:
-			human = "Something other than the skill file is at " + st.Path + "; Switcher leaves it."
-		case !st.Installed:
-			human = "The Switcher skill for agents is not installed. Install it with: switcher skill install"
-		case st.Current:
-			human = "The Switcher skill is installed at " + st.Path + "."
-		case st.Managed:
-			human = "An older Switcher skill is installed at " + st.Path + "; update it with: switcher skill install"
-		default:
-			human = "A skill Switcher did not write, or one you changed, is at " + st.Path + "; switcher skill install --replace replaces it."
+		if err != nil {
+			return err
 		}
-		if err == nil && st.Installed && !st.Blocked && !st.ClaudeCode {
+		where := ""
+		if host != nil {
+			where = " on this computer"
+		}
+		line := skillState(st, where, "switcher skill install")
+		if st.Installed && !st.Blocked && !st.ClaudeCode {
 			command := "switcher skill install"
 			if !st.Managed {
 				command += " --replace"
 			}
-			human += " Claude Code does not see it yet: " + command + " links it in " + st.ClaudeLink + "."
+			line += " Claude Code does not see it yet: " + command + " links it in " + st.ClaudeLink + "."
+		}
+		human = append(human, line)
+		if host != nil {
+			switch {
+			case host.Skill != nil:
+				human = append(human, skillState(*host.Skill, " on "+hostName, "switcher skill install --on host"))
+			case host.Reason == "update":
+				human = append(human, "Update "+hostName+" to set up its skill from here.")
+			default:
+				human = append(human, hostName+" is not reachable right now.")
+			}
 		}
 	case "install":
-		st, err = agentskill.Install(home, claude, *replace)
-		if errors.Is(err, agentskill.ErrNotOurs) {
-			return fmt.Errorf("%s holds a skill Switcher did not write or that was edited; switcher skill install --replace replaces it", st.Path)
+		if here {
+			st, err = agentskill.Install(home, claude, *replace)
+			if errors.Is(err, agentskill.ErrNotOurs) {
+				return fmt.Errorf("%s holds a skill Switcher did not write or that was edited; switcher skill install --replace replaces it", st.Path)
+			}
+			if err != nil {
+				return err
+			}
+			line := "Installed the Switcher skill at " + st.Path + "."
+			if !st.ClaudeCode {
+				line += " " + st.ClaudeLink + " is taken, so Claude Code does not see it there."
+			}
+			human = append(human, line)
 		}
-		human = "Installed the Switcher skill at " + st.Path + ". Your agents pick it up in their next session."
-		if err == nil && !st.ClaudeCode {
-			human += " " + st.ClaudeLink + " is taken, so Claude Code does not see it there."
+		if onHost {
+			if host, err = c.setHostSkill(true, *replace); err != nil {
+				return err
+			}
+			human = append(human, "Installed the Switcher skill on "+hostName+".")
 		}
+		human = append(human, "Your agents pick it up in their next session.")
 	case "remove", "uninstall":
-		var before agentskill.Status
-		before, _ = agentskill.Check(home, claude)
-		st, err = agentskill.Remove(home, claude)
-		human = "Removed the Switcher skill."
-		if !before.Installed {
-			human = "The Switcher skill was not installed."
+		if here {
+			before, _ := agentskill.Check(home, claude)
+			if st, err = agentskill.Remove(home, claude); err != nil {
+				return err
+			}
+			if before.Installed {
+				human = append(human, "Removed the Switcher skill.")
+			} else {
+				human = append(human, "The Switcher skill was not installed.")
+			}
+		}
+		if onHost {
+			if host, err = c.setHostSkill(false, false); err != nil {
+				return err
+			}
+			human = append(human, "Removed the Switcher skill on "+hostName+".")
 		}
 	default:
 		return usagef("unknown action %q; use install or remove", action)
 	}
-	if err != nil {
-		return err
+	if !here {
+		st, _ = agentskill.Check(home, claude)
 	}
-	c.result(map[string]any{"skill": st}, human)
+	out := map[string]any{"skill": st}
+	if host != nil {
+		out["host"] = host
+	}
+	c.result(out, strings.Join(human, " "))
 	return nil
 }
 

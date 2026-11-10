@@ -28,7 +28,7 @@ export const SECTIONS = [
   { id: 'desktop', group: 'Connect', title: 'Claude Desktop', sub: 'An account per Desktop conversation.', tile: 'clay', icon: 'desktop', tone: '#e8916f' },
   { id: 'sharing', group: 'Connect', title: 'Share between Macs', sub: 'One Mac keeps the accounts; your other Macs use them.', tile: 'blue', icon: 'macs', tone: '#55a0ff' },
   { id: 'phone', group: 'Connect', title: 'Phone', sub: 'Usage, switching and banked resets in your pocket.', tile: 'teal', icon: 'phone', tone: '#34c9a6' },
-  { id: 'tools', group: 'System', title: 'Command line & tools', sub: 'The switcher command, CLI setup and the T3 Code hub.', tile: 'graphite', icon: 'terminal', tone: '#7d8696' },
+  { id: 'tools', group: 'System', title: 'Command line & tools', sub: 'The switcher command, the skill for AI agents, CLI setup and the T3 Code hub.', tile: 'graphite', icon: 'terminal', tone: '#7d8696' },
   { id: 'security', group: 'System', title: 'Privacy & security', sub: 'Who can reach this Switcher, and with what.', tile: 'indigo', icon: 'lock', tone: '#8582f5' },
   { id: 'about', group: 'System', title: 'About', sub: 'Version, updates and links.', tile: 'app', icon: 'app', tone: '#43dc8d' },
 ];

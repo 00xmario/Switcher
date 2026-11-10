@@ -1632,3 +1632,4 @@ html[data-effective-theme="dark"] { --mark-knob: #f4fff8; }
 /* The agent skill card's buttons sit at the row's trailing edge. */
 .agent-skill-card .skill-actions { display: flex; gap: 8px; flex: none; }
 .agent-skill-card code { font-size: 12px; overflow-wrap: anywhere; }
+.agent-skill-card .skill-both { display: flex; justify-content: flex-end; padding-top: 4px; }

@@ -115,3 +115,76 @@ func TestSkillInstallsWithoutAServer(t *testing.T) {
 		t.Fatal("an unknown action was accepted")
 	}
 }
+
+// On a computer that uses a host, install and remove act on both unless
+// --on picks one; the host's part goes through the running Switcher.
+func TestSkillOnTheHost(t *testing.T) {
+	home := t.TempDir()
+	var posts []string
+	hostInstalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent-skill" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			raw, _ := io.ReadAll(r.Body)
+			posts = append(posts, string(raw))
+			hostInstalled = strings.Contains(string(raw), `"installed":true`)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"host": map[string]any{"host": "k12",
+			"skill": map[string]any{"installed": hostInstalled, "current": hostInstalled, "managed": hostInstalled, "path": "/home/h/SKILL.md"}}})
+	}))
+	t.Cleanup(srv.Close)
+	skill := func(args ...string) (int, string) {
+		var out, errOut bytes.Buffer
+		code := Run(append([]string{"skill"}, args...), Options{Port: 1, Stdout: &out, Stderr: &errOut,
+			Getenv: func(k string) string {
+				switch k {
+				case "HOME":
+					return home
+				case "SWITCHER_URL":
+					return srv.URL
+				}
+				return ""
+			}})
+		return code, out.String() + errOut.String()
+	}
+	local := filepath.Join(home, ".agents", "skills", "switcher", "SKILL.md")
+	if code, out := skill(); code != 0 || !strings.Contains(out, "on this computer") || !strings.Contains(out, "on k12") {
+		t.Fatalf("status: %d %q", code, out)
+	}
+	if code, out := skill("install"); code != 0 || !strings.Contains(out, "on k12") || len(posts) != 1 || !strings.Contains(posts[0], `"where":"host"`) {
+		t.Fatalf("install on both: %d %q %v", code, out, posts)
+	}
+	if _, err := os.Stat(local); err != nil {
+		t.Fatal("install on both skipped this computer")
+	}
+	if code, out := skill("remove", "--on", "here", "--json"); code != 0 || len(posts) != 1 || !strings.Contains(out, `"host"`) {
+		t.Fatalf("remove here: %d %q %v", code, out, posts)
+	}
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Fatal("remove --on here left this computer's skill")
+	}
+	if code, _ := skill("remove", "--on", "host"); code != 0 || len(posts) != 2 || !strings.Contains(posts[1], `"installed":false`) {
+		t.Fatalf("remove on the host: %d %v", code, posts)
+	}
+	if code, _ := skill("install", "--on", "elsewhere"); code != 2 {
+		t.Fatal("a bad --on was accepted")
+	}
+}
+
+// Without a host, --on host has nothing to act on.
+func TestSkillOnHostNeedsAHost(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run([]string{"skill", "install", "--on", "host"}, Options{Port: 1, Stdout: &out, Stderr: &errOut,
+		Getenv: func(k string) string {
+			if k == "HOME" {
+				return t.TempDir()
+			}
+			return ""
+		}})
+	if code == 0 || !strings.Contains(errOut.String()+out.String(), "no host") {
+		t.Fatalf("%d %q", code, errOut.String()+out.String())
+	}
+}
