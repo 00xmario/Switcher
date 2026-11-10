@@ -82,6 +82,8 @@ verify-common:
 	node web/panel_test.mjs
 	node --check web/load-card.js
 	node web/load-card_test.mjs
+	node --check web/load-page.js
+	node web/load-page_test.mjs
 	node --check web/phone-settings.js
 	node web/phone-settings_test.mjs
 	node --check web/update-progress.js

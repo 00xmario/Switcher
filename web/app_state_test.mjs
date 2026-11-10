@@ -223,6 +223,9 @@ const renderContext = vm.createContext({
   usagePage: { hidden: true }, settingsPage: { hidden: true },
   renderSettings: () => {},
   loadUsage: () => {},
+  loadPage: { setActive: () => {} },
+  history: { replaceState: () => {} },
+  location: { hash: '', pathname: '/', search: '' },
   document: {
     activeElement: null,
     body: { classList: { toggle: (_, enabled) => { compactPage = enabled; } } },

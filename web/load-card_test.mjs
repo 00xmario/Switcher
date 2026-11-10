@@ -51,3 +51,11 @@ test('a card that says why there is no reading is kept, not redrawn', async () =
   assert.equal(update(off, { available: false, reason: 'unreachable' }), true);
   assert.equal(update({ querySelector: () => null }, { available: false }), false);
 });
+
+test('with a link, an available card opens the load page', async () => {
+  const { loadHTML } = await import('./load-card.js');
+  const view = { machine: 'k12', remote: true, available: true, cpu: 5, memory: 40, cores: 8 };
+  assert.match(loadHTML(view, 'This computer', '/#load'), /<a class="card load-card is-link" href="\/#load" target="_blank" rel="noopener" title="See what is using k12">/);
+  assert.doesNotMatch(loadHTML({ ...view, available: false, reason: 'unreachable' }, 'This computer', '/#load'), /<a /);
+  assert.doesNotMatch(loadHTML(view), /<a /);
+});

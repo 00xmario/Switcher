@@ -33,7 +33,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher remove <account> --yes` | Remove an account from Switcher |
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
 | `switcher limit <account> [percent\|off]` | Keep a share of an account's weekly usage: Switcher switches away at that much left (1–95, or `off`); without a share, show the limit |
-| `switcher load` | CPU, memory and GPU load of this computer, or of the host whose accounts it uses |
+| `switcher load [--apps]` | CPU, memory and GPU load of this computer, or of the host whose accounts it uses; `--apps` adds what is using it, by app |
 | `switcher reset <account\|provider> --yes` | Spend a banked reset (Codex) on an account, or on a provider's active account |
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
 | `switcher share tailnet [on\|off]` | Let your own Tailscale devices connect without a code, or make them use one; on for a Mac that starts sharing now, off for one that shared before |

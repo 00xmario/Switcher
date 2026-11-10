@@ -45,6 +45,9 @@ type reader struct {
 	memory func() (used, total uint64, err error)
 	gpu    func(ctx context.Context) (float64, bool)
 	cores  func() int
+	// procs lists the processes, for what is using the computer; read
+	// only while someone looks.
+	procs func() (procSnapshot, error)
 }
 
 const (
@@ -79,6 +82,14 @@ type Sampler struct {
 	hasGPU  bool
 	gpuAt   time.Time
 	gpuBusy bool // a background graphics reading is on its way
+
+	// What is using the computer, by application: its own lock, since a
+	// process listing takes longer than a load reading.
+	appsMu    sync.Mutex
+	procsPrev procSnapshot
+	procsAt   time.Time
+	apps      Apps
+	appsAt    time.Time
 }
 
 // New returns a sampler for this platform.

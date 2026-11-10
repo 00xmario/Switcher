@@ -109,6 +109,7 @@ Set limits on several accounts by running the command once per account.
 | Usage limit | `switcher limit <account> [percent\|off] --json` |
 | Refresh usage now | `switcher refresh [account] --json` |
 | How busy this computer, or the host, is | `switcher load --json` |
+| What is using it, by app (processor, memory, graphics) | `switcher load --apps --json` |
 | Install this skill on this computer and its host | `switcher skill install --on both --json` |
 | Spend a banked reset (Codex), only when asked | `switcher reset <account> --yes --json` |
 | Settings | `switcher settings --json`, `switcher settings set auto_switch_claude=false --json` |
@@ -132,6 +133,13 @@ before falling back to a Free account or one at its usage limit), `menu_usage_ba
 - "Is the server busy?" `switcher load --json` gives `cpu`, `memory` and
   `gpu` in percent, `cores`, `memory_used`/`memory_total` in bytes;
   `remote: true` means it is the paired host's load (`machine` names it).
+- "What is using it?" `switcher load --apps --json` adds `apps`: each app's
+  `name`, `processes`, `cpu` (percent of the whole machine), `memory`
+  (bytes) and, when `gpu_apps` is true, `gpu` (percent) and `gpu_memory`.
+  `apps_unavailable: true` means the listing failed this time (then `apps`
+  and `processes` say nothing): try again.
+  Only apps using something are listed. The dashboard's Load page shows the
+  same, live.
 
 ## Sharing between computers
 

@@ -368,12 +368,13 @@ var remotePaths = []string{"/remote/", "/api/accounts/", "/api/usage/refresh", "
 // state changed, so a paired Mac learns at once of a switch made elsewhere;
 // checking for and installing an update of this Switcher, an official
 // release only; and how busy this computer is, for the paired Mac's load
-// card: processor, memory and graphics shares, nothing that names a person
-// or a process; and Switcher's skill for AI agents, which a paired Mac may
-// read, install or remove: the skill's text is the host's own release's, so
-// all a paired Mac chooses is whether it is there.
+// card: processor, memory and graphics shares, and for its load page the
+// leading applications by name (no arguments, files or users); and
+// Switcher's skill for AI agents, which a paired Mac may read, install or
+// remove: the skill's text is the host's own release's, so all a paired Mac
+// chooses is whether it is there.
 var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check", "/api/system",
-	"/api/agent-skill"}
+	"/api/system/apps", "/api/agent-skill"}
 
 func allowedRemotePath(path string) bool {
 	if slices.Contains(remoteExactPaths, path) {

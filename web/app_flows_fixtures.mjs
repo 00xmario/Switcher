@@ -19,11 +19,17 @@ const deferred = () => {
 
 test('ordinary Usage navigation loads usage through the final page handler', () => {
   let loads = 0;
+  const loadActive = [];
+  const pages = {};
+  const replaced = [];
   const context = vm.createContext({
+    loadPage: { setActive: on => loadActive.push(on) },
+    history: { replaceState: (_, __, url) => replaced.push(url) },
+    location: { hash: '', pathname: '/', search: '' },
     data: { compact_accounts: true },
     authState: { locked: false },
     document: {
-      querySelectorAll: () => [], getElementById: () => ({}), querySelector: () => ({}),
+      querySelectorAll: () => [], getElementById: id => (pages[id] ||= {}), querySelector: () => ({}),
       body: { classList: { toggle() {} } },
     },
     usagePage: {}, settingsPage: {}, renderSettings() {}, loadUsage: () => loads++,
@@ -34,6 +40,11 @@ test('ordinary Usage navigation loads usage through the final page handler', () 
   assert.equal(loads, 1);
   context.setPage('accounts');
   assert.equal(loads, 1, 'other pages must not load usage');
+  // The load page reads only while it is open, and keeps its link.
+  context.setPage('load');
+  assert.equal(pages['load-page'].hidden, false);
+  assert.deepEqual(loadActive, [false, false, true]);
+  assert.deepEqual(replaced, ['#load']);
 });
 
 function usageFixture() {
@@ -350,6 +361,7 @@ function logoutFixture(logoutResponse, stateResponse = () => Promise.resolve(rep
     usageState: { summary: { private: 'private-usage-total' }, generation: 0, timer: 903 },
     stateTimer: 901, usageTimer: 902, stateEpoch: 0, pollRequest: 0, stateRequestId: 0, lastAppliedStateRequestId: 0, lastRenderMinute: 0,
     pendingRechecks: new Map(), pendingActivations: new Set(), closeAccountMenu() {},
+    loadPage: { resets: 0, reset() { this.resets++; } },
     settleRechecks: () => false, resetFeedback: { observe() {} },
     render: () => assert.fail('private dashboard repainted'), renderAddProviderMenu: () => assert.fail('private controls repainted'),
     toast: () => assert.fail('logout must use its dedicated view'),
@@ -382,6 +394,7 @@ test('logout persistence failure clears private UI and retains an explicit logou
   assert.equal(context.data.accounts.length, 0);
   assert.equal(context.data.hub_management_key, undefined);
   assert.equal(context.usageState.summary, null);
+  assert.equal(context.loadPage.resets, 1, 'logout must stop and clear the load page');
   oldState.resolve(reply({ auth_required: true }, 401));
   await oldPoll;
   assert.equal(storage.get('switcher-csrf'), 'logout-csrf', 'late 401 must not destroy retry proof');

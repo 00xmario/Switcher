@@ -73,7 +73,10 @@ resets and what each usage window has left, and switches accounts, refreshes
 usage, spends banked resets and sets usage limits. Below the accounts, the
 load card shows CPU, memory and GPU load as three rings, read every two
 seconds while the panel is in view: this computer's, or the host's while it
-uses a host's accounts. It opens as an app window in the first of
+uses a host's accounts. Clicking the card opens the dashboard's Load page:
+the same readings over two minutes, and what is using the computer by app,
+including each app's graphics use and memory where the driver reports it
+(AMD, Intel). The panel opens as an app window in the first of
 Google Chrome, Chromium or Microsoft Edge it finds, otherwise in the default
 browser. Clicking the tray icon opens it too where the desktop activates
 tray icons on a click (KDE); there the menu is on the right button. GNOME's

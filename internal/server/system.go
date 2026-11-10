@@ -37,6 +37,43 @@ func (a *API) handleSystem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sysload.ViewOf(sample, view.Machine, view.Platform))
 }
 
+// handleSystemApps answers what is using the computer the load card shows,
+// by application: the load, and each leading app's processor, memory and
+// graphics share. Names only: no arguments, files or users. It is read only
+// while someone looks, as the load page polls it.
+func (a *API) handleSystemApps(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if a.RemoteClient != nil && a.RemoteClient.Connected() {
+		writeJSON(w, http.StatusOK, a.RemoteClient.SystemApps(r.Context()))
+		return
+	}
+	view := sysload.AppsView{View: sysload.View{Machine: machineName(), Platform: runtime.GOOS}}
+	if !a.Load.Supported() {
+		view.Reason = "unsupported"
+		writeJSON(w, http.StatusOK, view)
+		return
+	}
+	sample, err := a.Load.Read(r.Context())
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		view.Reason = "unsupported"
+		writeJSON(w, http.StatusOK, view)
+		return
+	}
+	view.View = sysload.ViewOf(sample, view.Machine, view.Platform)
+	apps, err := a.Load.Apps(r.Context())
+	if err != nil && r.Context().Err() != nil {
+		return
+	}
+	view.Apps, view.Processes, view.GPUApps, view.AppsUnavailable = apps.Apps, apps.Processes, apps.GPUApps, err != nil
+	if view.Apps == nil {
+		view.Apps = []sysload.App{}
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
 // machineName is this computer's short host name, without a .local or other
 // domain.
 func machineName() string {

@@ -5,10 +5,15 @@ import { createDesktopRelay, desktopRelayLoopback } from './desktop-relay.js';
 import { createRemote } from './remote.js';
 import { createHandback, remoteBannerHTML as hostBannerHTML, handbackBannerHTML, autostartHTML, machineWord } from './toggles.js';
 import { createPhoneSettings } from './phone-settings.js';
+import { createLoadPage } from './load-page.js';
 import { switcherMark, playMark } from './brand.js';
 import { mergeInstallProgress, installProgressHTML, paintInstallProgress } from './update-progress.js';
 import { createLiveState } from './live-state.js';
 import { SECTIONS, navHTML, sectionHeadHTML, accountLayout, LAYOUTS, layoutChooserHTML, menuPreviewHTML, ladderHTML, securityHeroHTML } from './settings-visuals.js';
+
+// The load page: what is using this computer, or the host. The menu bar's
+// and the tray's load card open it as #load.
+const loadPage = createLoadPage({ api, root: document.getElementById('load-page') });
 
 const providersEl = document.getElementById('providers');
 const resetFeedback = createResetFeedback({ getCard: id => [...providersEl.querySelectorAll('.account')].find(card => card.dataset.id === id) });
@@ -217,6 +222,7 @@ function clearPrivateDashboard() {
   pendingRechecks.clear();
   pendingActivations.clear();
   settingsPage.desktopRelay?.clear();
+  loadPage.reset();
   closeAccountMenu();
   for (const node of [providersEl, settingsPage, usagePage, usageHeadline, usageSub,
     usageProviders, usageTotals, usageChartBox, usageChartTitle, usageBreakdownTable, accountStatusAnnouncer]) node.replaceChildren();
@@ -1767,6 +1773,7 @@ const USAGE_PROVIDER_NAMES = { codex: 'Codex', claude: 'Claude Code', grok: 'Gro
 
 document.getElementById('tab-accounts').addEventListener('click', () => setPage('accounts'));
 document.getElementById('tab-usage').addEventListener('click', () => setPage('usage'));
+document.getElementById('tab-load').addEventListener('click', () => setPage('load'));
 
 function setPage(page) {
   if (authState.locked) return;
@@ -2332,6 +2339,11 @@ setPage = function (page) {
   document.querySelector('footer.footnote').hidden = page !== 'accounts';
   usagePage.hidden = page !== 'usage';
   settingsPage.hidden = page !== 'settings';
+  document.getElementById('load-page').hidden = page !== 'load';
+  loadPage.setActive(page === 'load');
+  // The load page keeps its link, so a reload stays on it.
+  if (page === 'load' && globalThis.location?.hash !== '#load') history.replaceState(null, '', '#load');
+  if (page !== 'load' && globalThis.location?.hash === '#load') history.replaceState(null, '', location.pathname + location.search);
   // A section link only means something while Settings is open.
   if (page !== 'settings' && globalThis.location?.hash.startsWith('#settings')) history.replaceState(null, '', location.pathname + location.search);
   settingsPage.desktopRelay?.setActive(page === 'settings');
@@ -2960,8 +2972,10 @@ async function renderSettings() {
 }
 
 if (location.hash === '#settings' || location.hash.startsWith('#settings/')) setPage('settings');
-// Links such as #settings/desktop open that section.
+if (location.hash === '#load') setPage('load');
+// Links such as #settings/desktop open that section; #load the load page.
 window.addEventListener('hashchange', () => {
+  if (location.hash === '#load') { setPage('load'); return; }
   const id = (location.hash.match(/^#settings\/([a-z]+)$/) || [])[1];
   if (!id) return;
   if (settingsPage.hidden) { settingsSection = id; setPage('settings'); } else showSettingsSection(id);

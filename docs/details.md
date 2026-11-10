@@ -95,6 +95,22 @@ required; OpenCode Go uses its own API key.
   `/proc/stat`, `/proc/meminfo`, the drm `gpu_busy_percent` counter (AMD) or
   `nvidia-smi`. Graphics without a reading (most Intel on Linux) say so. The
   Linux panel shows the same card; `switcher load` prints it.
+- **Load page**: clicking the load card (menu bar or Linux panel) opens the
+  dashboard's **Load** tab (`/#load`): the three readings with their last
+  two minutes, and what is using the computer, by app, sorted by processor,
+  memory or graphics. Processes are grouped by the program they run (on
+  macOS, by the app bundle, so helpers count with their app), named after
+  the program file, never the title a process gives itself, which can hold
+  its arguments; another user's program, whose file is not readable, goes by
+  the kernel's short name for it. Only apps using something are listed.
+  Linux reads `/proc` (processor time, resident memory) and the graphics
+  drivers' per-client busy time (nanoseconds, or cycles on xe) and graphics
+  memory in the fdinfo of `/dev/dri` files (amdgpu, i915, xe and others that
+  report it); macOS lists processes with `ps` (the kernel's program name,
+  and the path only when it is the program's own) and has no per-app
+  graphics reading. The page reads `GET /api/system/apps` every two seconds while it
+  is open and nothing otherwise; a client shows its host's, kept to short
+  plain names and numbers in range. `switcher load --apps` prints it.
 - **Skill for AI agents**: `~/.agents/skills/switcher/SKILL.md` tells coding
   agents what Switcher is and how to drive it with the `switcher` command;
   Claude Code finds it through a relative link in `~/.claude/skills` (or

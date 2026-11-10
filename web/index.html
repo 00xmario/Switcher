@@ -53,6 +53,7 @@
     <nav class="page-tabs" aria-label="Pages">
       <button id="tab-accounts" class="page-tab active" type="button">Accounts</button>
       <button id="tab-usage" class="page-tab" type="button">Usage</button>
+      <button id="tab-load" class="page-tab" type="button">Load</button>
     </nav>
 
     <section id="providers" aria-live="polite"></section>
@@ -102,6 +103,8 @@
         <div id="usage-breakdown-table"></div>
       </div>
     </section>
+
+    <section id="load-page" hidden aria-label="Load"></section>
 
     <footer class="footnote">
       <p>Switcher forwards routed CLI traffic through each provider's selected proxy account.
