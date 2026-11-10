@@ -70,10 +70,14 @@ func runSkill(c *ctx, args []string) error {
 		case st.Managed:
 			human = "An older Switcher skill is installed at " + st.Path + "; update it with: switcher skill install"
 		default:
-			human = "A Switcher skill you changed is at " + st.Path + "; switcher skill install replaces it."
+			human = "A skill Switcher did not write, or one you changed, is at " + st.Path + "; switcher skill install --replace replaces it."
 		}
-		if err == nil && st.Installed && !st.ClaudeCode {
-			human += " Claude Code does not see it yet: switcher skill install links it in " + st.ClaudeLink + "."
+		if err == nil && st.Installed && !st.Blocked && !st.ClaudeCode {
+			command := "switcher skill install"
+			if !st.Managed {
+				command += " --replace"
+			}
+			human += " Claude Code does not see it yet: " + command + " links it in " + st.ClaudeLink + "."
 		}
 	case "install":
 		st, err = agentskill.Install(home, claude, *replace)

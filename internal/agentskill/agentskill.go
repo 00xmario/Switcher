@@ -222,13 +222,21 @@ func ownsClaudeLink(home, link string) bool {
 	if err != nil {
 		return false
 	}
-	if raw == linkTarget(home, filepath.Dir(link)) || raw == Dir(home) {
+	// Where the link really leads: a relative target is read from the
+	// folder that really holds the link, links in its path followed.
+	if !filepath.IsAbs(raw) {
+		dir, err := filepath.EvalSymlinks(filepath.Dir(link))
+		if err != nil {
+			return false
+		}
+		raw = filepath.Join(dir, raw)
+	}
+	raw = filepath.Clean(raw)
+	if raw == filepath.Clean(Dir(home)) {
 		return true
 	}
-	if !filepath.IsAbs(raw) {
-		raw = filepath.Join(filepath.Dir(link), raw)
-	}
-	return filepath.Clean(raw) == filepath.Clean(Dir(home))
+	parent, err := filepath.EvalSymlinks(filepath.Dir(Dir(home)))
+	return err == nil && raw == filepath.Join(parent, filepath.Base(Dir(home)))
 }
 
 // Remove deletes the skill when Switcher wrote it unchanged, its record, the

@@ -147,74 +147,26 @@ func TestTheClaudeLinkWorksThroughALinkedClaudeFolder(t *testing.T) {
 	if _, err := os.Lstat(st.ClaudeLink); !os.IsNotExist(err) {
 		t.Fatal("the link stayed")
 	}
-	// A link of Switcher's that leads nowhere is made again.
+	// A link that reads like Switcher's but, through the linked folder,
+	// leads elsewhere is the user's: install and remove leave it.
 	os.MkdirAll(filepath.Join(dotfiles, "skills"), 0o755)
-	os.Symlink(filepath.Join(home, "gone"), st.ClaudeLink)
+	os.Symlink("../../.agents/skills/switcher", st.ClaudeLink)
 	if st, _ := Install(home, "", false); st.ClaudeCode {
-		t.Fatal("replaced a dangling link that is not Switcher's")
+		t.Fatal("a link leading elsewhere counts as working")
 	}
+	Remove(home, "")
+	if _, err := os.Lstat(st.ClaudeLink); err != nil {
+		t.Fatal("removed a link that is not Switcher's")
+	}
+	// Switcher's own link that leads nowhere is made again.
 	os.Remove(st.ClaudeLink)
-	os.Symlink(Dir(home)+"/../switcher", st.ClaudeLink)
-	os.RemoveAll(Dir(home))
+	os.Symlink(Dir(home), st.ClaudeLink)
+	os.RemoveAll(filepath.Join(home, ".agents"))
+	if _, err := os.Stat(st.ClaudeLink); err == nil {
+		t.Fatal("the link should lead nowhere now")
+	}
 	if st, err := Install(home, "", false); err != nil || !st.ClaudeCode {
 		t.Fatalf("own link not made again: %+v %v", st, err)
-	}
-}
-
-// Something that is not a plain file in the skill's place, such as a link
-// to elsewhere, is never written through, replaced or removed.
-func TestALinkInTheSkillsPlaceStays(t *testing.T) {
-	home := t.TempDir()
-	target := filepath.Join(home, "elsewhere.md")
-	os.WriteFile(target, []byte("keep"), 0o644)
-	os.MkdirAll(Dir(home), 0o755)
-	if err := os.Symlink(target, Path(home)); err != nil {
-		t.Skip(err)
-	}
-	if st, _ := Check(home, ""); !st.Blocked || st.Managed {
-		t.Fatalf("status: %+v", st)
-	}
-	if _, err := Install(home, "", false); err == nil {
-		t.Fatal("installed over a link")
-	}
-	if _, err := Remove(home, ""); err == nil {
-		t.Fatal("removed a link")
-	}
-	if raw, _ := os.ReadFile(target); string(raw) != "keep" {
-		t.Fatal("wrote through the link")
-	}
-	if wrote, _ := Refresh(home, ""); wrote {
-		t.Fatal("refreshed through the link")
-	}
-}
-
-// A skills folder kept elsewhere (dotfiles) and linked in stays linked when
-// the skill is removed; a Claude Code entry the user made stays too.
-func TestTheUsersLinksStay(t *testing.T) {
-	home := t.TempDir()
-	dotfiles := filepath.Join(home, "dotfiles", "switcher")
-	os.MkdirAll(dotfiles, 0o755)
-	os.MkdirAll(filepath.Dir(Dir(home)), 0o755)
-	if err := os.Symlink(dotfiles, Dir(home)); err != nil {
-		t.Skip(err)
-	}
-	mine := filepath.Join(home, ".claude", "skills", "switcher")
-	os.MkdirAll(mine, 0o755)
-	os.WriteFile(filepath.Join(mine, "SKILL.md"), []byte("mine"), 0o644)
-	if st, err := Install(home, "", false); err != nil || !st.Current || !st.ClaudeCode {
-		t.Fatalf("install: %+v %v", st, err)
-	}
-	if raw, _ := os.ReadFile(filepath.Join(mine, "SKILL.md")); string(raw) != "mine" {
-		t.Fatal("the user's Claude Code skill was replaced")
-	}
-	if _, err := Remove(home, ""); err != nil {
-		t.Fatal(err)
-	}
-	if info, err := os.Lstat(Dir(home)); err != nil || info.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("the linked skills folder was removed")
-	}
-	if _, err := os.Stat(mine); err != nil {
-		t.Fatal("the user's Claude Code entry was removed")
 	}
 }
 

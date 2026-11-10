@@ -365,22 +365,37 @@ func TestAnAutomaticSwitchKeepsAnExhaustionMark(t *testing.T) {
 }
 
 // An account deleted between choosing it and switching to it is not
-// selected.
+// selected: the switch waits on the activation lock while the account goes.
 func TestAnAutomaticSwitchSkipsADeletedAccount(t *testing.T) {
 	m := codexManager(t, codexAccount("x", "plus"), codexAccount("y", "plus"))
 	m.limit("x", 10)
 	m.setUsage("x", monthlyUsage(95))
 	m.setUsage("y", monthlyUsage(0))
-	m.mu.Lock()
-	to, _ := m.takeoverLocked("codex", "x", false)
-	m.mu.Unlock()
-	if to != "y" {
-		t.Fatalf("takeover %q", to)
+	m.nativeActivation.Lock()
+	done := make(chan struct{})
+	go func() { m.AutoSwitchNative(); close(done) }()
+	// The round chose y (its retry mark is set) and now waits for the lock.
+	for wait := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		m.mu.Lock()
+		marked := !m.autoSwitchAt["x"].IsZero()
+		m.mu.Unlock()
+		if marked {
+			break
+		}
+		if time.Now().After(wait) {
+			m.nativeActivation.Unlock()
+			t.Fatal("the round never chose an account")
+		}
 	}
-	if err := m.DeleteAccount("y"); err != nil {
+	// Gone meanwhile (DeleteAccount itself needs the lock this test holds).
+	if err := m.store.Delete("y"); err != nil {
 		t.Fatal(err)
 	}
-	m.AutoSwitchNative()
+	if err := m.Remove("y"); err != nil {
+		t.Fatal(err)
+	}
+	m.nativeActivation.Unlock()
+	<-done
 	if got := m.ActiveID("codex"); got != "x" {
 		t.Fatalf("selected %q", got)
 	}
