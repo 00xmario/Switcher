@@ -796,13 +796,20 @@ function usageLimitMenuHTML(account) {
 // agents into ~/.agents/skills, so they know how to use Switcher.
 function agentSkillHTML(skill) {
   if (!skill) return '';
-  const state = !skill.installed ? 'Not installed'
+  const state = skill.blocked ? 'Something else is in its place'
+    : !skill.installed ? 'Not installed'
     : skill.current ? 'Installed' : skill.managed ? 'Update available' : 'Changed by hand';
-  const action = !skill.installed ? 'Install skill' : skill.current ? '' : skill.managed ? 'Update skill' : 'Replace with Switcher’s';
+  const action = skill.blocked ? ''
+    : !skill.installed ? 'Install skill'
+    : !skill.current ? (skill.managed ? 'Update skill' : 'Replace with Switcher’s')
+    : !skill.claude_code ? 'Link for Claude Code' : '';
+  const where = skill.installed && !skill.blocked
+    ? (skill.claude_code ? ' · Claude Code sees it' : ' · Claude Code does not see it yet')
+    : '';
   return `<div class="settings-card agent-skill-card">
       <div class="set-card-head"><h3>Skill for AI agents</h3><p class="settings-sub">Teaches Claude Code, Codex and other agents what Switcher is and how to use it, so “keep 10% on this account and switch automatically” just works.</p></div>
       <div class="settings-row">
-        <div><strong>${escapeHTML(state)}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}</span></div>
+        <div><strong>${escapeHTML(state)}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${where}</span></div>
         <div class="skill-actions">
           ${action ? `<button type="button" class="button primary" data-skill="install">${action}</button>` : ''}
           ${skill.installed && skill.managed ? '<button type="button" class="button" data-skill="remove">Remove</button>' : ''}

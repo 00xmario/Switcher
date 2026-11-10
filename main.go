@@ -336,7 +336,7 @@ func run(port, desktopRelayPort int) {
 	home, _ := os.UserHomeDir()
 	// An agent skill this Switcher installed follows it to each release.
 	if home != "" {
-		if wrote, err := agentskill.Refresh(home); err != nil {
+		if wrote, err := agentskill.Refresh(home, os.Getenv("CLAUDE_CONFIG_DIR")); err != nil {
 			log.Printf("agent skill: could not bring it up to date: %v", err)
 		} else if wrote {
 			log.Printf("agent skill: brought up to date at %s", agentskill.Path(home))
@@ -467,7 +467,7 @@ func run(port, desktopRelayPort int) {
 		Store: st, Logins: logins, Proxy: proxyManager, Providers: providers,
 		DesktopRelay: desktopRelay, DesktopSettingsPath: desktopSettingsPath(),
 		DesktopSessionMetadata: metadataIndex,
-		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Load: sysload.New(), Home: home, Usage: usageService,
+		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Load: sysload.New(), Home: home, ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
 		Autostart: autostart.New(executablePath()),
 		// The tray's Quit Switcher: stop as on SIGTERM, which also tells

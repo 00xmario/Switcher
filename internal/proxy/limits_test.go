@@ -316,3 +316,50 @@ func TestALimitMovesTheSelectionWithoutAUsableLogin(t *testing.T) {
 		t.Fatalf("event %+v", event)
 	}
 }
+
+// Moving the selection while Claude Code's login was not ready leaves no
+// cooldown: once the login is ready on the limited account, it moves at once.
+func TestTheLoginFollowsAtOnceAfterASelectionMove(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	native.status = claudecode.Status{Condition: "checking", ActiveID: "a"}
+	if err := m.Activate("a"); err != nil {
+		t.Fatal(err)
+	}
+	m.limit("a", 10)
+	m.setUsage("a", windows(0, 95))
+	m.setUsage("b", windows(0, 0))
+	m.AutoSwitchNative()
+	if m.ActiveID("claude") != "b" || len(native.switched) != 0 {
+		t.Fatalf("route %q, login switched %v", m.ActiveID("claude"), native.switched)
+	}
+	native.mu.Lock()
+	native.status.Condition = "ready"
+	native.mu.Unlock()
+	m.AutoSwitchNative()
+	if len(native.switched) != 1 || native.switched[0] != "b" {
+		t.Fatalf("the login stayed on the limited account: %v", native.switched)
+	}
+}
+
+// An automatic switch never lands on an account that ran out meanwhile, and
+// never clears its out-of-usage mark the way a pick by the user does.
+func TestAnAutomaticSwitchKeepsAnExhaustionMark(t *testing.T) {
+	m := codexManager(t, codexAccount("x", "plus"), codexAccount("y", "plus"))
+	m.limit("x", 10)
+	m.setUsage("x", monthlyUsage(95))
+	m.setUsage("y", monthlyUsage(0))
+	err := m.selectUnder("codex", "y", func() bool {
+		m.exhausted["y"] = time.Now().Add(time.Hour) // a refusal arrived meanwhile
+		return true
+	})
+	if err != nil || !m.exhaustedNow("y") {
+		t.Fatalf("the switch cleared y's mark: %v", err)
+	}
+	if err := m.Activate("x"); err != nil {
+		t.Fatal(err)
+	}
+	m.AutoSwitchNative()
+	if m.ActiveID("codex") != "x" {
+		t.Fatalf("moved onto an exhausted account: %q", m.ActiveID("codex"))
+	}
+}

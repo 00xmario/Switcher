@@ -72,7 +72,8 @@ required; OpenCode Go uses its own API key.
   automatically** is on, right away when a new limit is already reached, at
   most once per account per ten minutes, and never onto an account at its
   own limit. A refused request moves the proxy to an account at its limit
-  only when nothing else is left, and an account at its limit with nowhere
+  only when nothing else is left, after a banked reset on the refused
+  account when **Auto-use** allows one, and an account at its limit with nowhere
   to go keeps serving: a limit never blocks a request. An account you pick
   yourself while it is at its limit stays picked for an hour. Limits are kept
   in `state.json` with the routing state, so no token rotation can lose one,
@@ -95,14 +96,16 @@ required; OpenCode Go uses its own API key.
   `nvidia-smi`. Graphics without a reading (most Intel on Linux) say so. The
   Linux panel shows the same card; `switcher load` prints it.
 - **Skill for AI agents**: `~/.agents/skills/switcher/SKILL.md` tells coding
-  agents what Switcher is and how to drive it with the `switcher` command,
-  including how to turn "when my account reaches 10% switch to my other
-  account" into `switcher limit <account> 10`. The install script puts it
-  there (`SWITCHER_SKILL=0` skips it), as do Settings → Tools → **Install
-  skill** and `switcher skill install`. A copy Switcher wrote is brought up to
-  date when Switcher starts after an update; one you edited (without its
-  `managed-by: switcher` line) is left alone, and nothing but a plain file is
-  ever replaced.
+  agents what Switcher is and how to drive it with the `switcher` command;
+  Claude Code finds it through a relative link in `~/.claude/skills` (or
+  `$CLAUDE_CONFIG_DIR/skills`), made only where that name is free. It explains
+  how to turn "when my account reaches 10% switch to my other account" into
+  `switcher limit <account> 10`. A first install by the script puts it there
+  (`SWITCHER_SKILL=0` skips it), as do Settings → Tools → **Install skill**
+  and `switcher skill install`. Switcher records the hash of the copy it
+  wrote: that copy is brought up to date when Switcher starts after an
+  update, while one you edited, or removed, stays as you left it, and
+  nothing but a plain file it wrote is ever replaced or removed.
 - **Automatic failover on exhaustion**: when the active account reports it
   is out of usage (HTTP 429 `usage_limit_reached`), Switcher marks it with
   the upstream reset time and, if another account is usable, retries your
@@ -250,8 +253,9 @@ required; OpenCode Go uses its own API key.
 - **Banked resets**: Codex usage-limit resets can be spent from the UI. A
   compact count appears beside the account plan in the web UI and menu bar.
   **Auto-use** can spend one automatically when an account runs out and
-  failover finds no other paid account: before moving to a Free account,
-  or when no account is left at all. It is off by
+  failover finds no other paid account below its usage limit: before moving
+  to a Free account or to an account at its usage limit, or when no account
+  is left at all. It is off by
   default: enable it under Settings → Switching, or override it per
   account from the account's ⋯ menu (Global / On / Off). At most one credit
   is spent per request, and an account is not auto-reset again for five

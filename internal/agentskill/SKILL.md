@@ -42,8 +42,9 @@ A usage limit makes an account keep a share of its weekly (or monthly) usage,
 for things Switcher cannot route, such as the Claude and ChatGPT chat apps
 and websites. When the account has that much or less left, Switcher moves
 its provider to the account with the most usage left: Claude Code's login and
-Claude Desktop for Claude, the proxy for Codex and the others. It never moves
-onto an account that is at its own limit, and does not move back by itself.
+Claude Desktop for Claude, the proxy for Codex and the others. It does not
+switch onto an account that is at its own limit (unless every other account
+is out, so requests keep working), and does not move back by itself.
 
 ```sh
 switcher limit <account> 10 --json     # keep 10%: switch away at 10% left
@@ -116,7 +117,7 @@ Set limits on several accounts by running the command once per account.
 
 Settings keys: `auto_switch_claude` (move Claude off an account that runs
 out, default on), `auto_use_reset` (spend a Codex banked reset automatically
-before falling back to a Free account), `menu_usage_bars`,
+before falling back to a Free account or one at its usage limit), `menu_usage_bars`,
 `reset_notifications`, `compact_accounts`, `merge_accounts`.
 
 ## Answering questions

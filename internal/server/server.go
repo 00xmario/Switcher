@@ -70,8 +70,10 @@ type API struct {
 	// Awake keeps the Mac awake on demand; nil or unsupported off macOS.
 	Awake *awake.Manager
 	// Home is this computer's home directory, for the agent skill; empty
-	// turns that off.
-	Home string
+	// turns that off. ClaudeConfigDir is $CLAUDE_CONFIG_DIR, where Claude
+	// Code then looks for skills.
+	Home            string
+	ClaudeConfigDir string
 	// Load measures how busy this computer is; nil answers no readings.
 	Load     *sysload.Sampler
 	Usage    *usage.Service

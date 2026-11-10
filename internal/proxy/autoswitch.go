@@ -242,7 +242,7 @@ func (m *Manager) autoSwitchRound() {
 		if ok && native.NativeEnabled() {
 			m.autoSwitchLogin(providerID, native, auto)
 		} else {
-			m.autoSwitchRoute(providerID)
+			m.autoSwitchRoute(providerID, true)
 		}
 	}
 }
@@ -259,8 +259,9 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 	status := native.NativeStatus()
 	if !kept && status.Condition != "ready" {
 		// No login Switcher manages to move: the selection, which the proxy
-		// and other tools use, still leaves an account at its limit.
-		m.autoSwitchRoute(providerID)
+		// and other tools use, still leaves an account at its limit. Without
+		// a cooldown: once the login is ready again, it moves at once.
+		m.autoSwitchRoute(providerID, false)
 		return
 	}
 	from := status.ActiveID
@@ -333,7 +334,7 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 // limit: for a provider without a native login, and for Claude while Claude
 // Code's login is not one Switcher can move. Only the selection moves, never
 // a native login.
-func (m *Manager) autoSwitchRoute(providerID string) {
+func (m *Manager) autoSwitchRoute(providerID string, cooldown bool) {
 	from := m.ActiveID(providerID)
 	if from == "" {
 		return
@@ -344,19 +345,20 @@ func (m *Manager) autoSwitchRoute(providerID string) {
 		return
 	}
 	to, err := m.takeoverLocked(providerID, from, false)
-	if err == nil && to != "" {
+	if cooldown && err == nil && to != "" {
 		m.autoSwitchAt[from] = time.Now().Add(autoSwitchRetry)
 	}
 	m.mu.Unlock()
 	if err != nil || to == "" {
 		return
 	}
+	// Right before switching: nobody switched meanwhile, from is still at
+	// its limit and not held, and to has not run out or reached its own.
 	still := func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.active[providerID] == from && m.atLimitLocked(from) && time.Now().After(m.manualHold[from])
+		return m.active[providerID] == from && m.atLimitLocked(from) && time.Now().After(m.manualHold[from]) &&
+			!m.exhaustedNow(to) && !m.atLimitLocked(to)
 	}
-	err = m.selectUnder(to, still)
+	err = m.selectUnder(providerID, to, still)
 	if errors.Is(err, errSwitchOvertaken) {
 		return
 	}
@@ -365,7 +367,9 @@ func (m *Manager) autoSwitchRoute(providerID string) {
 		return
 	}
 	m.mu.Lock()
-	m.autoSwitchAt[from] = time.Now().Add(autoSwitchCooldown)
+	if cooldown {
+		m.autoSwitchAt[from] = time.Now().Add(autoSwitchCooldown)
+	}
 	m.recordAutoSwitchLocked(providerID, "proxy", from, to)
 	m.lastAutoSwitch.Reason = "limit"
 	m.mu.Unlock()
@@ -373,15 +377,21 @@ func (m *Manager) autoSwitchRoute(providerID string) {
 }
 
 // selectUnder selects an account for the proxy alone, under the native
-// activation lock so it never interleaves with a switch of the login; still
-// runs under that lock first, and false abandons the switch.
-func (m *Manager) selectUnder(id string, still func() bool) error {
+// activation lock so it never interleaves with a switch of the login.
+// stillLocked runs under m.mu first, and false abandons the switch. Unlike
+// a pick by the user, it leaves exhaustion marks as they are.
+func (m *Manager) selectUnder(providerID, id string, stillLocked func() bool) error {
 	m.nativeActivation.Lock()
 	defer m.nativeActivation.Unlock()
-	if !still() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !stillLocked() {
 		return errSwitchOvertaken
 	}
-	return m.Activate(id)
+	return m.mutateStateLocked(func() {
+		m.active[providerID] = id
+		m.selectionRevision[providerID]++
+	})
 }
 
 // leaveDueLocked reports whether an account should be left now: it should be

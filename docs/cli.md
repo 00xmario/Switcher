@@ -52,7 +52,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher autostart [on\|off]` | Linux: start Switcher at login (systemd user service and the tray) |
 | `switcher tray` | Linux: the tray icon |
 | `switcher open` | Open the dashboard |
-| `switcher skill [install\|remove]` | The skill that teaches AI agents to use Switcher, in `~/.agents/skills/switcher`; needs no running Switcher |
+| `switcher skill [install\|remove]` | The skill that teaches AI agents to use Switcher, in `~/.agents/skills/switcher` and linked for Claude Code in `~/.claude/skills`; needs no running Switcher |
 | `switcher install-cli [--dir DIR]` | Put `switcher` on your PATH; another tool called `switcher` is left alone |
 
 An `<account>` is its id, its email, `provider:email` when the same email has

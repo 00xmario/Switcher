@@ -17,7 +17,7 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		st, err := agentskill.Check(a.Home)
+		st, err := agentskill.Check(a.Home, a.ClaudeConfigDir)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -38,9 +38,9 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 	var st agentskill.Status
 	var err error
 	if *body.Installed {
-		st, err = agentskill.Install(a.Home)
+		st, err = agentskill.Install(a.Home, a.ClaudeConfigDir)
 	} else {
-		st, err = agentskill.Remove(a.Home)
+		st, err = agentskill.Remove(a.Home, a.ClaudeConfigDir)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})

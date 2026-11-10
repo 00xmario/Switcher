@@ -113,7 +113,7 @@ curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh |
 ```
 
 The script installs the latest release into Applications, adds the
-`switcher` command, installs the skill that teaches AI agents to use
+`switcher` command, installs the skill that teaches AI agents, Claude Code included, to use
 Switcher (`~/.agents/skills/switcher`; `SWITCHER_SKILL=0` skips it) and starts
 Switcher. It works over SSH too.
 

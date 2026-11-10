@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -123,7 +124,9 @@ var utilization = regexp.MustCompile(`"Device Utilization %"\s*=\s*([0-9]+)`)
 // ioregGPU asks the I/O registry for the graphics accelerators' statistics
 // and answers the busiest.
 func ioregGPU(ctx context.Context) (float64, bool) {
-	out, err := exec.CommandContext(ctx, "/usr/sbin/ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator").Output()
+	cmd := exec.CommandContext(ctx, "/usr/sbin/ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator")
+	cmd.WaitDelay = 500 * time.Millisecond // a tool that ignores the kill does not hold the reading
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, false
 	}

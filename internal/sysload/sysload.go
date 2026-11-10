@@ -129,9 +129,10 @@ func (s *Sampler) Read(ctx context.Context) (Sample, error) {
 	}
 	if s.r.gpu != nil {
 		switch {
-		case s.gpuAt.IsZero():
-			// The first reading waits for the graphics too, so the card
-			// does not show it missing for a moment.
+		case s.gpuAt.IsZero() || !s.gpuBusy && now.Sub(s.gpuAt) > stale:
+			// The first reading, and the first after a quiet spell, waits
+			// for the graphics too, so the card shows neither a gap nor an
+			// old value.
 			gctx, cancel := context.WithTimeout(ctx, gpuTimeout)
 			s.gpu, s.hasGPU = s.r.gpu(gctx)
 			cancel()
@@ -141,6 +142,11 @@ func (s *Sampler) Read(ctx context.Context) (Sample, error) {
 			go s.readGPU()
 		}
 		sample.GPU, sample.HasGPU = clamp(s.gpu), s.hasGPU
+		if s.gpuBusy && now.Sub(s.gpuAt) > 3*gpuFresh {
+			// A reading that hangs, such as a stuck tool, shows as none
+			// rather than as an old value.
+			sample.GPU, sample.HasGPU = 0, false
+		}
 	}
 	s.last, s.lastAt = sample, now
 	return sample, nil

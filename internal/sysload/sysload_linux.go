@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 func platform() reader {
@@ -192,7 +193,9 @@ func nvidiaSMI() func(context.Context) (float64, bool) {
 		if path == "" {
 			return 0, false
 		}
-		out, err := exec.CommandContext(ctx, path, "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits").Output()
+		cmd := exec.CommandContext(ctx, path, "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits")
+		cmd.WaitDelay = 500 * time.Millisecond // a tool that ignores the kill does not hold the reading
+		out, err := cmd.Output()
 		if err != nil {
 			return 0, false
 		}
