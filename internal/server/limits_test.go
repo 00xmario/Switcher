@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
 
 	"switcher/internal/store"
@@ -97,5 +98,34 @@ func TestSystemLoadAnswersThisComputer(t *testing.T) {
 	v := get(h.api)
 	if !v.Available || v.Remote || v.Platform != runtime.GOOS || v.Cores < 1 || v.MemTotal == 0 || v.CPU < 0 || v.CPU > 100 {
 		t.Fatalf("this computer: %+v", v)
+	}
+}
+
+// The load page's breakdown lists this computer's apps, by name only.
+func TestSystemAppsListsThisComputersApps(t *testing.T) {
+	a := &API{Load: sysload.New()}
+	mux := http.NewServeMux()
+	a.Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/system/apps", nil)
+	req.RemoteAddr, req.Host = "127.0.0.1:1", "127.0.0.1:8787"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var v sysload.AppsView
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &v) != nil || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if !a.Load.Supported() {
+		if v.Available || v.Reason != "unsupported" {
+			t.Fatalf("unsupported platform: %+v", v)
+		}
+		return
+	}
+	if !v.Available || v.Processes == 0 || len(v.Apps) == 0 || v.Apps == nil {
+		t.Fatalf("no apps: %+v", v)
+	}
+	for _, app := range v.Apps {
+		if app.Name == "" || strings.Contains(app.Name, " --") {
+			t.Fatalf("an app name carries more than a name: %q", app.Name)
+		}
 	}
 }

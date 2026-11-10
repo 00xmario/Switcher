@@ -972,6 +972,45 @@ func (c *Client) SystemLoad(ctx context.Context) sysload.View {
 	return got
 }
 
+// SystemApps asks the host what is using it, for this computer's load page
+// while it uses the host's accounts. Like SystemLoad, the answer is kept to
+// numbers in range and short plain names, named after the host as paired.
+func (c *Client) SystemApps(ctx context.Context) sysload.AppsView {
+	view := sysload.AppsView{View: sysload.View{Machine: c.Status().HostName, Remote: true}}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://switcher-host/api/system/apps", nil)
+	resp, err := c.do(req)
+	if err != nil {
+		view.Reason = "unreachable"
+		return view
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		view.Reason = "update"
+		return view
+	case resp.StatusCode != http.StatusOK:
+		view.Reason = "unreachable"
+		return view
+	}
+	var got sysload.AppsView
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&got) != nil {
+		view.Reason = "unreachable"
+		return view
+	}
+	reason := got.Reason
+	got.Sanitize()
+	got.Machine, got.Remote = view.Machine, true
+	if !got.Available && reason == "unsupported" {
+		got.Reason = reason
+	}
+	if got.Apps == nil {
+		got.Apps = []sysload.App{}
+	}
+	return got
+}
+
 // hostError is the host's answer to a request it refused.
 type hostError struct {
 	status  int

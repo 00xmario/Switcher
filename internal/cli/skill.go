@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"switcher/internal/agentskill"
@@ -274,8 +275,13 @@ func partly(here bool, done string, err error) error {
 }
 
 func runLoad(c *ctx, args []string) error {
-	if _, err := c.parse(c.flags("load"), args, 0, 0); err != nil {
+	fs := c.flags("load")
+	apps := fs.Bool("apps", false, "")
+	if _, err := c.parse(fs, args, 0, 0); err != nil {
 		return err
+	}
+	if *apps {
+		return runLoadApps(c)
 	}
 	var v sysload.View
 	if err := c.cl.call("GET", "/api/system", nil, &v); err != nil {
@@ -309,5 +315,63 @@ func runLoad(c *ctx, args []string) error {
 		human += "no load readings here"
 	}
 	c.result(v, human)
+	return nil
+}
+
+// runLoadApps prints what is using the computer, by app: the leaders by
+// processor and by memory, and by graphics where the computer reports it.
+func runLoadApps(c *ctx) error {
+	var v sysload.AppsView
+	if err := c.cl.call("GET", "/api/system/apps", nil, &v); err != nil {
+		return err
+	}
+	name := "This computer"
+	if v.Remote {
+		name = plainName(v.Machine) + " (the host whose accounts this computer uses)"
+	}
+	if !v.Available {
+		human := name + ": no readings"
+		if v.Reason == "update" {
+			human = name + ": update it to Switcher 1.28.0 or later to see what is using it"
+		} else if v.Reason == "unreachable" {
+			human = name + ": not reachable right now"
+		}
+		c.result(v, human)
+		return nil
+	}
+	lines := []string{fmt.Sprintf("%s: CPU %d%% · Memory %d%% · %d processes", name, v.CPU, v.Memory, v.Processes)}
+	top := func(title string, less func(a, b sysload.App) bool, show func(a sysload.App) string) {
+		apps := append([]sysload.App(nil), v.Apps...)
+		sort.SliceStable(apps, func(i, j int) bool { return less(apps[i], apps[j]) })
+		lines = append(lines, "", title)
+		for i, a := range apps {
+			if i == 8 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("  %-28s %s", plainName(a.Name), show(a)))
+		}
+	}
+	top("By processor:", func(a, b sysload.App) bool { return a.CPU > b.CPU }, func(a sysload.App) string {
+		unit := "processes"
+		if a.Processes == 1 {
+			unit = "process"
+		}
+		return fmt.Sprintf("%5.1f%%  (%d %s)", a.CPU, a.Processes, unit)
+	})
+	top("By memory:", func(a, b sysload.App) bool { return a.Memory > b.Memory }, func(a sysload.App) string {
+		return fmt.Sprintf("%6.1f GB", float64(a.Memory)/(1<<30))
+	})
+	if v.GPUApps {
+		gpu := func(a sysload.App) float64 {
+			if a.GPU == nil {
+				return 0
+			}
+			return *a.GPU
+		}
+		top("By graphics:", func(a, b sysload.App) bool { return gpu(a) > gpu(b) || gpu(a) == gpu(b) && a.GPUMemory > b.GPUMemory }, func(a sysload.App) string {
+			return fmt.Sprintf("%5.1f%%  %6.0f MB graphics memory", gpu(a), float64(a.GPUMemory)/(1<<20))
+		})
+	}
+	c.result(v, strings.Join(lines, "\n"))
 	return nil
 }

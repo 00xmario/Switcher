@@ -59,7 +59,9 @@ function reasonText(view) {
   }
 }
 
-export function loadHTML(view, place = 'This computer') {
+// loadHTML draws the card; with href, the card opens that page (the
+// dashboard's load page: what is using the computer, by app).
+export function loadHTML(view, place = 'This computer', href = '') {
   if (!view) return '';
   const name = title(view, place);
   const head = `<h2 class="provider-head load-head"><span class="logo load-logo" aria-hidden="true">${view.remote ? SERVER : CHIP}</span>${esc(name)}
@@ -67,7 +69,10 @@ export function loadHTML(view, place = 'This computer') {
   const body = view.available
     ? `<div class="gauges">${ringHTML('cpu', 'CPU', view.cpu, view)}${ringHTML('memory', 'Memory', view.memory, view)}${ringHTML('gpu', 'GPU', view.gpu ?? NaN, view)}</div>`
     : `<p class="load-off">${esc(reasonText(view))}</p>`;
-  return `<section class="provider load" aria-label="Load on ${esc(name)}">${head}<div class="card load-card">${body}</div></section>`;
+  const card = href && view.available
+    ? `<a class="card load-card is-link" href="${esc(href)}" target="_blank" rel="noopener" title="See what is using ${esc(name)}">${body}</a>`
+    : `<div class="card load-card">${body}</div>`;
+  return `<section class="provider load" aria-label="Load on ${esc(name)}">${head}${card}</section>`;
 }
 
 const CHIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2.5V6M15 2.5V6M9 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5"/></svg>';

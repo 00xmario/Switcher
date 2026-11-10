@@ -123,6 +123,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/state", a.handleState)
 	mux.HandleFunc("GET /api/state/changes", a.handleStateChanges)
 	mux.HandleFunc("GET /api/system", a.handleSystem)
+	mux.HandleFunc("GET /api/system/apps", a.handleSystemApps)
 	mux.HandleFunc("GET /api/agent-skill", a.handleAgentSkill)
 	mux.HandleFunc("POST /api/agent-skill", a.handleAgentSkill)
 	a.registerRemoteRoutes(mux)

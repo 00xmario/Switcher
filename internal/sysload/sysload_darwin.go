@@ -77,7 +77,7 @@ var hostPort = sync.OnceValue(func() uintptr {
 })
 
 func platform() reader {
-	return reader{cpu: machCPU, memory: machMemory, gpu: ioregGPU, cores: runtime.NumCPU}
+	return reader{cpu: machCPU, memory: machMemory, gpu: ioregGPU, cores: runtime.NumCPU, procs: darwinProcs}
 }
 
 // machCPU reads the processor ticks of all cores: user, system, idle, nice.

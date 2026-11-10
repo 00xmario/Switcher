@@ -38,7 +38,7 @@ export function noticeHTML(state) {
 // pageHTML is the panel: notices, the accounts, then the load card above the
 // footer, where the Mac menu has it above Keep awake.
 export function pageHTML(state, now = Date.now() / 1000, reading = null) {
-  return `${noticeHTML(state)}${cards.stateHTML(state, now, viewOf(state))}${loadCard.loadHTML(reading)}
+  return `${noticeHTML(state)}${cards.stateHTML(state, now, viewOf(state))}${loadCard.loadHTML(reading, 'This computer', '/#load')}
     <footer class="foot"><a href="/" target="_blank" rel="noopener">Open dashboard</a></footer>`;
 }
 

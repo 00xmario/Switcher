@@ -200,3 +200,48 @@ func TestTheHostsSkillKeepsTheLatestWrite(t *testing.T) {
 	}
 	gate <- struct{}{}
 }
+
+// A host's apps reach this computer as short plain names and numbers in
+// range, named after the host as paired.
+func TestAClientReadsItsHostsApps(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	answer := map[string]any{"machine": "<b>", "available": true, "cpu": 20, "memory": 50, "memory_total": 100, "memory_used": 50,
+		"processes": 300, "gpu_apps": true, "apps": []any{
+			map[string]any{"name": "Chrome\x1b[2J‮", "processes": 12, "cpu": 340.0, "memory": 9e18, "gpu": -4.0, "gpu_memory": 1 << 20},
+			map[string]any{"name": long, "processes": -1, "cpu": 2.5, "memory": 1 << 30},
+			map[string]any{"name": "\x07", "cpu": 1.0},
+		}}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/system/apps" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(answer)
+	})
+	_, client := pairedWith(t, next)
+	got := client.SystemApps(context.Background())
+	if !got.Remote || !got.Available || got.Machine != client.Status().HostName || got.Processes != 300 || len(got.Apps) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	chrome := got.Apps[0]
+	if chrome.Name != "Chrome[2J" || chrome.CPU != 100 || chrome.Memory != 0 || chrome.GPU == nil || *chrome.GPU != 0 || chrome.GPUMemory != 1<<20 {
+		t.Fatalf("chrome: %+v", chrome)
+	}
+	if other := got.Apps[1]; len([]rune(other.Name)) != 64 || other.Processes != 0 || other.Memory != 1<<30 || other.GPU != nil {
+		t.Fatalf("other: %+v", other)
+	}
+	answer["gpu_apps"] = false
+	if got := client.SystemApps(context.Background()); got.Apps[0].GPU != nil || got.Apps[0].GPUMemory != 0 {
+		t.Fatalf("graphics kept without per-app readings: %+v", got.Apps[0])
+	}
+}
+
+func TestAnOlderHostHasNoApps(t *testing.T) {
+	_, client := pairedWith(t, http.NotFoundHandler())
+	if got := client.SystemApps(context.Background()); got.Available || got.Reason != "update" || got.Apps != nil {
+		t.Fatalf("older host: %+v", got)
+	}
+	if !allowedRemotePath("/api/system/apps") || allowedRemotePath("/api/system/apps/x") {
+		t.Fatal("the apps route is not open exactly")
+	}
+}

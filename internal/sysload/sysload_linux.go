@@ -22,6 +22,7 @@ func platform() reader {
 		memory: func() (uint64, uint64, error) { return procMeminfo("/proc/meminfo") },
 		gpu:    linuxGPU(sysfsGPU("/sys/class/drm"), sleepingNvidia("/sys/class/drm", nvidiaSMI())),
 		cores:  runtime.NumCPU,
+		procs:  newLinuxProcs("/proc").read,
 	}
 }
 

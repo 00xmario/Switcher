@@ -1,6 +1,10 @@
 package sysload
 
-import "math"
+import (
+	"math"
+	"strings"
+	"unicode/utf8"
+)
 
 // View is a reading as GET /api/system answers it, for this computer or, on
 // a Mac that uses another Switcher's accounts, for that host.
@@ -59,3 +63,69 @@ func (v *View) Sanitize() {
 func percent(v float64) int { return int(math.Round(clamp(v))) }
 
 func bound(v int) int { return max(0, min(100, v)) }
+
+// AppsView is GET /api/system/apps: the load, and what is using it by
+// application.
+type AppsView struct {
+	View
+	Apps      []App `json:"apps"`
+	Processes int   `json:"processes"`
+	GPUApps   bool  `json:"gpu_apps"`
+}
+
+// maxApps bounds the applications another computer may list.
+const maxApps = 80
+
+// Sanitize keeps a breakdown another computer sent within what one can be:
+// names as plain, short text and numbers in range.
+func (v *AppsView) Sanitize() {
+	v.View.Sanitize()
+	if len(v.Apps) > maxApps {
+		v.Apps = v.Apps[:maxApps]
+	}
+	if v.Processes < 0 || v.Processes > 1<<22 {
+		v.Processes = 0
+	}
+	kept := v.Apps[:0]
+	for _, a := range v.Apps {
+		a.Name = plainName(a.Name)
+		if a.Name == "" {
+			continue
+		}
+		a.Processes = max(0, min(a.Processes, 1<<22))
+		a.CPU = clamp(a.CPU)
+		if a.Memory > maxMemory {
+			a.Memory = 0
+		}
+		if a.GPUMemory > maxMemory {
+			a.GPUMemory = 0
+		}
+		if a.GPU != nil {
+			g := clamp(*a.GPU)
+			a.GPU = &g
+		}
+		if !v.GPUApps {
+			a.GPU, a.GPUMemory = nil, 0
+		}
+		kept = append(kept, a)
+	}
+	v.Apps = kept
+	if !v.Available {
+		v.Apps, v.Processes, v.GPUApps = nil, 0, false
+	}
+}
+
+// plainName keeps a name printable and short: no control characters or
+// marks that reorder text, at most 64 characters.
+func plainName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, s)
+	if utf8.RuneCountInString(s) > 64 {
+		s = string([]rune(s)[:64])
+	}
+	return strings.TrimSpace(s)
+}

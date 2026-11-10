@@ -126,8 +126,9 @@ is at the other end when pairing without a code.
 - Usage limits are the host's: a limit set on a client is saved on the host
   and applies to every Mac that uses it, and the host does the switching.
 - The menu's load card shows the host's CPU, memory and GPU load, named after
-  the host, since that is where the work runs. Working without the host, it
-  shows this Mac's again.
+  the host, since that is where the work runs, and opens the Load page with
+  what is using the host, by app (program names only). Working without the
+  host, it shows this Mac's again.
 - The skill for AI agents can be set up on both computers from the client:
   Settings → Command line & tools shows each and **Install on both**, and
   `switcher skill install` on the client installs it on both (`--on here` or

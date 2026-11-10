@@ -19,11 +19,17 @@ const deferred = () => {
 
 test('ordinary Usage navigation loads usage through the final page handler', () => {
   let loads = 0;
+  const loadActive = [];
+  const pages = {};
+  const replaced = [];
   const context = vm.createContext({
+    loadPage: { setActive: on => loadActive.push(on) },
+    history: { replaceState: (_, __, url) => replaced.push(url) },
+    location: { hash: '', pathname: '/', search: '' },
     data: { compact_accounts: true },
     authState: { locked: false },
     document: {
-      querySelectorAll: () => [], getElementById: () => ({}), querySelector: () => ({}),
+      querySelectorAll: () => [], getElementById: id => (pages[id] ||= {}), querySelector: () => ({}),
       body: { classList: { toggle() {} } },
     },
     usagePage: {}, settingsPage: {}, renderSettings() {}, loadUsage: () => loads++,
@@ -34,6 +40,11 @@ test('ordinary Usage navigation loads usage through the final page handler', () 
   assert.equal(loads, 1);
   context.setPage('accounts');
   assert.equal(loads, 1, 'other pages must not load usage');
+  // The load page reads only while it is open, and keeps its link.
+  context.setPage('load');
+  assert.equal(pages['load-page'].hidden, false);
+  assert.deepEqual(loadActive, [false, false, true]);
+  assert.deepEqual(replaced, ['#load']);
 });
 
 function usageFixture() {

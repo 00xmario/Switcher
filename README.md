@@ -54,7 +54,9 @@ with the most usage left. Errors and limits are the provider's own.
   still have something. Set it from the menu bar, the dashboard or
   `switcher limit`; on a paired Mac it is saved on the host.
 - **See the load.** CPU, memory and graphics load as three live rings above
-  Keep awake: this Mac's, or the host's while you use its accounts.
+  Keep awake: this Mac's, or the host's while you use its accounts. Click
+  them for the Load page: two minutes of history and what is using it, by
+  app.
 - **Every quota at a glance.** Session, weekly and monthly windows with reset
   countdowns, in the dashboard and the menu bar, side by side per account if
   you merge them. Optional alerts when a window resets.
@@ -177,6 +179,7 @@ switcher connect studio.local --code K7QF-M2XP
 switcher desktop connect                   # route Claude Desktop through Switcher
 switcher limit work@example.com 10         # keep 10%: switch away at 10% left
 switcher load                              # CPU, memory and GPU of this Mac or the host
+switcher load --apps                       # and what is using it, by app
 switcher reset codex --yes                 # spend a banked reset
 switcher phone on                          # use Switcher from your phone
 switcher use-host off                      # host down? work on this Mac's own accounts
