@@ -810,3 +810,32 @@ func TestSettleTurnsOffAHostUsedWhileHandedBack(t *testing.T) {
 		t.Fatalf("settle while set up: %v host=%v", err, f.host.on)
 	}
 }
+
+// Paired with a host while sharing was handed back: setting up again uses
+// the host and leaves sharing off, never both.
+func TestSetUpNeverSharesWhileUsingAHost(t *testing.T) {
+	f := newFixture(t)
+	f.host.on = false
+	m := New(f.dir, f.deps())
+	if _, err := m.HandBack(context.Background()); err != nil || f.sharing.on {
+		t.Fatalf("hand back: %v sharing=%v", err, f.sharing.on)
+	}
+	f.host.on = true // paired and used by an older release meanwhile
+	deps := f.deps()
+	deps.Paired = func() bool { return true }
+	m = New(f.dir, deps)
+	if err := m.Settle(); err != nil {
+		t.Fatal(err)
+	}
+	status, err := m.SetUp(context.Background())
+	if err != nil || !f.host.on || f.sharing.on {
+		t.Fatalf("set up: %v host=%v sharing=%v", err, f.host.on, f.sharing.on)
+	}
+	skipped := false
+	for _, s := range status.Steps {
+		skipped = skipped || s.Tool == "sharing" && s.Outcome == "skipped"
+	}
+	if !skipped {
+		t.Fatalf("sharing left off without a word: %+v", status.Steps)
+	}
+}

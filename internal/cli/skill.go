@@ -212,6 +212,8 @@ func runSkill(c *ctx, args []string) error {
 				return partly(here, "Installed the Switcher skill on this computer", err)
 			}
 			human = append(human, "Installed the Switcher skill on "+hostName+".")
+		} else if *on == "" && host != nil {
+			human = append(human, skippedHost(host))
 		}
 		human = append(human, "Your agents pick it up in their next session.")
 	case "remove", "uninstall":
@@ -225,6 +227,9 @@ func runSkill(c *ctx, args []string) error {
 			} else {
 				human = append(human, "The Switcher skill was not installed.")
 			}
+		}
+		if !onHost && *on == "" && host != nil {
+			human = append(human, skippedHost(host))
 		}
 		if onHost {
 			if host, err = c.setHostSkill(false); err != nil {
@@ -244,6 +249,19 @@ func runSkill(c *ctx, args []string) error {
 	}
 	c.result(out, strings.Join(human, " "))
 	return nil
+}
+
+// skippedHost says why the host was left out of a default install.
+func skippedHost(h *hostSkill) string {
+	name := plainName(h.Host)
+	switch {
+	case h.Reason == "update":
+		return "Not on " + name + ": update it to Switcher 1.27.0 or later, then run switcher skill install --on host."
+	case h.Message != "":
+		return "Not on " + name + ": " + plainName(h.Message)
+	default:
+		return "Not on " + name + ": it is not reachable right now; run switcher skill install --on host later."
+	}
 }
 
 // partly reports a host step that failed after this computer's step was

@@ -461,8 +461,9 @@ func runKeepAwakeFixtures() {
     print("Keep awake chips, closed lid, and relaunch after update: OK")
 }
 
-// The settings card offers working without the paired host and handing the
-// tools back; each switch sends its request, and handing back asks first.
+// The Advanced submenu offers working without the paired host and handing
+// the tools back; each item sends its request, handing back asks first, and
+// a handed-back Mac does not offer its host.
 func runHostAndHandBackFixtures() {
     var requests: [URLRequest] = []
     var completions: [(Data?, URLResponse?, Error?) -> Void] = []

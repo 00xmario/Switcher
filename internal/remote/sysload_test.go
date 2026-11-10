@@ -158,3 +158,45 @@ func TestTheHostsSkillIsReadInTheBackground(t *testing.T) {
 		t.Fatalf("a fresh reading was not reused: %+v, %d reads", got, reads.Load())
 	}
 }
+
+// A reading that started before an install cannot undo what the install
+// showed, an old reading says it is old, and readings on their way are
+// shared.
+func TestTheHostsSkillKeepsTheLatestWrite(t *testing.T) {
+	var reads atomic.Int32
+	installed := atomic.Bool{}
+	gate := make(chan struct{}, 1)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			installed.Store(true)
+		} else {
+			reads.Add(1)
+			now := installed.Load()
+			<-gate // answered as it was when asked
+			json.NewEncoder(w).Encode(map[string]any{"installed": now, "current": now, "managed": now})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true, "managed": true})
+	})
+	_, client := pairedWith(t, next)
+	client.CachedHostSkill() // a reading starts, not installed
+	client.CachedHostSkill() // shared, not a second one
+	deadline := time.Now().Add(5 * time.Second)
+	for reads.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := client.SetHostSkill(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	gate <- struct{}{} // the old reading lands after the install
+	time.Sleep(100 * time.Millisecond)
+	if got := client.CachedHostSkill(); got.Skill == nil || !got.Skill.Installed || got.Stale || reads.Load() != 1 {
+		t.Fatalf("after the install: %+v stale=%v, %d reads", got.Skill, got.Stale, reads.Load())
+	}
+	// A host change forgets the reading.
+	client.forgetSkill()
+	if got := client.CachedHostSkill(); got.Reason != "checking" {
+		t.Fatalf("after a host change: %+v", got)
+	}
+	gate <- struct{}{}
+}

@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"switcher/internal/sysload"
 )
@@ -636,6 +637,7 @@ func (c *Client) adopt(cfg *clientFile, address string) (ClientStatus, error) {
 	c.lastGood, c.reachable, c.lastErr, c.checkedAt, c.refreshedAt = address, true, "", time.Now(), time.Time{}
 	onChange := c.onChange
 	c.mu.Unlock()
+	c.forgetSkill() // the earlier host's
 	if previous != nil {
 		go leave(previous, viaTailnet)
 	}
@@ -696,6 +698,7 @@ func (c *Client) Disconnect() error {
 	c.reachable, c.lastErr = false, ""
 	onChange := c.onChange
 	c.mu.Unlock()
+	c.forgetSkill()
 	if previous != nil {
 		go leave(previous, viaTailnet)
 	}
@@ -791,13 +794,18 @@ func atLeast(version, min string) bool {
 // dialogs.
 func plainText(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 {
+		// Control characters, and the marks that reorder text around them.
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == utf8.RuneError {
 			return -1
 		}
 		return r
 	}, s)
 	if len(s) > 300 {
-		s = s[:300]
+		cut := 300
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
 	}
 	return s
 }

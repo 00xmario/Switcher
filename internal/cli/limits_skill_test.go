@@ -218,7 +218,7 @@ func TestSkillWithAHostThatCannotTakeIt(t *testing.T) {
 			}})
 		return code, out.String() + errOut.String()
 	}
-	if code, out := skill("install"); code != 0 || strings.Contains(out, "\x1b") {
+	if code, out := skill("install"); code != 0 || strings.Contains(out, "\x1b") || !strings.Contains(out, "Not on k12") {
 		t.Fatalf("an older host failed the default install: %d %q", code, out)
 	}
 	answer = map[string]any{"host": map[string]any{"host": "k12", "skill": map[string]any{"installed": true, "path": "/h"}}}

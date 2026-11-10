@@ -859,7 +859,8 @@ function agentSkillHTML(skill) {
 // Shown while this Switcher is paired with another one, and while its tools
 // are handed back to their providers.
 function remoteBannerHTML() {
-  return handbackBannerHTML(data.handed_back) + hostBannerHTML(data.remote, data.platform);
+  // Handed back, this computer uses no host: the hand-back banner says so.
+  return handbackBannerHTML(data.handed_back) + (data.handed_back ? '' : hostBannerHTML(data.remote, data.platform));
 }
 
 // Update banner: shown above the provider sections when a release is
@@ -2858,7 +2859,7 @@ async function renderSettings() {
   });
 
   bindSkillCard(settingsPage);
-  if (skill?.host?.reason === 'checking') refreshSkillCard(request);
+  if (skill?.host?.reason === 'checking' || skill?.host?.stale) refreshSkillCard(request);
 
   const autoSwitchClaude = settingsPage.querySelector('#auto-switch-claude');
   autoSwitchClaude?.addEventListener('change', async () => {

@@ -23,6 +23,8 @@ type HostSkill struct {
 	Skill   *agentskill.Status `json:"skill,omitempty"`
 	Reason  string             `json:"reason,omitempty"`
 	Message string             `json:"message,omitempty"`
+	// Stale marks a reading old enough that a new one is on its way.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // remoteSkillSince is the first release whose skill a paired computer can
@@ -42,65 +44,86 @@ type skillCache struct {
 	mu   sync.Mutex
 	view HostSkill
 	at   time.Time
-	busy bool // a background reading is on its way
+	// gen counts writes and host changes: a reading that started before one
+	// is not kept, so it cannot undo what the write showed.
+	gen uint64
+	// reading is closed when the reading on its way is in; nil when none is.
+	reading chan struct{}
 }
 
 // HostSkill reads the host's skill: the last reading while it is fresh,
-// otherwise a new one. It never fails; a host that cannot answer gives a
-// Reason.
+// otherwise a new one, shared with any already on its way. It never fails;
+// a host that cannot answer gives a Reason.
 func (c *Client) HostSkill(ctx context.Context) HostSkill {
-	if view, ok := c.cachedSkill(); ok {
+	if view, fresh, _ := c.cachedSkill(); fresh {
 		return view
 	}
-	return c.readSkill(ctx)
-}
-
-// CachedHostSkill answers at once: the last reading, or Reason "checking"
-// while the first is taken in the background.
-func (c *Client) CachedHostSkill() HostSkill {
-	if view, ok := c.cachedSkill(); ok {
-		return view
+	done := c.startSkillRead()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
-	c.skill.mu.Lock()
-	view, read, busy := c.skill.view, !c.skill.at.IsZero(), c.skill.busy
-	c.skill.busy = true
-	c.skill.mu.Unlock()
-	if !busy {
-		go func() {
-			c.readSkill(context.Background())
-			c.skill.mu.Lock()
-			c.skill.busy = false
-			c.skill.mu.Unlock()
-		}()
-	}
-	if !read {
-		view = HostSkill{Reason: "checking"}
-	}
-	view.Host = c.Status().HostName
+	view, _, _ := c.cachedSkill()
 	return view
 }
 
-func (c *Client) cachedSkill() (HostSkill, bool) {
+// CachedHostSkill answers at once with the last reading, marked Stale when
+// it is old, or Reason "checking" before the first; a new reading is then
+// taken in the background.
+func (c *Client) CachedHostSkill() HostSkill {
+	view, fresh, read := c.cachedSkill()
+	if fresh {
+		return view
+	}
+	c.startSkillRead()
+	if !read {
+		return HostSkill{Host: c.Status().HostName, Reason: "checking"}
+	}
+	view.Stale = true
+	return view
+}
+
+// cachedSkill is the last reading, whether it is fresh, and whether there
+// is one.
+func (c *Client) cachedSkill() (view HostSkill, fresh, read bool) {
+	c.skill.mu.Lock()
+	view, at := c.skill.view, c.skill.at
+	c.skill.mu.Unlock()
+	view.Host = c.Status().HostName
+	return view, !at.IsZero() && time.Since(at) <= skillFresh, !at.IsZero()
+}
+
+// startSkillRead starts a reading unless one is on its way, and says when
+// it is in.
+func (c *Client) startSkillRead() <-chan struct{} {
 	c.skill.mu.Lock()
 	defer c.skill.mu.Unlock()
-	if c.skill.at.IsZero() || time.Since(c.skill.at) > skillFresh {
-		return HostSkill{}, false
+	if c.skill.reading != nil {
+		return c.skill.reading
 	}
-	view := c.skill.view
-	view.Host = c.Status().HostName
-	return view, true
+	done := make(chan struct{})
+	c.skill.reading = done
+	gen := c.skill.gen
+	go func() {
+		view, _ := c.skillRequest(context.Background(), nil)
+		c.skill.mu.Lock()
+		if c.skill.gen == gen {
+			c.skill.view, c.skill.at = view, time.Now()
+		}
+		c.skill.reading = nil
+		c.skill.mu.Unlock()
+		close(done)
+	}()
+	return done
 }
 
-func (c *Client) keepSkill(view HostSkill) {
+// forgetSkill drops the last reading, as when the host changes; a reading
+// on its way is not kept.
+func (c *Client) forgetSkill() {
 	c.skill.mu.Lock()
-	c.skill.view, c.skill.at = view, time.Now()
+	c.skill.gen++
+	c.skill.view, c.skill.at = HostSkill{}, time.Time{}
 	c.skill.mu.Unlock()
-}
-
-func (c *Client) readSkill(ctx context.Context) HostSkill {
-	view, _ := c.skillRequest(ctx, nil)
-	c.keepSkill(view)
-	return view
 }
 
 // SetHostSkill installs (true) or removes (false) the host's skill. A
@@ -108,13 +131,14 @@ func (c *Client) readSkill(ctx context.Context) HostSkill {
 // edited on the host is done on the host itself.
 func (c *Client) SetHostSkill(ctx context.Context, install bool) (HostSkill, error) {
 	view, err := c.skillRequest(ctx, &install)
+	c.skill.mu.Lock()
+	c.skill.gen++ // a reading started before this is out of date
 	if err == nil {
-		c.keepSkill(view)
+		c.skill.view, c.skill.at = view, time.Now()
 	} else {
-		c.skill.mu.Lock()
 		c.skill.at = time.Time{} // read again next time
-		c.skill.mu.Unlock()
 	}
+	c.skill.mu.Unlock()
 	return view, err
 }
 

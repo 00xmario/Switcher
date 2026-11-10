@@ -3319,8 +3319,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
-    // Hand every tool back to its provider, or set Switcher up again; both
-    // change how this Mac's tools are routed, so both ask first.
     // advancedItem holds what is rarely changed: using the paired host, and
     // handing the tools back before removing Switcher. Handed back, this Mac
     // uses no host until it is set up again, so that item waits.
@@ -3354,6 +3352,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc func useHostItem(_ sender: NSMenuItem) { toggleUseHost() }
     @objc func handBackItem(_ sender: NSMenuItem) { toggleHandBack() }
 
+    // Hand every tool back to its provider, or set Switcher up again; both
+    // change how this Mac's tools are routed, so both ask first.
     func toggleHandBack() {
         let on = cachedState?.handed_back != true
         menu.cancelTracking()

@@ -441,6 +441,7 @@ func run(port, desktopRelayPort int) {
 				return sharing.SetEnabled(on)
 			},
 		},
+		Paired: remoteClient.Paired,
 		UseHost: handback.Funcs{
 			OnFunc: remoteClient.Connected,
 			SetFunc: func(on bool) error {
