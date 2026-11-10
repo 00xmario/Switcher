@@ -115,7 +115,8 @@ func (l *linuxProcs) process(pid int, dir string) (procInfo, bool) {
 		if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
 			p.name = programName(exe)
 		} else {
-			p.name, p.cut = kernelName(comm), len(comm) >= 15
+			p.name = kernelName(comm)
+			p.cut = p.name == comm && len(comm) >= 15
 		}
 	}
 	return p, p.name != ""

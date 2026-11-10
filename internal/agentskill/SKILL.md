@@ -136,7 +136,8 @@ before falling back to a Free account or one at its usage limit), `menu_usage_ba
 - "What is using it?" `switcher load --apps --json` adds `apps`: each app's
   `name`, `processes`, `cpu` (percent of the whole machine), `memory`
   (bytes) and, when `gpu_apps` is true, `gpu` (percent) and `gpu_memory`.
-  `apps_unavailable: true` means the listing failed this time: try again.
+  `apps_unavailable: true` means the listing failed this time (then `apps`
+  and `processes` say nothing): try again.
   Only apps using something are listed. The dashboard's Load page shows the
   same, live.
 

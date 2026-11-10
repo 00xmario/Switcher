@@ -113,3 +113,13 @@ func TestEngineCapacity(t *testing.T) {
 		t.Fatalf("share %v", *got.Apps[0].GPU)
 	}
 }
+
+// A name shortened to its first word is not the kernel's cut name, so it is
+// never completed into one of this user's programs.
+func TestShortenedNamesAreNotCompleted(t *testing.T) {
+	procs := []procInfo{{name: "celery-worker"}, {name: kernelName("celery beat -A "), cut: false}}
+	completeNames(procs)
+	if procs[1].name != "celery" {
+		t.Fatalf("%q", procs[1].name)
+	}
+}

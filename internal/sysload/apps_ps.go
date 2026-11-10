@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,9 +51,47 @@ func parsePS(stats, paths []byte) procSnapshot {
 }
 
 // isFile says a path is a program file on this computer; tests replace it.
-var isFile = func(path string) bool {
+var isFile = cachedIsFile
+
+// Paths not looked at: network and removable volumes, whose server may not
+// answer (or which a process could name to make this computer reach one),
+// and the folders macOS asks the user before an app may look into.
+var unlookedPaths = []string{"/Volumes/", "/net/", "/Network/", "/automount/"}
+var unlookedFolders = []string{"/Desktop/", "/Documents/", "/Downloads/", "/Library/Mobile Documents/", "/Library/CloudStorage/"}
+
+// fileCache remembers what was found for a while: the same paths come back
+// with every listing.
+var fileCache = struct {
+	sync.Mutex
+	found map[string]bool
+	at    time.Time
+}{found: map[string]bool{}}
+
+const fileCacheFor = time.Minute
+
+func cachedIsFile(path string) bool {
+	for _, p := range unlookedPaths {
+		if strings.HasPrefix(path, p) {
+			return false
+		}
+	}
+	for _, f := range unlookedFolders {
+		if strings.Contains(path, f) {
+			return false
+		}
+	}
+	fileCache.Lock()
+	defer fileCache.Unlock()
+	if time.Since(fileCache.at) > fileCacheFor {
+		fileCache.found, fileCache.at = map[string]bool{}, time.Now()
+	}
+	if found, ok := fileCache.found[path]; ok {
+		return found
+	}
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
+	found := err == nil && info.Mode().IsRegular()
+	fileCache.found[path] = found
+	return found
 }
 
 // ownPath says the path a process was started as is its program's own: an

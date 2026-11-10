@@ -3,6 +3,7 @@ package sysload
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -164,5 +165,27 @@ func TestAppsSampler(t *testing.T) {
 	}
 	if _, err := (&Sampler{}).Apps(context.Background()); err != ErrUnsupported {
 		t.Fatal("a sampler without listings answered")
+	}
+}
+
+// Network and removable volumes and the folders macOS guards are never
+// looked at; what is found is remembered.
+func TestCachedIsFile(t *testing.T) {
+	for _, path := range []string{"/Volumes/Share/bin/tool", "/net/host/x/tool", "/Users/a/Desktop/tool", "/Users/a/Library/CloudStorage/x/tool"} {
+		if cachedIsFile(path) {
+			t.Errorf("%s was looked at", path)
+		}
+	}
+	dir := t.TempDir()
+	file := dir + "/prog"
+	if err := os.WriteFile(file, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !cachedIsFile(file) || cachedIsFile(dir) {
+		t.Fatal("a file or a folder misread")
+	}
+	os.Remove(file)
+	if !cachedIsFile(file) {
+		t.Fatal("not remembered")
 	}
 }

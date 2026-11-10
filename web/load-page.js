@@ -246,12 +246,14 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
   async function poll() {
     if (!active || inFlight) return;
     inFlight = true;
+    const startedAt = Date.now();
     // The history is two minutes of time, one slot per two-second step:
     // steps with no reading (a failure, a hidden tab, a slow answer) are
     // gaps, and after a gap longer than the history it starts again.
     const push = next => {
       const now = Date.now();
-      const missed = lastAt ? Math.round((now - lastAt) / POLL_MS) - 1 : 0;
+      // A late answer is not a missed step; two steps with none is.
+      const missed = lastAt ? Math.max(0, Math.floor((now - lastAt) / POLL_MS) - 1) : 0;
       lastAt = now;
       for (const m of METRICS) {
         if (missed >= HISTORY) history[m.id] = [];
@@ -285,7 +287,9 @@ export function createLoadPage({ api, root, onVisible = () => {} }) {
     renderMetrics();
     renderApps();
     clearTimeout(timer);
-    timer = setTimeout(poll, failures ? Math.min(POLL_MS * 2 ** failures, 15000) : POLL_MS);
+    // Every two seconds from the start of this reading, so a slow answer
+    // does not stretch the steps.
+    timer = setTimeout(poll, failures ? Math.min(POLL_MS * 2 ** failures, 15000) : Math.max(0, POLL_MS - (Date.now() - startedAt)));
   }
 
   function setActive(on) {
