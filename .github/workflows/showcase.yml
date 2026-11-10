@@ -1,0 +1,22 @@
+name: Showcase
+
+# Draws the README's menu bar pictures on a Mac from made-up accounts
+# (make showcase-menu) and keeps them as an artifact. Run by hand, or by
+# pushing to a docs/ branch that changes the menu.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['docs/**']
+    paths: ['build/macos/**', '.github/workflows/showcase.yml']
+
+jobs:
+  menu:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Draw the menu
+        run: make showcase-menu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: menu-shots
+          path: menu-shots

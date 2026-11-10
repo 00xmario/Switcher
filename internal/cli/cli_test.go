@@ -143,8 +143,8 @@ func TestStatusShowsAccountsSharingAndDesktop(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Switcher 0.7.0",
-		"Claude\n  ● work@example.com  Max 20x  Session 34%  Weekly 61%  · Claude Code",
-		"    home@example.com  Max 5x   Session 88%              · needs relogin",
+		"Claude\n  ● work@example.com  Max 20x  Session 66% left  Weekly 39% left  · Claude Code",
+		"    home@example.com  Max 5x   Session 12% left                   · needs relogin",
 		"Codex\n  ● work@example.com  Pro 5x",
 		"Sharing         on · 1 paired Mac",
 		"Claude Desktop  connected · 1 request in flight",
