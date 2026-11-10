@@ -172,10 +172,12 @@ func resolve(ref string, accounts []Account) (Account, error) {
 	return Account{}, fmt.Errorf("no account matches %q; run 'switcher accounts' to list them", ref)
 }
 
+// usageText says each window's share left, as the dashboard and the menu
+// do; --json keeps used_percent.
 func usageText(windows []Window) string {
 	parts := make([]string, 0, len(windows))
 	for _, w := range windows {
-		parts = append(parts, fmt.Sprintf("%s %.0f%%", w.Label, w.UsedPercent))
+		parts = append(parts, fmt.Sprintf("%s %.0f%% left", w.Label, max(0, 100-w.UsedPercent)))
 	}
 	return strings.Join(parts, "  ")
 }
