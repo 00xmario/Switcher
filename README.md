@@ -5,9 +5,9 @@
 <h1 align="center">Switcher</h1>
 
 <p align="center">
-  <strong>One harness, all your AI accounts.</strong><br>
-  Switch Claude Code, Codex and Claude Desktop between your own subscriptions in one click,<br>
-  from the menu bar, the dashboard or the command line.
+  <strong>All your AI subscriptions in one place.</strong><br>
+  Switch Claude Code, Codex and Claude Desktop between your accounts in one click,<br>
+  keep a share for the chat apps, and let your agents run it for you.
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="The Switcher dashboard with Claude and Codex accounts, and the menu bar dropdown">
+  <img src="docs/screenshots/hero.png" alt="The Switcher dashboard with Claude and Codex accounts, and the menu bar dropdown with usage, a usage limit, and the load of this Mac">
 </p>
 
 ## Why Switcher
@@ -31,54 +31,105 @@ are already running. Switcher sits between your tools and the providers on
 your own Mac and answers two questions: **which account am I using**, and
 **switch me to that one**.
 
-It does not pool accounts, rotate requests between them or invent its own
-rate limits. Each provider uses the account you picked until you pick another,
-or until that account runs out of usage; then Switcher moves on to the account
-with the most usage left. Errors and limits are the provider's own.
+It does not pool accounts or rotate requests between them. Each provider uses
+the account you picked until you pick another, until that account runs out,
+or until it reaches a usage limit you set; then Switcher moves on to the
+account with the most usage left. Errors and limits are the provider's own.
 
-## Highlights
+<p align="center">
+  <img src="docs/screenshots/tour.gif" width="880" alt="A 30-second tour: setting a 10% usage limit in the dashboard, telling an agent to do it, the Load page, and the menu bar">
+  <br><sub><b>Thirty seconds of Switcher.</b> A usage limit in two clicks, the same by asking your agent, the Load page and the menu bar.</sub>
+</p>
 
-- **One click, every tool.** *Use in Claude Code* switches Claude Code's own
-  login and Switcher's proxy together; running sessions follow within about
-  30 seconds. Codex, the T3 Code hub and, if you want, Claude Desktop use the
-  account you pick. Through the Desktop relay, Claude Code uses the account you
-  pick and keeps its login, so Remote Control sessions survive a switch.
-- **Never stuck at a limit.** When an account runs out, Switcher moves on by
-  itself. Codex retries the request on another paid account, with a banked
-  reset before any Free account. Claude Code's login switches to the Claude
-  account with the most usage left, and a Claude Desktop conversation moves
-  over before Desktop even sees the refusal.
-- **Keep some for the chat apps.** Give an account a usage limit, say 10%,
-  and Switcher switches away from it when it has that much of its weekly
-  usage left, so the Claude and ChatGPT apps, which Switcher cannot route,
-  still have something. Set it from the menu bar, the dashboard or
-  `switcher limit`; on a paired Mac it is saved on the host.
-- **See the load.** CPU, memory and graphics load as three live rings above
-  Keep awake: this Mac's, or the host's while you use its accounts. Click
-  them for the Load page: two minutes of history and what is using it, by
-  app.
+## Switch in one click
+
+*Use in Claude Code* switches Claude Code's own login and Switcher's proxy
+together; running sessions follow within about 30 seconds. Codex, the T3 Code
+hub and, if you want, Claude Desktop use the account you pick. Through the
+Desktop relay, Claude Code uses the account you pick and keeps its login, so
+Remote Control sessions survive a switch. All of it from the menu bar, the
+dashboard or `switcher use`.
+
+**Never stuck at a limit.** When an account runs out, Switcher moves on by
+itself. Codex retries the request on another paid account, with a banked reset
+before any Free account. Claude Code's login switches to the Claude account
+with the most usage left, and a Claude Desktop conversation moves over before
+Desktop even sees the refusal.
+
+## Keep a share for the chat apps
+
+The Claude and ChatGPT apps and websites can't be routed, so an account your
+tools burn through leaves them nothing. Give that account a **usage limit**,
+say 10%: when it has that much of its weekly usage left, Switcher moves your
+tools to the account with the most left, and the last 10% stays for chat.
+
+<p align="center">
+  <img src="docs/screenshots/limits.png" alt="Setting a 10% usage limit from an account's menu in the dashboard, and from the menu bar, with the limit marked on the weekly bar">
+</p>
+
+Two clicks in the dashboard's ⋯ menu or the menu bar, or `switcher limit work
+10`. The limit shows as a mark on the weekly bar; an account at its limit says
+so. A limit never blocks a request: with no other account that has room,
+Switcher stays where it is. On a Mac that uses another Mac's accounts, the
+limit is saved on the host and applies everywhere.
+
+## Or just tell your agent
+
+Switcher ships a skill that teaches Claude Code, Codex and other agents what
+Switcher is and how to drive it. Say what you want in your own words and your
+agent does it:
+
+<p align="center">
+  <img src="docs/screenshots/agent.png" alt="Claude Code asked to keep 10% on the work account: it uses the Switcher skill, runs switcher limit, and explains what will happen">
+  <br><sub>A real run: Claude Code with the Switcher skill, against made-up accounts.</sub>
+</p>
+
+"Keep 10% on this account and switch automatically", "when my work account
+reaches 20%, switch to my other one", "what's eating my server?", "which
+account am I on?": the skill knows the commands, reads their JSON and never
+spends a banked reset or removes anything you did not ask for. A first
+install puts it in `~/.agents/skills` and links it for Claude Code; otherwise
+add it from **Settings → Command line & tools** or with `switcher skill
+install`. On a Mac that uses another Mac's accounts, **Install on both** puts
+it on the host too.
+
+<p align="center">
+  <img src="docs/screenshots/skill.png" width="560" alt="Settings: the skill for AI agents on this Mac and on the host, with Install on both">
+</p>
+
+## See what's using your Mac
+
+The menu bar shows CPU, memory and graphics load as three live rings: this
+Mac's, or the host's while you use its accounts. Click them for the **Load**
+page: two minutes of history, and every app using the computer, grouped and
+ranked by processor, memory or graphics (per-app graphics and graphics memory
+on Linux hosts with AMD or Intel graphics). Names only, never arguments or
+files; `switcher load --apps` prints the same.
+
+<p align="center">
+  <img src="docs/screenshots/load.png" alt="The Load page: CPU, memory and GPU of the host with their history, and the apps using it ranked by processor">
+</p>
+
+## Everything else
+
 - **Every quota at a glance.** Session, weekly and monthly windows with reset
   countdowns, in the dashboard and the menu bar, side by side per account if
   you merge them. Optional alerts when a window resets.
 - **Share between Macs.** Pair your laptop with your desktop once. Accounts
-  and tokens stay on one Mac and the others use them, at home or anywhere
-  with the optional Tailscale add-on. Your own Macs on Tailscale connect
-  without a code, and switch between hosts in one step.
+  and tokens stay on one Mac and the others use them, at home or anywhere with
+  the optional Tailscale add-on. Your own Macs on Tailscale connect without a
+  code, and switch between hosts in one step.
 - **Switcher in your pocket.** Check usage, switch accounts (Claude Code's
   login included) and spend a banked reset from your phone, wherever you are,
   over Tailscale. Setup is a QR code and a six-digit code; only phones you
   approve on the Mac get in.
-- **A command line for you and your agents.** Switch, sign in, share between
-  Macs and set up Claude Desktop from a terminal or over SSH, with JSON output
-  and stable exit codes. A skill in `~/.agents/skills` (installed with
-  Switcher, or from Settings → Command line & tools, on this Mac and its host
-  at once) teaches your agents to use it, so "keep 10% on this account and
-  switch automatically" just works.
-- **Keep awake for long runs.** From the menu bar, keep the Mac awake for
-  15 minutes up to 8 hours, until a set time or until you turn it off, even
-  with the lid closed. Sleep comes back by itself when time is up, when the
-  battery runs low or when Switcher quits; an update's restart keeps it
-  going.
+- **A command line for you and your agents.** Switch, sign in, set limits,
+  share between Macs and set up Claude Desktop from a terminal or over SSH,
+  with JSON output and stable exit codes.
+- **Keep awake for long runs.** From the menu bar, keep the Mac awake for 15
+  minutes up to 8 hours, until a set time or until you turn it off, even with
+  the lid closed. Sleep comes back by itself when time is up, when the battery
+  runs low or when Switcher quits; an update's restart keeps it going.
 - **Costs and tokens.** A Usage tab reads your CLIs' own session logs and
   prices them, per day, provider and model.
 - **Claude Desktop per conversation.** Optional: pick an account for
@@ -93,19 +144,19 @@ with the most usage left. Errors and limits are the provider's own.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/merged.png" alt="Merged accounts: every Claude account side by side per quota window"><br><sub><b>Merged accounts.</b> Every account side by side per quota window.</sub></td>
-    <td width="50%"><img src="docs/screenshots/usage.png" alt="Usage tab with daily cost per provider"><br><sub><b>Costs and tokens.</b> From your CLIs' own session logs.</sub></td>
+    <td width="50%"><img src="docs/screenshots/menu.png" alt="The menu bar dropdown in light mode, with usage, a usage limit and the load card"><br><sub><b>Menu bar.</b> Usage, limits and load without opening anything.</sub></td>
+    <td width="50%"><img src="docs/screenshots/settings-switching.png" alt="Switching settings: the order when an account runs out, Switch Claude automatically and usage limits"><br><sub><b>When an account runs out.</b> Switcher moves on, Claude included.</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/settings-switching.png" alt="Switching settings: the order when an account runs out, and Switch Claude automatically"><br><sub><b>When an account runs out.</b> Switcher moves on, Claude included.</sub></td>
-    <td><img src="docs/screenshots/settings-phone.png" alt="Phone settings with a QR code and a six-digit code entry"><br><sub><b>Phone setup.</b> Scan, tap Pair, type the code. Done.</sub></td>
+    <td><img src="docs/screenshots/merged.png" alt="Merged accounts: every Claude account side by side per quota window"><br><sub><b>Merged accounts.</b> Every account side by side per quota window.</sub></td>
+    <td><img src="docs/screenshots/usage.png" alt="Usage tab with daily cost per provider"><br><sub><b>Costs and tokens.</b> From your CLIs' own session logs.</sub></td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/settings-desktop.png" alt="Claude Desktop settings with the request flow and per-conversation accounts"><br><sub><b>Claude Desktop.</b> An account per conversation, one click each.</sub></td>
     <td><img src="docs/screenshots/settings-sharing.png" alt="Share between Macs settings with a pairing code"><br><sub><b>Share between Macs.</b> Pair once with a code.</sub></td>
   </tr>
   <tr>
-    <td colspan="2" align="center"><img src="docs/screenshots/menu.png" width="50%" alt="The menu bar dropdown in light mode"><br><sub><b>Menu bar.</b> Usage and switching without opening anything.</sub></td>
+    <td colspan="2" align="center"><img src="docs/screenshots/settings-phone.png" width="50%" alt="Phone settings with a QR code and a six-digit code entry"><br><sub><b>Phone setup.</b> Scan, tap Pair, type the code. Done.</sub></td>
   </tr>
 </table>
 
@@ -116,9 +167,9 @@ curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh |
 ```
 
 The script installs the latest release into Applications, adds the
-`switcher` command, installs the skill that teaches AI agents, Claude Code included, to use
-Switcher (`~/.agents/skills/switcher`; `SWITCHER_SKILL=0` skips it) and starts
-Switcher. It works over SSH too.
+`switcher` command, on a first install adds the skill that teaches AI agents,
+Claude Code included, to use Switcher (`~/.agents/skills/switcher`;
+`SWITCHER_SKILL=0` skips it) and starts Switcher. It works over SSH too.
 
 Or download `Switcher_<version>.dmg` from
 [Releases](https://github.com/00xmario/switcher/releases/latest) and drag
@@ -134,8 +185,9 @@ xattr -dr com.apple.quarantine /Applications/Switcher.app
 login with a systemd user service and opens its tray icon. The dashboard is
 the main UI there; see [Switcher on Linux](docs/linux.md) for what differs.
 
-Switcher runs on macOS 13 or later, on Apple silicon and Intel Macs. It
-lives in the menu bar and serves its dashboard on <http://127.0.0.1:8787>.
+Switcher runs on macOS 13 or later, on Apple silicon and Intel Macs, and on
+Linux. It lives in the menu bar and serves its dashboard on
+<http://127.0.0.1:8787>.
 Turn on **Start at login** in its menu to keep it around. To build from
 source (Go 1.27+): `make install`.
 
@@ -159,7 +211,9 @@ update those once with the install script above.
 2. **Switch.** Click **Use in Claude Code** or **Use this account**, or run
    `switcher use work@example.com`.
 3. **Point Codex at Switcher** once: `switcher setup codex`, or
-   **Settings → CLI setup**.
+   **Settings → Command line & tools → CLI setup**.
+4. **Keep a share** of an account for the chat apps: its ⋯ menu → **Usage
+   limit**, or `switcher limit work@example.com 10`. Or ask your agent.
 
 Your other Macs can skip all of this: `switcher connect <this Mac> --code <code>`
 lets them use this Mac's accounts. See [sharing](docs/sharing.md).
@@ -167,7 +221,7 @@ lets them use this Mac's accounts. See [sharing](docs/sharing.md).
 ## Command line
 
 <p align="center">
-  <img src="docs/screenshots/terminal.png" width="760" alt="switcher status, use and share code in a terminal">
+  <img src="docs/screenshots/terminal.png" width="760" alt="switcher status, limit and load --apps in a terminal">
 </p>
 
 ```sh
@@ -233,8 +287,9 @@ The full matrix, including what is verified per native CLI, is in
 
 ## Before you remove Switcher
 
-**Settings → Tools → Hand back to the providers** (or `switcher hand-back on --yes`,
-or the menu) undoes Switcher's setup: Codex gets its previous provider back,
+**Settings → Command line & tools → Hand back to the providers** (or the menu
+bar's **Advanced** submenu, or `switcher hand-back on --yes`) undoes Switcher's
+setup: Codex gets its previous provider back,
 Claude Desktop its settings, sharing turns off, and Claude Code and Codex keep
 a login of their own, so your tools talk to Anthropic and OpenAI directly and
 keep working once Switcher is gone. Switcher then stops using its accounts
