@@ -29,6 +29,8 @@ struct MenuShowcase {
         var runtime = MenuRuntime()
         runtime.request = { _, _ in }
         runtime.deviceToken = { "" }
+        // Keep awake folded, as most menus show it.
+        runtime.loadFlag = { $0 == awakeCollapsedKey }
         return runtime
     }
 
@@ -39,16 +41,16 @@ struct MenuShowcase {
         }
         let h = 3600.0, d = 86400.0
         let accounts = [
-            Account(id: "claude-you", provider: "claude", email: "you@example.com", plan: "Max 20x", active: true,
+            Account(id: "claude-you", provider: "claude", email: "you@example.com", plan: "claude_max_20x", active: true,
                 exhausted_until: nil, usage: Usage(available: true, windows: [w("Session", left: 64, 2 * h + 1200), w("Weekly", left: 58, 3 * d + 3 * h)]),
                 reset_credits: nil, native_switch_available: true, native_active: true),
-            Account(id: "claude-work", provider: "claude", email: "work@example.com", plan: "Max 5x", active: false,
+            Account(id: "claude-work", provider: "claude", email: "work@example.com", plan: "claude_max_5x", active: false,
                 exhausted_until: nil, usage: Usage(available: true, windows: [w("Session", left: 81, 46 * 60), w("Weekly", left: 23, d + 6 * h)]),
                 reset_credits: nil, native_switch_available: true, native_active: false, usage_limit: 10),
-            Account(id: "codex-you", provider: "codex", email: "you@example.com", plan: "Pro", active: true,
+            Account(id: "codex-you", provider: "codex", email: "you@example.com", plan: "prolite", active: true,
                 exhausted_until: nil, usage: Usage(available: true, windows: [w("5 hour", left: 78, 3 * h + 240), w("Weekly", left: 53, 4 * d + 23 * h)]),
                 reset_credits: ResetCredits(count: 2)),
-            Account(id: "codex-side", provider: "codex", email: "side@example.com", plan: "Plus", active: false,
+            Account(id: "codex-side", provider: "codex", email: "side@example.com", plan: "plus", active: false,
                 exhausted_until: nil, usage: Usage(available: true, windows: [w("5 hour", left: 92, 4 * h + 3540), w("Weekly", left: 9, 2 * d + 5 * h)]),
                 reset_credits: nil, usage_limit: 10, at_limit: true),
         ]
@@ -58,8 +60,8 @@ struct MenuShowcase {
     }
 
     // render lays the menu's items out as the open menu shows them, item
-    // views as they are and plain items as macOS draws them, and saves the
-    // result twice: drawn through the views, and through their layers.
+    // views as they are and plain items as macOS draws them, and saves them
+    // drawn through their layers (the cards' colours live in the layers).
     static func render(_ menu: NSMenu, appearance: NSAppearance, to base: String) {
         let width = menuWidth
         var rows: [NSView] = []
@@ -111,14 +113,7 @@ struct MenuShowcase {
         container.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         container.display()
-        save(drawn(container, scale: 2), to: base + ".png")
-        save(layered(container, scale: 2), to: base + "-layers.png")
-    }
-
-    static func drawn(_ view: NSView, scale: CGFloat) -> NSBitmapImageRep? {
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        return rep
+        save(layered(container, scale: 2), to: base + ".png")
     }
 
     static func layered(_ view: NSView, scale: CGFloat) -> NSBitmapImageRep? {
