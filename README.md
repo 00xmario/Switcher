@@ -48,6 +48,13 @@ with the most usage left. Errors and limits are the provider's own.
   reset before any Free account. Claude Code's login switches to the Claude
   account with the most usage left, and a Claude Desktop conversation moves
   over before Desktop even sees the refusal.
+- **Keep some for the chat apps.** Give an account a usage limit, say 10%,
+  and Switcher switches away from it when it has that much of its weekly
+  usage left, so the Claude and ChatGPT apps, which Switcher cannot route,
+  still have something. Set it from the menu bar, the dashboard or
+  `switcher limit`; on a paired Mac it is saved on the host.
+- **See the load.** CPU, memory and graphics load as three live rings above
+  Keep awake: this Mac's, or the host's while you use its accounts.
 - **Every quota at a glance.** Session, weekly and monthly windows with reset
   countdowns, in the dashboard and the menu bar, side by side per account if
   you merge them. Optional alerts when a window resets.
@@ -61,7 +68,9 @@ with the most usage left. Errors and limits are the provider's own.
   approve on the Mac get in.
 - **A command line for you and your agents.** Switch, sign in, share between
   Macs and set up Claude Desktop from a terminal or over SSH, with JSON output
-  and stable exit codes.
+  and stable exit codes. A skill in `~/.agents/skills` (installed with
+  Switcher, or from Settings → Tools) teaches your agents to use it, so "keep
+  10% on this account and switch automatically" just works.
 - **Keep awake for long runs.** From the menu bar, keep the Mac awake for
   15 minutes up to 8 hours, until a set time or until you turn it off, even
   with the lid closed. Sleep comes back by itself when time is up, when the
@@ -104,7 +113,9 @@ curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh |
 ```
 
 The script installs the latest release into Applications, adds the
-`switcher` command and starts Switcher. It works over SSH too.
+`switcher` command, installs the skill that teaches AI agents to use
+Switcher (`~/.agents/skills/switcher`; `SWITCHER_SKILL=0` skips it) and starts
+Switcher. It works over SSH too.
 
 Or download `Switcher_<version>.dmg` from
 [Releases](https://github.com/00xmario/switcher/releases/latest) and drag
@@ -163,6 +174,8 @@ switcher login claude                      # sign in, also over SSH
 switcher share on && switcher share code   # let your other Macs use this one
 switcher connect studio.local --code K7QF-M2XP
 switcher desktop connect                   # route Claude Desktop through Switcher
+switcher limit work@example.com 10         # keep 10%: switch away at 10% left
+switcher load                              # CPU, memory and GPU of this Mac or the host
 switcher reset codex --yes                 # spend a banked reset
 switcher phone on                          # use Switcher from your phone
 switcher use-host off                      # host down? work on this Mac's own accounts

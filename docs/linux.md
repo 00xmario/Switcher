@@ -70,7 +70,10 @@ tray starts the server when it is not running; **Quit Switcher** stops both.
 window with the Mac menu's look, the same account cards as the phone page.
 It shows each provider with its logo, every account with its plan, banked
 resets and what each usage window has left, and switches accounts, refreshes
-usage and spends banked resets. It opens as an app window in the first of
+usage, spends banked resets and sets usage limits. Below the accounts, the
+load card shows CPU, memory and GPU load as three rings, read every two
+seconds while the panel is in view: this computer's, or the host's while it
+uses a host's accounts. It opens as an app window in the first of
 Google Chrome, Chromium or Microsoft Edge it finds, otherwise in the default
 browser. Clicking the tray icon opens it too where the desktop activates
 tray icons on a click (KDE); there the menu is on the right button. GNOME's
@@ -85,7 +88,9 @@ each usage window has left, with a short bar and the time to its reset, for
 example `Weekly: ▰▰▱▱▱ 31% left · ↻ 2d 8h`, and notes such as **Out of usage
 · back in 1h 0m** or **Sign in again**. The bars follow **Usage bars** in the
 dashboard's Settings → General → Tray. Clicking an account switches to it
-(Claude also moves Claude Code to it). The menu also holds keep awake,
+(Claude also moves Claude Code to it). **Usage limits** sets, per account with a weekly or monthly window, the
+share it keeps (Off, 10, 20, 30 or 50%), and the account's notes say **Keeps
+10%** or **At its 10% limit**. The menu also holds keep awake,
 **Use the accounts of &lt;host&gt;**, **Update &lt;host&gt;**, **Hand back
 to the providers on this computer**, **Start at login**, the dashboard,
 updates and Quit.

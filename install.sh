@@ -61,6 +61,17 @@ stop_linux() {
 	fail "Switcher did not stop; stop it with: pkill -x switcher, and run this again."
 }
 
+# install_skill puts the skill that teaches AI agents (Claude Code, Codex and
+# others) to use Switcher in ~/.agents/skills. SWITCHER_SKILL=0 skips it; a
+# release without the skill goes without.
+install_skill() {
+	[ "${SWITCHER_SKILL:-1}" = 0 ] && return 0
+	grep -q "switcher skill install" "$1" 2>/dev/null || return 0
+	if "$1" skill install >/dev/null 2>&1; then
+		echo "Your AI agents know Switcher now: its skill is in ~/.agents/skills/switcher (SWITCHER_SKILL=0 skips this)."
+	fi
+}
+
 install_linux() {
 	case "$(uname -m)" in
 	x86_64 | amd64) arch=amd64 ;;
@@ -93,6 +104,7 @@ install_linux() {
 
 	"$bin/switcher" autostart on >/dev/null
 	"$bin/switcher" start
+	install_skill "$bin/switcher"
 	if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
 		nohup "$bin/switcher" tray >/dev/null 2>&1 &
 	elif [ "${tray_running:-0}" != 0 ] && command -v systemd-run >/dev/null 2>&1 &&
@@ -164,6 +176,7 @@ main() {
 	fi
 	"$server" install-cli
 	"$server" start
+	install_skill "$server"
 	if "$server" status --json 2>/dev/null | grep -q "\"version\":\"$version\""; then
 		echo
 		echo "Switcher $version is installed and running."

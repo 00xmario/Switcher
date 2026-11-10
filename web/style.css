@@ -1628,3 +1628,7 @@ html[data-effective-theme="dark"] { --mark-knob: #f4fff8; }
 }
 .copy-btn { min-width: 64px; transition: color .15s ease, border-color .15s ease, background-color .15s ease; }
 .copy-btn.is-copied { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--accent); }
+
+/* The agent skill card's buttons sit at the row's trailing edge. */
+.agent-skill-card .skill-actions { display: flex; gap: 8px; flex: none; }
+.agent-skill-card code { font-size: 12px; overflow-wrap: anywhere; }

@@ -56,6 +56,53 @@ required; OpenCode Go uses its own API key.
   no pending sign-in take over. Each account is switched away from at most
   once per ten minutes, and an account you pick yourself while it is at its
   limit stays picked for an hour.
+- **Usage limits**: an account can keep a share of its weekly usage (or
+  monthly, where that is its long window) for what Switcher cannot route,
+  such as the Claude and ChatGPT chat apps and websites. Set the share (Off,
+  10, 20, 30 or 50%, any 1–95% from the command line) with the gauge button
+  on the account's row in the menu bar, the account's ⋯ menu in the
+  dashboard, **Usage limits** in the Linux tray, the panel's picker, or
+  `switcher limit <account> 10`. The bar of that window marks the share with
+  a line. Once a usage poll shows the account with that much or less left
+  (**At limit**), Switcher moves its provider to the account with the most
+  usage left above its own limit, a paid account before a Free one: Claude
+  Code's login, or with the login kept the account its requests use, and
+  Claude Desktop conversations; for Codex and the other providers the
+  proxy's selection. This happens whether or not **Switch Claude
+  automatically** is on, right away when a new limit is already reached, at
+  most once per account per ten minutes, and never onto an account at its
+  own limit. A refused request moves the proxy to an account at its limit
+  only when nothing else is left, and an account at its limit with nowhere
+  to go keeps serving: a limit never blocks a request. An account you pick
+  yourself while it is at its limit stays picked for an hour. Limits are kept
+  in `state.json` with the routing state, so no token rotation can lose one,
+  and go with their account when it is removed. A Mac that uses another
+  Mac's accounts saves the limit on that host, where it applies to every Mac
+  (`PATCH /api/accounts/{id}` with `{"usage_limit": 10}`; `0` removes it).
+- **Load card**: above Keep awake, the menu bar shows three rings for CPU,
+  memory and GPU load, calm in green, amber from 70% and red from 90%, with
+  the core count and memory in use beneath. The rings ease to each reading,
+  taken every two seconds while the menu is open and never while it is
+  closed. While the Mac uses another Mac's accounts the card shows that
+  host's load, named after it. `GET /api/system` answers the reading
+  (`cpu`, `memory`, `gpu` in percent, `cores`, `memory_used`,
+  `memory_total`, `machine`, `remote`); paired Macs may read the host's, and
+  a client keeps the host's answer to numbers in range and names the host
+  itself. macOS readings come from the Mach host statistics (processor
+  ticks; app, wired and compressed memory, as Activity Monitor counts it) and
+  the graphics driver's own utilization in the I/O registry; Linux reads
+  `/proc/stat`, `/proc/meminfo`, the drm `gpu_busy_percent` counter (AMD) or
+  `nvidia-smi`. Graphics without a reading (most Intel on Linux) say so. The
+  Linux panel shows the same card; `switcher load` prints it.
+- **Skill for AI agents**: `~/.agents/skills/switcher/SKILL.md` tells coding
+  agents what Switcher is and how to drive it with the `switcher` command,
+  including how to turn "when my account reaches 10% switch to my other
+  account" into `switcher limit <account> 10`. The install script puts it
+  there (`SWITCHER_SKILL=0` skips it), as do Settings → Tools → **Install
+  skill** and `switcher skill install`. A copy Switcher wrote is brought up to
+  date when Switcher starts after an update; one you edited (without its
+  `managed-by: switcher` line) is left alone, and nothing but a plain file is
+  ever replaced.
 - **Automatic failover on exhaustion**: when the active account reports it
   is out of usage (HTTP 429 `usage_limit_reached`), Switcher marks it with
   the upstream reset time and, if another account is usable, retries your

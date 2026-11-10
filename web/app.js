@@ -783,6 +783,25 @@ function usageLimitMenuHTML(account) {
       </div>`;
 }
 
+// agentSkillHTML is the Tools card that installs Switcher's skill for AI
+// agents into ~/.agents/skills, so they know how to use Switcher.
+function agentSkillHTML(skill) {
+  if (!skill) return '';
+  const state = !skill.installed ? 'Not installed'
+    : skill.current ? 'Installed' : skill.managed ? 'Update available' : 'Changed by hand';
+  const action = !skill.installed ? 'Install skill' : skill.current ? '' : skill.managed ? 'Update skill' : 'Replace with Switcher’s';
+  return `<div class="settings-card agent-skill-card">
+      <div class="set-card-head"><h3>Skill for AI agents</h3><p class="settings-sub">Teaches Claude Code, Codex and other agents what Switcher is and how to use it, so “keep 10% on this account and switch automatically” just works.</p></div>
+      <div class="settings-row">
+        <div><strong>${escapeHTML(state)}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}</span></div>
+        <div class="skill-actions">
+          ${action ? `<button type="button" class="button primary" data-skill="install">${action}</button>` : ''}
+          ${skill.installed && skill.managed ? '<button type="button" class="button" data-skill="remove">Remove</button>' : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
 // Shown while this Switcher is paired with another one, and while its tools
 // are handed back to their providers.
 function remoteBannerHTML() {
@@ -2381,6 +2400,10 @@ async function renderSettings() {
   try {
     sharing = !!(await api('/api/remote'))?.host?.enabled;
   } catch { /* only this Mac sees sharing */ }
+  let skill = null;
+  try {
+    skill = await api('/api/agent-skill');
+  } catch { /* an older server has no skill */ }
   if (authState.locked || settingsPage.hidden || request !== settingsRenderGeneration || epoch !== stateEpoch) return;
   // Opened straight from a link: render again once the dashboard state is in.
   settingsWaitingForState = !data.version;
@@ -2428,6 +2451,9 @@ async function renderSettings() {
           <div><strong>Use banked resets automatically</strong><span class="dim">Codex. Each account can override this in its ⋯ menu.</span></div>
           <label class="switch-wrap"><input type="checkbox" id="auto-use-reset" aria-label="Use a banked reset automatically when an account is out of usage" ${status.auto_use_reset ? 'checked' : ''}><span class="switch-visual"></span></label>
         </div>
+        <div class="settings-row">
+          <div><strong>Usage limits</strong><span class="dim">Keep a share of an account's weekly usage for the Claude and ChatGPT chat apps: at that much left, Switcher moves to the account with the most left. Set it in the account's ⋯ menu, the menu bar, or with <code>switcher limit</code>.</span></div>
+        </div>
       </div>
       ${code ? `<div class="settings-card">
         <div class="set-card-head"><h3>Claude Code login</h3><p class="settings-sub">${status.claude_code_login_kept ? 'Claude Code stays signed in with this account, which keeps its Remote Control sessions. Its requests use the account you select, through the Desktop relay.' : code.available ? '“Use in Claude Code” switches Claude Code’s own login. Running sessions pick it up within about 30 seconds.' : 'Switching the Claude Code login is unavailable here.'}</p></div>
@@ -2443,6 +2469,7 @@ async function renderSettings() {
     sharing: `<div class="set-module remote-card" id="remote-settings" aria-label="Share between Macs"></div>`,
     phone: `<div class="set-module" id="phone-settings" aria-label="Phone access"></div>`,
     tools: `
+      ${agentSkillHTML(skill)}
       <div class="settings-card">
         <div class="set-card-head"><h3>Command line</h3><p class="settings-sub">Switch accounts, sign in, share between Macs and set up Claude Desktop from a terminal, over SSH or for an agent, with <code>--json</code> output.</p></div>
         <div class="set-terminal" aria-hidden="true"><div class="set-terminal-bar"><i></i><i></i><i></i><span>switcher</span></div>
@@ -2731,6 +2758,22 @@ async function renderSettings() {
       autostart.disabled = false;
     }
   });
+
+  settingsPage.querySelectorAll('button[data-skill]').forEach(button => button.addEventListener('click', async () => {
+    const install = button.dataset.skill === 'install';
+    button.disabled = true;
+    try {
+      await api('/api/agent-skill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installed: install }),
+      });
+      toast(install ? 'Skill installed: your agents pick it up in their next session' : 'Skill removed');
+      renderSettings();
+    } catch (err) {
+      toast(err.message);
+      button.disabled = false;
+    }
+  }));
 
   const autoSwitchClaude = settingsPage.querySelector('#auto-switch-claude');
   autoSwitchClaude?.addEventListener('change', async () => {

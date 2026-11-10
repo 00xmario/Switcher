@@ -32,6 +32,8 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher add-key <provider> [--key K]` | Add an API-key account; pipe the key on stdin to keep it out of shell history |
 | `switcher remove <account> --yes` | Remove an account from Switcher |
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
+| `switcher limit <account> [percent\|off]` | Keep a share of an account's weekly usage: Switcher switches away at that much left (1–95, or `off`); without a share, show the limit |
+| `switcher load` | CPU, memory and GPU load of this computer, or of the host whose accounts it uses |
 | `switcher reset <account\|provider> --yes` | Spend a banked reset (Codex) on an account, or on a provider's active account |
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
 | `switcher share tailnet [on\|off]` | Let your own Tailscale devices connect without a code, or make them use one; on for a Mac that starts sharing now, off for one that shared before |
@@ -50,6 +52,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher autostart [on\|off]` | Linux: start Switcher at login (systemd user service and the tray) |
 | `switcher tray` | Linux: the tray icon |
 | `switcher open` | Open the dashboard |
+| `switcher skill [install\|remove]` | The skill that teaches AI agents to use Switcher, in `~/.agents/skills/switcher`; needs no running Switcher |
 | `switcher install-cli [--dir DIR]` | Put `switcher` on your PATH; another tool called `switcher` is left alone |
 
 An `<account>` is its id, its email, `provider:email` when the same email has
@@ -74,8 +77,12 @@ email. `switcher help <command>` explains one command.
 - `--url` reaches a Switcher on another port; `SWITCHER_URL` does the same.
   The dashboard's device token is only ever sent to this Mac.
 - Accounts in JSON have `id`, `provider`, `email`, `plan`, `active`,
-  `claude_code` (Claude Code's own login uses it), `health` and `usage`
-  (`label`, `used_percent`, `resets_at`).
+  `claude_code` (Claude Code's own login uses it), `health`, `usage`
+  (`label`, `used_percent`, `resets_at`) and, with a usage limit,
+  `usage_limit` (the share kept) and `at_limit`.
+- `switcher skill install` gives agents the [skill](../internal/agentskill/SKILL.md)
+  that explains all of this, including how to read requests such as "keep 10%
+  on this account and switch automatically".
 
 ## Signing in over SSH
 

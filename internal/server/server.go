@@ -69,6 +69,9 @@ type API struct {
 	Updater               UpdateChecker
 	// Awake keeps the Mac awake on demand; nil or unsupported off macOS.
 	Awake *awake.Manager
+	// Home is this computer's home directory, for the agent skill; empty
+	// turns that off.
+	Home string
 	// Load measures how busy this computer is; nil answers no readings.
 	Load     *sysload.Sampler
 	Usage    *usage.Service
@@ -118,6 +121,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/state", a.handleState)
 	mux.HandleFunc("GET /api/state/changes", a.handleStateChanges)
 	mux.HandleFunc("GET /api/system", a.handleSystem)
+	mux.HandleFunc("GET /api/agent-skill", a.handleAgentSkill)
+	mux.HandleFunc("POST /api/agent-skill", a.handleAgentSkill)
 	a.registerRemoteRoutes(mux)
 	a.registerPhoneRoutes(mux)
 	mux.HandleFunc("POST /api/claude/sync", a.handleClaudeSync)
