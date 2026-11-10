@@ -129,9 +129,9 @@ export function limitPickHTML(a) {
   if (!counted && !limit) return '';
   const choices = LIMIT_CHOICES.includes(limit) ? LIMIT_CHOICES : [...LIMIT_CHOICES, limit].sort((x, y) => x - y);
   return `<label class="limit-pick" title="Keep a share of the weekly usage for the chat apps; Switcher moves to another account at that much left">
-      <span>Usage limit</span>
+      <span>Limit</span>
       <select data-limit="${esc(a.id)}" aria-label="Usage limit for ${esc(a.email || a.id)}">
-        ${choices.map(v => `<option value="${v}"${v === limit ? ' selected' : ''}>${v ? `Switch at ${v}% left` : 'Off'}</option>`).join('')}
+        ${choices.map(v => `<option value="${v}"${v === limit ? ' selected' : ''}>${v ? `keep ${v}%` : 'off'}</option>`).join('')}
       </select>
     </label>`;
 }

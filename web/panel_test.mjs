@@ -154,7 +154,7 @@ test('usage limits: the panel offers them, marks the bar and says when an accoun
   const limited = { ...state, accounts: [{ ...state.accounts[0], usage_limit: 30, at_limit: true }, state.accounts[1], state.accounts[2]] };
   const html = pageHTML(limited, now);
   assert.match(html, /<select data-limit="claude-a"/);
-  assert.match(html, /<option value="30" selected>Switch at 30% left<\/option>/);
+  assert.match(html, /<option value="30" selected>keep 30%<\/option>/);
   assert.match(html, /class="limit-tick" style="left:30%"/);
   assert.equal((html.match(/limit-tick/g) || []).length, 1, 'only the weekly window carries the line');
   assert.match(text(html), /At its 30% limit · Switcher uses another account/);
