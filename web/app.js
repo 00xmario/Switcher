@@ -793,35 +793,74 @@ function usageLimitMenuHTML(account) {
 }
 
 // agentSkillHTML is the Tools card that installs Switcher's skill for AI
-// agents into ~/.agents/skills, so they know how to use Switcher.
-function agentSkillHTML(skill) {
-  if (!skill) return '';
+// agents into ~/.agents/skills, so they know how to use Switcher. On a
+// computer that uses a host's accounts it shows the host too, and sets up
+// either or both from here.
+function skillAction(skill) {
+  if (!skill || skill.blocked) return '';
+  return !skill.installed ? 'Install'
+    : !skill.current ? (skill.managed ? 'Update' : 'Replace with Switcher’s')
+    : !skill.claude_code ? 'Link for Claude Code' : '';
+}
+
+function skillRowHTML(skill, where, name) {
+  // A copy edited on the host is replaced on the host itself.
+  const replaceThere = where === 'host' && skill.installed && !skill.managed && !skill.blocked;
   const state = skill.blocked ? 'Something else is in its place'
     : !skill.installed ? 'Not installed'
     : skill.current ? 'Installed' : skill.managed ? 'Update available' : 'Changed by hand';
-  const action = skill.blocked ? ''
-    : !skill.installed ? 'Install skill'
-    : !skill.current ? (skill.managed ? 'Update skill' : 'Replace with Switcher’s')
-    : !skill.claude_code ? 'Link for Claude Code' : '';
-  const where = skill.installed && !skill.blocked
+  const action = replaceThere ? '' : skillAction(skill);
+  const seen = skill.installed && !skill.blocked
     ? (skill.claude_code ? ' · Claude Code sees it' : ' · Claude Code does not see it yet')
     : '';
-  return `<div class="settings-card agent-skill-card">
-      <div class="set-card-head"><h3>Skill for AI agents</h3><p class="settings-sub">Teaches Claude Code, Codex and other agents what Switcher is and how to use it, so “keep 10% on this account and switch automatically” just works.</p></div>
-      <div class="settings-row">
-        <div><strong>${escapeHTML(state)}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${where}</span></div>
+  const label = name ? `${escapeHTML(name)} · ${escapeHTML(state)}` : escapeHTML(state);
+  return `<div class="settings-row">
+        <div><strong>${label}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${seen}${replaceThere ? ` · replace it on ${escapeHTML(name)} with <code>switcher skill install --replace</code>` : ''}</span></div>
         <div class="skill-actions">
-          ${action ? `<button type="button" class="button primary" data-skill="install"${skill.installed && !skill.managed ? ' data-replace="1"' : ''}>${action}</button>` : ''}
-          ${skill.installed && skill.managed ? '<button type="button" class="button" data-skill="remove">Remove</button>' : ''}
+          ${action ? `<button type="button" class="button${name ? '' : ' primary'}" data-skill="install" data-where="${where}"${skill.installed && !skill.managed ? ' data-replace="1"' : ''}>${action}</button>` : ''}
+          ${skill.installed && skill.managed ? `<button type="button" class="button" data-skill="remove" data-where="${where}">Remove</button>` : ''}
         </div>
-      </div>
+      </div>`;
+}
+
+function agentSkillHTML(skill) {
+  if (!skill) return '';
+  const host = skill.host;
+  const hostName = host?.host || 'the host';
+  let rows = '';
+  let both = '';
+  if (!host) {
+    rows = skillRowHTML(skill, 'here', '');
+  } else {
+    rows = skillRowHTML(skill, 'here', data.platform === 'darwin' ? 'This Mac' : 'This computer');
+    if (host.skill) {
+      rows += skillRowHTML(host.skill, 'host', hostName);
+      // One button for both, when both only need Switcher's own copy.
+      const plain = s => !s.blocked && (!s.installed || s.managed);
+      const needs = s => skillAction(s) !== '';
+      if (plain(skill) && plain(host.skill) && (needs(skill) || needs(host.skill))) {
+        both = `<div class="skill-both"><button type="button" class="button primary" data-skill="install" data-where="both">${skill.installed && host.skill.installed ? 'Update on both' : 'Install on both'}</button></div>`;
+      }
+    } else {
+      const why = host.reason === 'update' ? `Update ${escapeHTML(hostName)} to set up its skill from here.`
+        : host.reason === 'checking' ? `Asking ${escapeHTML(hostName)}…`
+        : host.reason === 'refused' && host.message ? escapeHTML(host.message)
+        : `${escapeHTML(hostName)} is not reachable right now.`;
+      rows += `<div class="settings-row"><div><strong>${escapeHTML(hostName)}</strong><span class="dim">${why}</span></div></div>`;
+    }
+  }
+  return `<div class="settings-card agent-skill-card">
+      <div class="set-card-head"><h3>Skill for AI agents</h3><p class="settings-sub">Teaches Claude Code, Codex and other agents what Switcher is and how to use it, so “keep 10% on this account and switch automatically” just works.${host ? ` Set it up here and on ${escapeHTML(hostName)}, whose accounts this ${data.platform === 'darwin' ? 'Mac' : 'computer'} uses.` : ''}</p></div>
+      ${rows}
+      ${both}
     </div>`;
 }
 
 // Shown while this Switcher is paired with another one, and while its tools
 // are handed back to their providers.
 function remoteBannerHTML() {
-  return handbackBannerHTML(data.handed_back) + hostBannerHTML(data.remote, data.platform);
+  // Handed back, this computer uses no host: the hand-back banner says so.
+  return handbackBannerHTML(data.handed_back) + (data.handed_back ? '' : hostBannerHTML(data.remote, data.platform));
 }
 
 // Update banner: shown above the provider sections when a release is
@@ -2403,6 +2442,49 @@ function cliSetupRowHTML(client) {
   </div>`;
 }
 
+// bindSkillCard wires the skill card's buttons: install or remove, here,
+// on the host or on both.
+function bindSkillCard(root) {
+  root.querySelectorAll('button[data-skill]').forEach(button => button.addEventListener('click', async () => {
+    const install = button.dataset.skill === 'install';
+    const where = button.dataset.where || 'here';
+    const place = where === 'both' ? ' on both computers' : where === 'host' ? ' on the host' : '';
+    button.disabled = true;
+    try {
+      await api('/api/agent-skill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installed: install, replace: button.dataset.replace === '1', where }),
+      });
+      toast(install ? `Skill installed${place}: your agents pick it up in their next session` : `Skill removed${place}`);
+      renderSettings();
+    } catch (err) {
+      toast(err.message);
+      // With both computers, one of them may have changed.
+      if (where === 'both') renderSettings();
+      else button.disabled = false;
+    }
+  }));
+}
+
+// refreshSkillCard reads the host's skill, which may take a moment, and
+// redraws only the card once it is in.
+async function refreshSkillCard(request) {
+  let skill;
+  try {
+    skill = await api('/api/agent-skill');
+  } catch {
+    return;
+  }
+  const card = settingsPage.querySelector('.agent-skill-card');
+  if (!card || request !== settingsRenderGeneration || settingsPage.hidden) return;
+  const next = document.createElement('div');
+  next.innerHTML = agentSkillHTML(skill);
+  const fresh = next.firstElementChild;
+  if (!fresh) return;
+  card.replaceWith(fresh);
+  bindSkillCard(fresh);
+}
+
 async function renderSettings() {
   if (authState.locked || settingsPage.hidden) return;
   const request = ++settingsRenderGeneration;
@@ -2418,7 +2500,8 @@ async function renderSettings() {
   } catch { /* only this Mac sees sharing */ }
   let skill = null;
   try {
-    skill = await api('/api/agent-skill');
+    // The host's part comes from its last reading; a fresh one follows.
+    skill = await api('/api/agent-skill?wait=0');
   } catch { /* an older server has no skill */ }
   if (authState.locked || settingsPage.hidden || request !== settingsRenderGeneration || epoch !== stateEpoch) return;
   // Opened straight from a link: render again once the dashboard state is in.
@@ -2775,21 +2858,8 @@ async function renderSettings() {
     }
   });
 
-  settingsPage.querySelectorAll('button[data-skill]').forEach(button => button.addEventListener('click', async () => {
-    const install = button.dataset.skill === 'install';
-    button.disabled = true;
-    try {
-      await api('/api/agent-skill', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ installed: install, replace: button.dataset.replace === '1' }),
-      });
-      toast(install ? 'Skill installed: your agents pick it up in their next session' : 'Skill removed');
-      renderSettings();
-    } catch (err) {
-      toast(err.message);
-      button.disabled = false;
-    }
-  }));
+  bindSkillCard(settingsPage);
+  if (skill?.host?.reason === 'checking' || skill?.host?.stale) refreshSkillCard(request);
 
   const autoSwitchClaude = settingsPage.querySelector('#auto-switch-claude');
   autoSwitchClaude?.addEventListener('change', async () => {

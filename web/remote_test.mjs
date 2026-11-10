@@ -249,3 +249,12 @@ test('a sharing Mac lets its own Tailscale devices in without a code and says wh
   assert.match(html, /data-remote-action="tailnet-pairing" aria-label="Let my own Tailscale devices connect without a code" (?!checked)/);
   assert.match(html, /Off: every Mac needs a code, also your own/);
 });
+
+test('a handed-back Mac offers neither sharing nor a host', async () => {
+  let { html } = await render({ handed_back: true, host: host(), client: { connected: true, local_only: true, host_name: 'Studio Mac', address: 'studio.local' } });
+  assert.match(html, /handed back to their providers/);
+  assert.match(html, /The pairing with Studio Mac stays/);
+  assert.doesNotMatch(html, /data-remote-action="(use-host|share|disconnect)"/);
+  ({ html } = await render({ handed_back: true, host: host(), client: { connected: false } }));
+  assert.doesNotMatch(html, /data-remote-form|data-remote-action="share"/);
+});

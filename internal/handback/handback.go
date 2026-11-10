@@ -80,10 +80,13 @@ type Accounts interface {
 
 // Deps are the tools and settings hand-back acts on. Nil ones are skipped.
 type Deps struct {
-	Codex      Codex
-	Desktop    Desktop
-	Sharing    Toggle // hosting other Switchers
-	UseHost    Toggle // using a paired host; nil or off when not paired
+	Codex   Codex
+	Desktop Desktop
+	Sharing Toggle // hosting other Switchers
+	UseHost Toggle // using a paired host; nil or off when not paired
+	// Paired says a host is paired, in use or not. A paired computer does
+	// not share: that would pass accounts around in a loop.
+	Paired     func() bool
 	ClaudeCode ClaudeCode
 	Accounts   Accounts
 	Now        func() time.Time
@@ -160,6 +163,53 @@ func (m *Manager) apply(on bool) {
 	if m.deps.Desktop != nil {
 		m.deps.Desktop.SetPassthrough(on)
 	}
+}
+
+// Settle keeps a handed-back Switcher off sharing and its paired host.
+// Older releases let either be turned back on while handed back, which left
+// the menu saying both at once; each is turned off again and recorded, so
+// setting up again turns it back on.
+func (m *Manager) Settle() error {
+	if !m.busy.TryLock() {
+		return ErrBusy
+	}
+	defer m.busy.Unlock()
+	m.mu.Lock()
+	cur := m.rec
+	m.mu.Unlock()
+	if cur == nil || cur.Phase != "handed_back" {
+		return nil
+	}
+	rec := *cur
+	var toggles []Toggle
+	var steps []Step
+	if s := m.deps.Sharing; s != nil && s.On() {
+		rec.Sharing = true
+		toggles = append(toggles, s)
+		steps = append(steps, Step{Tool: "sharing", Outcome: "done", Message: "Sharing was on while handed back; it is off again until Switcher is set up again."})
+	}
+	if h := m.deps.UseHost; h != nil && h.On() {
+		rec.UseHost = true
+		toggles = append(toggles, h)
+		steps = append(steps, Step{Tool: "host", Outcome: "done", Message: "The paired host was in use while handed back; it is not used again until Switcher is set up again."})
+	}
+	if len(toggles) == 0 {
+		return nil
+	}
+	// Recorded first: a Switcher that stops halfway still turns them back
+	// on when set up again.
+	if err := m.save(&rec); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.rec = &rec
+	m.last = append(m.last, steps...)
+	m.mu.Unlock()
+	var errs []error
+	for _, t := range toggles {
+		errs = append(errs, t.Set(false))
+	}
+	return errors.Join(errs...)
 }
 
 // HandedBack reports whether the tools are handed back, fully or halfway.
@@ -540,7 +590,12 @@ func (m *Manager) setUp(ctx context.Context) ([]string, error) {
 			note("host", "done", "This Switcher uses its paired host again.")
 		}
 	}
-	if rec.Sharing && m.deps.Sharing != nil {
+	paired := m.deps.Paired != nil && m.deps.Paired()
+	if rec.Sharing && m.deps.Sharing != nil && paired {
+		// Paired with a host since sharing was handed back, as an older
+		// release allowed: sharing would loop accounts between them.
+		note("sharing", "skipped", "Sharing stays off: this computer uses another Switcher's accounts, and one that does cannot share.")
+	} else if rec.Sharing && m.deps.Sharing != nil {
 		if err := m.deps.Sharing.Set(true); err != nil {
 			failure("sharing", "Could not turn sharing back on", err)
 		} else {

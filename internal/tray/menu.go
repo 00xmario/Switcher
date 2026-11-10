@@ -117,8 +117,13 @@ func Build(st State, status Status, now time.Time) []Item {
 		items = append(items, awakeMenu(*a, now))
 	}
 	if r := st.Remote; r != nil && (r.Role == "client" || r.Role == "local") {
-		items = append(items, Item{Action: "use-host", Title: "Use the accounts of " + r.Host, Checkable: true, Checked: r.Role == "client",
-			Tooltip: "Off: this computer uses its own accounts and stays paired"})
+		// Handed back, the host waits until Switcher is set up again.
+		tip := "Off: this computer uses its own accounts and stays paired"
+		if st.HandedBack {
+			tip = "Your tools are handed back to their providers; set Switcher up again to use " + r.Host
+		}
+		items = append(items, Item{Action: "use-host", Title: "Use the accounts of " + r.Host, Checkable: true,
+			Checked: r.Role == "client" && !st.HandedBack, Disabled: st.HandedBack, Tooltip: tip})
 	}
 	if r := st.Remote; r != nil && r.Role == "client" && r.HostUpdate != nil && r.HostUpdate.Remote && r.HostUpdate.Latest != "" {
 		u, release := r.HostUpdate, strings.TrimPrefix(r.HostUpdate.Latest, "v")

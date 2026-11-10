@@ -232,8 +232,13 @@ func TestMenuFollowsTheHostAndTheHandBack(t *testing.T) {
 	if use := find(items, "Use the accounts of Studio"); use == nil || !use.Checked {
 		t.Fatalf("use-host: %+v", use)
 	}
-	f.set("remote", map[string]any{"role": "local", "host": "Studio"})
+	// Handed back, the host is neither shown in use nor offered.
 	f.set("handed_back", true)
+	c.Refresh(context.Background())
+	if use := find(ui.last(), "Use the accounts of Studio"); use == nil || use.Checked || !use.Disabled {
+		t.Fatalf("use-host while handed back: %+v", use)
+	}
+	f.set("remote", map[string]any{"role": "local", "host": "Studio"})
 	c.Refresh(context.Background())
 	items = ui.last()
 	if use := find(items, "Use the accounts of Studio"); use == nil || use.Checked {

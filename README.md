@@ -69,8 +69,9 @@ with the most usage left. Errors and limits are the provider's own.
 - **A command line for you and your agents.** Switch, sign in, share between
   Macs and set up Claude Desktop from a terminal or over SSH, with JSON output
   and stable exit codes. A skill in `~/.agents/skills` (installed with
-  Switcher, or from Settings → Tools) teaches your agents to use it, so "keep
-  10% on this account and switch automatically" just works.
+  Switcher, or from Settings → Command line & tools, on this Mac and its host
+  at once) teaches your agents to use it, so "keep 10% on this account and
+  switch automatically" just works.
 - **Keep awake for long runs.** From the menu bar, keep the Mac awake for
   15 minutes up to 8 hours, until a set time or until you turn it off, even
   with the lid closed. Sleep comes back by itself when time is up, when the

@@ -109,6 +109,7 @@ Set limits on several accounts by running the command once per account.
 | Usage limit | `switcher limit <account> [percent\|off] --json` |
 | Refresh usage now | `switcher refresh [account] --json` |
 | How busy this computer, or the host, is | `switcher load --json` |
+| Install this skill on this computer and its host | `switcher skill install --on both --json` |
 | Spend a banked reset (Codex), only when asked | `switcher reset <account> --yes --json` |
 | Settings | `switcher settings --json`, `switcher settings set auto_switch_claude=false --json` |
 | Sign in a new account (opens a browser) | `switcher login <provider>` |

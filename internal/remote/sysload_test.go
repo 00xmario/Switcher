@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // A paired Mac shows its host's load: numbers kept in range, named after the
@@ -77,4 +80,123 @@ func TestAHostsUsageLimitsAreOnlyNumbers(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestOnlyTheSkillRouteItselfIsOpen(t *testing.T) {
+	if !allowedRemotePath("/api/agent-skill") {
+		t.Fatal("/api/agent-skill closed to paired devices")
+	}
+	for _, path := range []string{"/api/agent-skill/", "/api/agent-skills", "/api/agent"} {
+		if allowedRemotePath(path) {
+			t.Errorf("%s open to paired devices", path)
+		}
+	}
+}
+
+// An older host has no skill route: reading says so, installing explains.
+func TestAnOlderHostHasNoSkill(t *testing.T) {
+	_, client := pairedWith(t, http.NotFoundHandler())
+	if got := client.HostSkill(context.Background()); got.Reason != "update" || got.Skill != nil {
+		t.Fatalf("older host: %+v", got)
+	}
+	if _, err := client.SetHostSkill(context.Background(), true); err == nil || !strings.Contains(err.Error(), "1.27.0") {
+		t.Fatalf("install on an older host: %v", err)
+	}
+}
+
+// The host's refusal reaches this Mac as plain text, and its paths too.
+func TestAHostsSkillAnswerIsPlainText(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := PairedDevice(r); !ok {
+			t.Error("asked without the paired device")
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "edited\x1b[31m by hand"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true, "path": "/home/x/SKILL.md\x07", "claude_link": "a\nb"})
+	})
+	_, client := pairedWith(t, next)
+	got := client.HostSkill(context.Background())
+	if got.Skill == nil || !got.Skill.Current || got.Skill.Path != "/home/x/SKILL.md" || got.Skill.ClaudeLink != "ab" {
+		t.Fatalf("status: %+v", got.Skill)
+	}
+	if _, err := client.SetHostSkill(context.Background(), true); err == nil || strings.ContainsAny(err.Error(), "\x1b") || !strings.Contains(err.Error(), "edited") {
+		t.Fatalf("refusal: %v", err)
+	}
+}
+
+// The settings page never waits: the first reading is taken in the
+// background, and later ones answer from it while fresh.
+func TestTheHostsSkillIsReadInTheBackground(t *testing.T) {
+	var reads atomic.Int32
+	release := make(chan struct{})
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		<-release
+		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true})
+	})
+	_, client := pairedWith(t, next)
+	start := time.Now()
+	if got := client.CachedHostSkill(); got.Reason != "checking" || got.Skill != nil || time.Since(start) > time.Second {
+		t.Fatalf("first: %+v after %v", got, time.Since(start))
+	}
+	client.CachedHostSkill() // one reading at a time
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := client.CachedHostSkill(); got.Skill != nil && got.Skill.Current {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the background reading never arrived")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := client.HostSkill(context.Background()); got.Skill == nil || reads.Load() != 1 {
+		t.Fatalf("a fresh reading was not reused: %+v, %d reads", got, reads.Load())
+	}
+}
+
+// A reading that started before an install cannot undo what the install
+// showed, an old reading says it is old, and readings on their way are
+// shared.
+func TestTheHostsSkillKeepsTheLatestWrite(t *testing.T) {
+	var reads atomic.Int32
+	installed := atomic.Bool{}
+	gate := make(chan struct{}, 1)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			installed.Store(true)
+		} else {
+			reads.Add(1)
+			now := installed.Load()
+			<-gate // answered as it was when asked
+			json.NewEncoder(w).Encode(map[string]any{"installed": now, "current": now, "managed": now})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true, "managed": true})
+	})
+	_, client := pairedWith(t, next)
+	client.CachedHostSkill() // a reading starts, not installed
+	client.CachedHostSkill() // shared, not a second one
+	deadline := time.Now().Add(5 * time.Second)
+	for reads.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := client.SetHostSkill(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	gate <- struct{}{} // the old reading lands after the install
+	time.Sleep(100 * time.Millisecond)
+	if got := client.CachedHostSkill(); got.Skill == nil || !got.Skill.Installed || got.Stale || reads.Load() != 1 {
+		t.Fatalf("after the install: %+v stale=%v, %d reads", got.Skill, got.Stale, reads.Load())
+	}
+	// A host change forgets the reading.
+	client.forgetSkill()
+	if got := client.CachedHostSkill(); got.Reason != "checking" {
+		t.Fatalf("after a host change: %+v", got)
+	}
+	gate <- struct{}{}
 }

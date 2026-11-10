@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"switcher/internal/sysload"
 )
@@ -81,6 +82,8 @@ type Client struct {
 	ownTailnet func() ([]string, error)
 	// hostInstalling is set while this Mac waits on the host's install.
 	hostInstalling atomic.Bool
+	// skill is the host's skill as last read, for the settings page.
+	skill skillCache
 }
 
 // UseTailnet reaches tailnet addresses through the Tailscale add-on.
@@ -311,7 +314,7 @@ func (c *Client) Status() ClientStatus {
 	if address == "" {
 		address = c.cfg.Addresses[0]
 	}
-	return ClientStatus{Connected: true, LocalOnly: c.cfg.LocalOnly, HostName: c.cfg.HostName, Address: address, Reachable: c.reachable, Error: c.lastErr, CheckedAt: c.checkedAt}
+	return ClientStatus{Connected: true, LocalOnly: c.cfg.LocalOnly, HostName: plainText(c.cfg.HostName), Address: address, Reachable: c.reachable, Error: c.lastErr, CheckedAt: c.checkedAt}
 }
 
 // target splits an address the user entered, such as studio.local or
@@ -413,7 +416,7 @@ func (c *Client) Connect(ctx context.Context, address string, port int, code, de
 	if !hmac.Equal([]byte(paired.HostProof), []byte(pairingProof(key, "host", nonce))) {
 		return ClientStatus{}, errors.New("this is not the Switcher you meant to pair with; check the code and address")
 	}
-	cfg.HostName, cfg.DeviceID, cfg.Token, cfg.PairedAt = paired.HostName, paired.DeviceID, paired.Token, time.Now().UTC()
+	cfg.HostName, cfg.DeviceID, cfg.Token, cfg.PairedAt = plainText(paired.HostName), paired.DeviceID, paired.Token, time.Now().UTC()
 	for _, a := range paired.Addresses {
 		if a != address {
 			cfg.Addresses = append(cfg.Addresses, a)
@@ -634,6 +637,7 @@ func (c *Client) adopt(cfg *clientFile, address string) (ClientStatus, error) {
 	c.lastGood, c.reachable, c.lastErr, c.checkedAt, c.refreshedAt = address, true, "", time.Now(), time.Time{}
 	onChange := c.onChange
 	c.mu.Unlock()
+	c.forgetSkill() // the earlier host's
 	if previous != nil {
 		go leave(previous, viaTailnet)
 	}
@@ -694,6 +698,7 @@ func (c *Client) Disconnect() error {
 	c.reachable, c.lastErr = false, ""
 	onChange := c.onChange
 	c.mu.Unlock()
+	c.forgetSkill()
 	if previous != nil {
 		go leave(previous, viaTailnet)
 	}
@@ -789,13 +794,18 @@ func atLeast(version, min string) bool {
 // dialogs.
 func plainText(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 {
+		// Control characters, and the marks that reorder text around them.
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == utf8.RuneError {
 			return -1
 		}
 		return r
 	}, s)
 	if len(s) > 300 {
-		s = s[:300]
+		cut := 300
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
 	}
 	return s
 }
@@ -1345,8 +1355,8 @@ func (c *Client) refreshAddresses() {
 	}
 	updated := *c.cfg
 	updated.Addresses = merged
-	if h.Name != "" {
-		updated.HostName = h.Name
+	if name := plainText(h.Name); name != "" {
+		updated.HostName = name
 	}
 	if strings.Join(updated.Addresses, ",") == strings.Join(c.cfg.Addresses, ",") && updated.HostName == c.cfg.HostName {
 		return

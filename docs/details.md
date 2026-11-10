@@ -101,8 +101,11 @@ required; OpenCode Go uses its own API key.
   `$CLAUDE_CONFIG_DIR/skills`), made only where that name is free. It explains
   how to turn "when my account reaches 10% switch to my other account" into
   `switcher limit <account> 10`. A first install by the script puts it there
-  (`SWITCHER_SKILL=0` skips it), as do Settings → Tools → **Install skill**
-  and `switcher skill install`. Switcher records the hash of the copy it
+  (`SWITCHER_SKILL=0` skips it), as do Settings → Command line & tools →
+  **Install** and `switcher skill install`. A computer that uses a host's
+  accounts shows the host's skill beside its own and sets up either or both
+  (**Install on both**, `switcher skill install --on both`); the host takes
+  only install and remove of its own release's skill from it. Switcher records the hash of the copy it
   wrote: that copy is brought up to date when Switcher starts after an
   update, while one you edited, or removed, stays as you left it. A skill
   file Switcher did not write, or one edited since, is replaced only when
@@ -190,12 +193,13 @@ required; OpenCode Go uses its own API key.
   paired across restarts until the switch goes back on. See
   [sharing](sharing.md#when-the-host-stops-working).
 - **Hand back to the providers**: before removing Switcher, one switch
-  (Settings → Tools, the menu, the tray, or `switcher hand-back on --yes`)
+  (Settings → Command line & tools, the menu bar's Advanced submenu, the
+  tray, or `switcher hand-back on --yes`)
   undoes its setup. It changes only this computer's Switcher, never a paired
   host's, and both directions ask first. Codex gets its previous provider back; Claude Desktop's
   settings are restored, and a Desktop still running keeps working through
   the relay on its own login until it restarts; sharing and the use of a
-  paired host turn off. Claude Code and Codex keep their own logins; one with
+  paired host turn off, and stay off until Switcher is set up again. Claude Code and Codex keep their own logins; one with
   none gets the account selected in Switcher (Codex only when it has run on
   the computer and keeps its login in `auth.json`, never in the keyring).
   Switcher then uses none of its accounts: no proxying, token refresh, usage

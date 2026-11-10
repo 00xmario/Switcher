@@ -288,9 +288,24 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     </div>`;
   }
 
+  // handedBackHTML stands in for the switches while the tools are handed
+  // back: sharing or using a host would undo that, so they wait.
+  function handedBackHTML(client) {
+    const paired = client.connected ? ` The pairing with ${escape(client.host_name)} stays; setting up again uses it again.` : '';
+    return `<div class="settings-card remote-section">
+      <p class="settings-sub">This ${mac()}'s tools are handed back to their providers, so it neither shares its accounts nor uses another Switcher's.${paired} Set Switcher up again in Command line &amp; tools.</p>
+    </div>`;
+  }
+
   function html() {
     if (!status) return `<div class="settings-card"><p class="settings-sub">${escape(error || loadError || 'Loading…')}</p></div>`;
     const { host, client } = status;
+    if (status.handed_back) {
+      return `${heroHTML()}
+      ${error || loadError ? `<p class="remote-error" role="alert">${escape(error || loadError)}</p>` : ''}
+      ${handedBackHTML(client)}
+      ${tailnetHTML(status.tailnet)}`;
+    }
     return `${heroHTML()}
       ${error || loadError ? `<p class="remote-error" role="alert">${escape(error || loadError)}</p>` : ''}
       ${client.connected ? clientHTML(client) : `${host ? hostHTML(host) : ''}${host?.enabled ? '' : clientHTML(client)}`}
