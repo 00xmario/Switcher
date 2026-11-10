@@ -1,7 +1,7 @@
 BINARY := switcher
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo dev)
 
-.PHONY: build test test-usage-update vet verify verify-common verify-linux cross-build benchmark-menu install run dev clean
+.PHONY: build test test-usage-update vet verify verify-common verify-linux cross-build benchmark-menu showcase-menu install run dev clean
 
 build:
 	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o $(BINARY) .
