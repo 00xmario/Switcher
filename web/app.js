@@ -804,16 +804,18 @@ function skillAction(skill) {
 }
 
 function skillRowHTML(skill, where, name) {
+  // A copy edited on the host is replaced on the host itself.
+  const replaceThere = where === 'host' && skill.installed && !skill.managed && !skill.blocked;
   const state = skill.blocked ? 'Something else is in its place'
     : !skill.installed ? 'Not installed'
     : skill.current ? 'Installed' : skill.managed ? 'Update available' : 'Changed by hand';
-  const action = skillAction(skill);
+  const action = replaceThere ? '' : skillAction(skill);
   const seen = skill.installed && !skill.blocked
     ? (skill.claude_code ? ' · Claude Code sees it' : ' · Claude Code does not see it yet')
     : '';
   const label = name ? `${escapeHTML(name)} · ${escapeHTML(state)}` : escapeHTML(state);
   return `<div class="settings-row">
-        <div><strong>${label}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${seen}</span></div>
+        <div><strong>${label}</strong><span class="dim"><code>${escapeHTML(skill.path || '~/.agents/skills/switcher/SKILL.md')}</code>${skill.installed && skill.managed ? ' · kept up to date with Switcher' : ''}${seen}${replaceThere ? ` · replace it on ${escapeHTML(name)} with <code>switcher skill install --replace</code>` : ''}</span></div>
         <div class="skill-actions">
           ${action ? `<button type="button" class="button${name ? '' : ' primary'}" data-skill="install" data-where="${where}"${skill.installed && !skill.managed ? ' data-replace="1"' : ''}>${action}</button>` : ''}
           ${skill.installed && skill.managed ? `<button type="button" class="button" data-skill="remove" data-where="${where}">Remove</button>` : ''}
@@ -840,9 +842,11 @@ function agentSkillHTML(skill) {
         both = `<div class="skill-both"><button type="button" class="button primary" data-skill="install" data-where="both">${skill.installed && host.skill.installed ? 'Update on both' : 'Install on both'}</button></div>`;
       }
     } else {
-      rows += `<div class="settings-row"><div><strong>${escapeHTML(hostName)}</strong><span class="dim">${host.reason === 'update'
-        ? `Update ${escapeHTML(hostName)} to set up its skill from here.`
-        : `${escapeHTML(hostName)} is not reachable right now.`}</span></div></div>`;
+      const why = host.reason === 'update' ? `Update ${escapeHTML(hostName)} to set up its skill from here.`
+        : host.reason === 'checking' ? `Asking ${escapeHTML(hostName)}…`
+        : host.reason === 'refused' && host.message ? escapeHTML(host.message)
+        : `${escapeHTML(hostName)} is not reachable right now.`;
+      rows += `<div class="settings-row"><div><strong>${escapeHTML(hostName)}</strong><span class="dim">${why}</span></div></div>`;
     }
   }
   return `<div class="settings-card agent-skill-card">
@@ -2437,6 +2441,49 @@ function cliSetupRowHTML(client) {
   </div>`;
 }
 
+// bindSkillCard wires the skill card's buttons: install or remove, here,
+// on the host or on both.
+function bindSkillCard(root) {
+  root.querySelectorAll('button[data-skill]').forEach(button => button.addEventListener('click', async () => {
+    const install = button.dataset.skill === 'install';
+    const where = button.dataset.where || 'here';
+    const place = where === 'both' ? ' on both computers' : where === 'host' ? ' on the host' : '';
+    button.disabled = true;
+    try {
+      await api('/api/agent-skill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installed: install, replace: button.dataset.replace === '1', where }),
+      });
+      toast(install ? `Skill installed${place}: your agents pick it up in their next session` : `Skill removed${place}`);
+      renderSettings();
+    } catch (err) {
+      toast(err.message);
+      // With both computers, one of them may have changed.
+      if (where === 'both') renderSettings();
+      else button.disabled = false;
+    }
+  }));
+}
+
+// refreshSkillCard reads the host's skill, which may take a moment, and
+// redraws only the card once it is in.
+async function refreshSkillCard(request) {
+  let skill;
+  try {
+    skill = await api('/api/agent-skill');
+  } catch {
+    return;
+  }
+  const card = settingsPage.querySelector('.agent-skill-card');
+  if (!card || request !== settingsRenderGeneration || settingsPage.hidden) return;
+  const next = document.createElement('div');
+  next.innerHTML = agentSkillHTML(skill);
+  const fresh = next.firstElementChild;
+  if (!fresh) return;
+  card.replaceWith(fresh);
+  bindSkillCard(fresh);
+}
+
 async function renderSettings() {
   if (authState.locked || settingsPage.hidden) return;
   const request = ++settingsRenderGeneration;
@@ -2452,7 +2499,8 @@ async function renderSettings() {
   } catch { /* only this Mac sees sharing */ }
   let skill = null;
   try {
-    skill = await api('/api/agent-skill');
+    // The host's part comes from its last reading; a fresh one follows.
+    skill = await api('/api/agent-skill?wait=0');
   } catch { /* an older server has no skill */ }
   if (authState.locked || settingsPage.hidden || request !== settingsRenderGeneration || epoch !== stateEpoch) return;
   // Opened straight from a link: render again once the dashboard state is in.
@@ -2809,25 +2857,8 @@ async function renderSettings() {
     }
   });
 
-  settingsPage.querySelectorAll('button[data-skill]').forEach(button => button.addEventListener('click', async () => {
-    const install = button.dataset.skill === 'install';
-    const where = button.dataset.where || 'here';
-    const place = where === 'both' ? ' on both computers' : where === 'host' ? ' on the host' : '';
-    button.disabled = true;
-    try {
-      await api('/api/agent-skill', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ installed: install, replace: button.dataset.replace === '1', where }),
-      });
-      toast(install ? `Skill installed${place}: your agents pick it up in their next session` : `Skill removed${place}`);
-      renderSettings();
-    } catch (err) {
-      toast(err.message);
-      // With both computers, one of them may have changed.
-      if (where === 'both') renderSettings();
-      else button.disabled = false;
-    }
-  }));
+  bindSkillCard(settingsPage);
+  if (skill?.host?.reason === 'checking') refreshSkillCard(request);
 
   const autoSwitchClaude = settingsPage.querySelector('#auto-switch-claude');
   autoSwitchClaude?.addEventListener('change', async () => {

@@ -193,12 +193,13 @@ required; OpenCode Go uses its own API key.
   paired across restarts until the switch goes back on. See
   [sharing](sharing.md#when-the-host-stops-working).
 - **Hand back to the providers**: before removing Switcher, one switch
-  (Settings → Tools, the menu, the tray, or `switcher hand-back on --yes`)
+  (Settings → Command line & tools, the menu bar's Advanced submenu, the
+  tray, or `switcher hand-back on --yes`)
   undoes its setup. It changes only this computer's Switcher, never a paired
   host's, and both directions ask first. Codex gets its previous provider back; Claude Desktop's
   settings are restored, and a Desktop still running keeps working through
   the relay on its own login until it restarts; sharing and the use of a
-  paired host turn off. Claude Code and Codex keep their own logins; one with
+  paired host turn off, and stay off until Switcher is set up again. Claude Code and Codex keep their own logins; one with
   none gets the account selected in Switcher (Codex only when it has run on
   the computer and keeps its login in `auth.json`, never in the keyring).
   Switcher then uses none of its accounts: no proxying, token refresh, usage

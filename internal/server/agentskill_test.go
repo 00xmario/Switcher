@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,7 +67,23 @@ func TestAgentSkillInstallsOnlyFromThisComputer(t *testing.T) {
 // own home, served by their real handlers.
 func skillPair(t *testing.T) (hostHome, clientHome string, client http.Handler, paired *remote.Client) {
 	t.Helper()
-	hostHome, clientHome = t.TempDir(), t.TempDir()
+	hostHome, paired, _, _ = pairedSkillHost(t)
+	clientHome = t.TempDir()
+	clientMux := http.NewServeMux()
+	(&API{Home: clientHome, RemoteClient: paired}).Register(clientMux)
+	return hostHome, clientHome, clientMux, paired
+}
+
+// pairedHost is a host Switcher with a paired computer's token.
+func pairedHost(t *testing.T) (hostHome string, host *remote.Host, token string) {
+	t.Helper()
+	hostHome, _, host, token = pairedSkillHost(t)
+	return hostHome, host, token
+}
+
+func pairedSkillHost(t *testing.T) (hostHome string, paired *remote.Client, host *remote.Host, token string) {
+	t.Helper()
+	hostHome = t.TempDir()
 	hostMux := http.NewServeMux()
 	(&API{Home: hostHome}).Register(hostMux)
 	host, err := remote.NewHost(t.TempDir(), 0, hostMux)
@@ -82,13 +99,19 @@ func skillPair(t *testing.T) (hostHome, clientHome string, client http.Handler, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	paired = remote.NewClient(t.TempDir(), "client-key")
+	clientDir := t.TempDir()
+	paired = remote.NewClient(clientDir, "client-key")
 	if _, err := paired.Connect(context.Background(), "127.0.0.1", host.Status().Port, strings.ToLower(code.Code), "Laptop"); err != nil {
 		t.Fatal(err)
 	}
-	clientMux := http.NewServeMux()
-	(&API{Home: clientHome, RemoteClient: paired}).Register(clientMux)
-	return hostHome, clientHome, clientMux, paired
+	var file struct {
+		Token string `json:"token"`
+	}
+	raw, err := os.ReadFile(filepath.Join(clientDir, "client.json"))
+	if err != nil || json.Unmarshal(raw, &file) != nil || file.Token == "" {
+		t.Fatalf("the pairing's token: %v %s", err, raw)
+	}
+	return hostHome, paired, host, file.Token
 }
 
 type pairView struct {
@@ -100,7 +123,11 @@ type pairView struct {
 
 func skillCall(t *testing.T, h http.Handler, method, body string) (int, pairView) {
 	t.Helper()
-	req := httptest.NewRequest(method, "/api/agent-skill", bytes.NewBufferString(body))
+	target := "/api/agent-skill"
+	if m, ok := strings.CutSuffix(method, " wait"); ok {
+		method, target = m, target+"?wait=0"
+	}
+	req := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	req.RemoteAddr, req.Host = "127.0.0.1:1", "127.0.0.1:8787"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -145,8 +172,12 @@ func TestAgentSkillOnTheHostFromAPairedComputer(t *testing.T) {
 	if raw, _ := os.ReadFile(agentskill.Path(hostHome)); string(raw) != "mine" {
 		t.Fatal("the host's edited skill was overwritten")
 	}
-	if code, v = skillCall(t, client, http.MethodPost, `{"installed":true,"where":"host","replace":true}`); code != 200 || !v.Host.Skill.Current {
-		t.Fatalf("replace on the host: %d %+v", code, v.Host)
+	// Only the host replaces a copy edited there.
+	if code, v = skillCall(t, client, http.MethodPost, `{"installed":true,"where":"host","replace":true}`); code != http.StatusConflict || !strings.Contains(v.Error, "replace it there") {
+		t.Fatalf("replaced on the host from here: %d %+v", code, v)
+	}
+	if err := os.Remove(agentskill.Path(hostHome)); err != nil {
+		t.Fatal(err)
 	}
 	if code, v = skillCall(t, client, http.MethodPost, `{"installed":false,"where":"both"}`); code != 200 || v.Installed || v.Host.Skill.Installed {
 		t.Fatalf("remove from both: %d %+v %+v", code, v, v.Host)
@@ -156,6 +187,44 @@ func TestAgentSkillOnTheHostFromAPairedComputer(t *testing.T) {
 	}
 	if code, _ = skillCall(t, client, http.MethodPost, `{"installed":true,"where":"there"}`); code != http.StatusBadRequest {
 		t.Fatalf("unknown where: %d", code)
+	}
+	// Asked not to wait, the host's last reading answers.
+	if code, v = skillCall(t, client, http.MethodGet+" wait", ""); code != 200 || v.Host == nil || v.Host.Skill == nil || v.Host.Skill.Installed {
+		t.Fatalf("cached status: %d %+v", code, v.Host)
+	}
+}
+
+// A paired computer's request on the host reaches only the host, and never
+// replaces a copy edited there. Requests go through the host's own front
+// door with the token the pairing gave.
+func TestAPairedComputerSetsUpOnlyTheHostsOwnSkill(t *testing.T) {
+	hostHome, host, token := pairedHost(t)
+	call := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/agent-skill", strings.NewReader(body))
+		req.Header.Set(remote.DeviceHeader, token)
+		rec := httptest.NewRecorder()
+		host.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, body := range []string{`{"installed":true,"where":"host"}`, `{"installed":true,"where":"both"}`} {
+		if code := call(body); code != http.StatusBadRequest {
+			t.Errorf("%s from a paired computer: %d", body, code)
+		}
+	}
+	if code := call(`{"installed":true,"replace":true}`); code != http.StatusForbidden {
+		t.Errorf("replace from a paired computer: %d", code)
+	}
+	if code := call(`{"installed":true}`); code != http.StatusOK {
+		t.Fatalf("install from a paired computer: %d", code)
+	}
+	if err := os.WriteFile(agentskill.Path(hostHome), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := call(`{"installed":true}`); code != http.StatusConflict {
+		t.Fatalf("an edited copy was replaced from a paired computer: %d", code)
+	}
+	if code := call(`{"installed":false}`); code != http.StatusConflict {
+		t.Fatalf("an edited copy was removed from a paired computer: %d", code)
 	}
 }
 

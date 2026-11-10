@@ -470,14 +470,6 @@ func runHostAndHandBackFixtures() {
         func walk(_ view: NSView) -> [T] { ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap(walk) }
         return menu.items.compactMap(\.view).flatMap(walk)
     }
-    func toggle(_ title: String, in menu: NSMenu) -> ToggleSwitch {
-        guard let row = views(NSTextField.self, in: menu).first(where: { $0.stringValue == title }),
-              let toggle = row.superview?.subviews.compactMap({ $0 as? ToggleSwitch })
-                .first(where: { abs($0.frame.midY - row.frame.midY) < 4 }) else {
-            fail("Settings row \(title) missing")
-        }
-        return toggle
-    }
     func json(_ request: URLRequest) -> [String: Any] {
         guard let body = request.httpBody,
               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return [:] }
@@ -497,39 +489,57 @@ func runHostAndHandBackFixtures() {
     runtime.confirmHostUpdate = { host, release in hostAsks += 1; return host == "Studio" && release == "1.22.0" }
     let delegate = AppDelegate(runtime: runtime)
 
+    func advanced(_ menu: NSMenu) -> NSMenu {
+        guard let submenu = menu.items.first(where: { $0.title == "Advanced" })?.submenu else { fail("Advanced submenu missing") }
+        return submenu
+    }
+    func item(_ title: String, in menu: NSMenu) -> NSMenuItem {
+        guard let found = advanced(menu).items.first(where: { $0.title == title }) else {
+            fail("Advanced item \(title) missing: \(advanced(menu).items.map(\.title))")
+        }
+        return found
+    }
+    func choose(_ found: NSMenuItem) {
+        guard let action = found.action else { fail("\(found.title) has no action") }
+        _ = (found.target as AnyObject?)?.perform(action, with: found)
+    }
+
     delegate.applyMenuState(state(nil, handedBack: false))
     let unpaired = views(NSTextField.self, in: delegate.menu).map(\.stringValue)
-    guard !unpaired.contains(where: { $0.hasPrefix("Use ") && $0.hasSuffix("'s accounts") }),
-          unpaired.contains("Hand back to providers on this Mac"), unpaired.contains("Start at login"), unpaired.contains("Reset alerts") else {
-        fail("An unpaired Mac offers handing back, not a host: \(unpaired)")
+    guard unpaired.contains("Start at login"), unpaired.contains("Reset alerts"),
+          !unpaired.contains(where: { $0.hasPrefix("Use ") || $0.hasPrefix("Hand back") }),
+          advanced(delegate.menu).items.map(\.title) == ["Hand Back to Providers…"] else {
+        fail("An unpaired Mac keeps only Start at login on show and offers handing back under Advanced: \(unpaired)")
     }
 
     delegate.applyMenuState(state(RemoteInfo(role: "client", host: "Studio", connected: false), handedBack: false))
-    let useHost = toggle("Use Studio's accounts", in: delegate.menu)
-    guard useHost.isOn, !toggle("Hand back to providers on this Mac", in: delegate.menu).isOn else {
-        fail("A Mac using its host shows the host switch on and hand-back off")
+    let useHost = item("Use Studio's accounts", in: delegate.menu)
+    guard useHost.state == .on, useHost.isEnabled, advanced(delegate.menu).items.last?.title == "Hand Back to Providers…" else {
+        fail("A Mac using its host shows the host checked and offers handing back")
     }
-    useHost.onChanged?(false)
+    choose(useHost)
     guard let last = requests.last, last.url?.path == "/api/remote/use-host", last.httpMethod == "POST",
           json(last)["enabled"] as? Bool == false else {
         fail("Turning the host off must ask the server to work locally")
     }
 
     delegate.applyMenuState(state(RemoteInfo(role: "local", host: "Studio"), handedBack: false))
-    guard !toggle("Use Studio's accounts", in: delegate.menu).isOn else { fail("A host not in use shows its switch off") }
+    guard item("Use Studio's accounts", in: delegate.menu).state == .off else { fail("A host not in use shows unchecked") }
     requests.removeAll(); completions.removeAll()
-    toggle("Hand back to providers on this Mac", in: delegate.menu).onChanged?(true)
+    choose(item("Hand Back to Providers…", in: delegate.menu))
     guard confirmations == 1, requests.isEmpty else { fail("Declining the question must hand nothing back") }
-    toggle("Hand back to providers on this Mac", in: delegate.menu).onChanged?(true)
+    choose(item("Hand Back to Providers…", in: delegate.menu))
     guard confirmations == 2, let handBack = requests.first(where: { $0.url?.path == "/api/handback" }),
           json(handBack)["enabled"] as? Bool == true else {
         fail("Handing back must ask, then post the hand-back")
     }
 
-    delegate.applyMenuState(state(nil, handedBack: true))
+    // Handed back, the host waits: using it would contradict the hand-back.
+    delegate.applyMenuState(state(RemoteInfo(role: "client", host: "Studio", connected: true), handedBack: true))
+    let waiting = item("Use Studio's accounts", in: delegate.menu)
+    guard !waiting.isEnabled, waiting.state == .off else { fail("A handed-back Mac must not offer or show its host in use") }
     requests.removeAll(); completions.removeAll()
-    guard toggle("Hand back to providers on this Mac", in: delegate.menu).isOn else { fail("A handed-back Mac shows hand-back on") }
-    toggle("Hand back to providers on this Mac", in: delegate.menu).onChanged?(false)
+    choose(item("Set Switcher Up Again…", in: delegate.menu))
     guard confirmations == 3, let setUp = requests.first(where: { $0.url?.path == "/api/handback" }),
           json(setUp)["enabled"] as? Bool == false else {
         fail("Setting up again must ask too, then post the setup")

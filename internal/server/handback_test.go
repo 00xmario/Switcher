@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"switcher/internal/codexcfg"
 	"switcher/internal/handback"
+	"switcher/internal/remote"
 	"switcher/internal/store"
 )
 
@@ -94,5 +96,39 @@ func TestHandbackIsUnavailableWithoutAManager(t *testing.T) {
 	api.registerHandbackRoutes(mux)
 	if w := phoneRequest(mux, http.MethodPost, "/api/handback", "127.0.0.1:5000", map[string]bool{"enabled": true}); w.Code != http.StatusNotImplemented {
 		t.Fatalf("no manager: %d", w.Code)
+	}
+}
+
+// While handed back, neither sharing nor another Switcher can be turned on.
+func TestHandedBackRefusesSharingAndAHost(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(t.TempDir(), "config.toml")
+	m := handback.New(dir, handback.Deps{Codex: handback.CodexFiles(config, 8787)})
+	if _, err := m.HandBack(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	api := &API{Handback: m, RemoteClient: remote.NewClient(t.TempDir(), "k")}
+	host, err := remote.NewHost(t.TempDir(), 0, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(host.Close)
+	api.RemoteHost = host
+	mux := http.NewServeMux()
+	api.Register(mux)
+	for _, c := range []struct{ path, body string }{
+		{"/api/remote/host", `{"enabled":true}`},
+		{"/api/remote/connect", `{"address":"127.0.0.1","port":1,"code":"abc"}`},
+	} {
+		req := httptest.NewRequest(http.MethodPost, c.path, strings.NewReader(c.body))
+		req.RemoteAddr, req.Host = "127.0.0.1:1", "127.0.0.1:8787"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "handed back") {
+			t.Errorf("%s: %d %s", c.path, rec.Code, rec.Body)
+		}
+	}
+	if host.Status().Enabled {
+		t.Fatal("sharing turned on while handed back")
 	}
 }

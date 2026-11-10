@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -22,11 +23,14 @@ automatically".
   switcher skill remove     remove it
 
 On a computer that uses another computer's accounts (a host), install and
-remove act on both computers; --on picks one:
+remove act on both computers when the host answers; --on picks:
 
   --on here                 only this computer
   --on host                 only the host (needs Switcher running here)
   --on both                 both computers
+
+--replace replaces only this computer's copy; a copy edited on the host is
+replaced on the host itself.
 
 The skill is ~/.agents/skills/switcher/SKILL.md, read by agents that use
 ~/.agents/skills; Claude Code finds it through a link in ~/.claude/skills (or
@@ -36,9 +40,10 @@ unless you edit it. On this computer it needs no running Switcher.
 
 // hostSkill is the host's skill as the running Switcher reports it.
 type hostSkill struct {
-	Host   string             `json:"host"`
-	Skill  *agentskill.Status `json:"skill,omitempty"`
-	Reason string             `json:"reason,omitempty"`
+	Host    string             `json:"host"`
+	Skill   *agentskill.Status `json:"skill,omitempty"`
+	Reason  string             `json:"reason,omitempty"`
+	Message string             `json:"message,omitempty"`
 }
 
 // home is the user's home directory, from HOME when it is set.
@@ -71,23 +76,44 @@ func skillState(st agentskill.Status, where, fix string) string {
 
 // hostSkillOf asks the running Switcher for the host's skill; nil when this
 // computer uses no host or Switcher is not running.
+// Only the Switcher on this computer is asked: "here" is this computer, so
+// its host must be this computer's host.
 func (c *ctx) hostSkillOf() *hostSkill {
 	var v struct {
 		Host *hostSkill `json:"host"`
 	}
-	if c.cl == nil || c.cl.call("GET", "/api/agent-skill", nil, &v) != nil {
+	if c.cl == nil || !c.localSwitcher() || c.cl.call("GET", "/api/agent-skill", nil, &v) != nil {
 		return nil
+	}
+	if v.Host != nil {
+		v.Host.Host = plainName(v.Host.Host)
 	}
 	return v.Host
 }
 
+// localSwitcher says the command talks to the Switcher on this computer.
+func (c *ctx) localSwitcher() bool {
+	u, err := url.Parse(c.url)
+	return err == nil && loopback(u.Hostname())
+}
+
+// plainName keeps a name printable in a terminal.
+func plainName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // setHostSkill installs or removes the host's skill through the running
-// Switcher.
-func (c *ctx) setHostSkill(install, replace bool) (*hostSkill, error) {
+// Switcher. A copy edited on the host is replaced only there.
+func (c *ctx) setHostSkill(install bool) (*hostSkill, error) {
 	var v struct {
 		Host *hostSkill `json:"host"`
 	}
-	err := c.cl.call("POST", "/api/agent-skill", map[string]any{"installed": install, "replace": replace, "where": "host"}, &v)
+	err := c.cl.call("POST", "/api/agent-skill", map[string]any{"installed": install, "where": "host"}, &v)
 	return v.Host, err
 }
 
@@ -113,11 +139,15 @@ func runSkill(c *ctx, args []string) error {
 		action = pos[0]
 	}
 	claude := c.opt.Getenv("CLAUDE_CONFIG_DIR")
-	host := c.hostSkillOf()
+	var host *hostSkill
+	if action == "" || *on != "here" {
+		host = c.hostSkillOf()
+	}
 	target := *on
 	if target == "" {
+		// Both by default, when the host can take it from here.
 		target = "here"
-		if host != nil && action != "" {
+		if host != nil && host.Skill != nil && action != "" {
 			target = "both"
 		}
 	}
@@ -156,6 +186,8 @@ func runSkill(c *ctx, args []string) error {
 				human = append(human, skillState(*host.Skill, " on "+hostName, "switcher skill install --on host"))
 			case host.Reason == "update":
 				human = append(human, "Update "+hostName+" to set up its skill from here.")
+			case host.Message != "":
+				human = append(human, plainName(host.Message))
 			default:
 				human = append(human, hostName+" is not reachable right now.")
 			}
@@ -176,8 +208,8 @@ func runSkill(c *ctx, args []string) error {
 			human = append(human, line)
 		}
 		if onHost {
-			if host, err = c.setHostSkill(true, *replace); err != nil {
-				return err
+			if host, err = c.setHostSkill(true); err != nil {
+				return partly(here, "Installed the Switcher skill on this computer", err)
 			}
 			human = append(human, "Installed the Switcher skill on "+hostName+".")
 		}
@@ -195,8 +227,8 @@ func runSkill(c *ctx, args []string) error {
 			}
 		}
 		if onHost {
-			if host, err = c.setHostSkill(false, false); err != nil {
-				return err
+			if host, err = c.setHostSkill(false); err != nil {
+				return partly(here, "Removed the Switcher skill on this computer", err)
 			}
 			human = append(human, "Removed the Switcher skill on "+hostName+".")
 		}
@@ -212,6 +244,15 @@ func runSkill(c *ctx, args []string) error {
 	}
 	c.result(out, strings.Join(human, " "))
 	return nil
+}
+
+// partly reports a host step that failed after this computer's step was
+// done, so neither goes unsaid.
+func partly(here bool, done string, err error) error {
+	if !here {
+		return err
+	}
+	return fmt.Errorf("%s, but not on the host: %w", done, err)
 }
 
 func runLoad(c *ctx, args []string) error {

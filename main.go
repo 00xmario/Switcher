@@ -567,12 +567,21 @@ func run(port, desktopRelayPort int) {
 		mux.ServeHTTP(w, r)
 	}))
 	shared.Handle("/", mux)
+	// A handed-back Switcher neither shares nor uses its host; an older
+	// release let either be turned back on while handed back.
+	settle := func() {
+		if err := handBack.Settle(); err != nil {
+			log.Printf("handed back: %v", err)
+		}
+	}
 	remoteHost, err := remote.NewHost(filepath.Join(config.Dir(), "remote"), remote.DefaultPort, shared)
 	if err != nil {
 		log.Printf("sharing unavailable: %v", err)
+		settle()
 	} else {
 		api.RemoteHost = remoteHost
 		sharing = remoteHost
+		settle()
 		// The optional Tailscale add-on is downloaded only when turned on.
 		tailnet := remote.NewTailnet(filepath.Join(config.Dir(), "remote"), version, remote.DefaultPort)
 		api.Tailnet = tailnet

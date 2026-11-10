@@ -147,12 +147,14 @@ returns the client to its own accounts.
 
 If the host is down or unreachable, the client does not have to unpair. Turn
 off **Use the accounts of &lt;host&gt;** (Settings → Share between Macs, the
-**Work without it** button on the Accounts tab, the menu bar or tray, or
-`switcher use-host off`). The client then does everything itself: its own
+**Work without it** button on the Accounts tab, the menu bar's Advanced
+submenu, the tray, or `switcher use-host off`). The client then does everything itself: its own
 accounts and usage checks, and Codex, Claude Code and Claude Desktop routed
 with its own accounts. Nothing is sent to the host. The pairing stays, also
 across restarts; turn the switch back on (or `switcher use-host on`) to use
-the host again. While paired, sharing onward stays off either way.
+the host again. While paired, sharing onward stays off either way. A
+computer whose tools are handed back to their providers uses no host:
+setting Switcher up again uses it again.
 
 ## Updating the host
 

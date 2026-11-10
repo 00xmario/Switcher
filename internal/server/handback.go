@@ -15,6 +15,10 @@ func (a *API) registerHandbackRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/handback", a.handleHandback)
 }
 
+// errHandedBackHost refuses sharing or using another Switcher while this
+// one is handed back to the providers.
+const errHandedBackHost = "this computer's tools are handed back to their providers; set Switcher up again first"
+
 func (a *API) handedBack() bool { return a.Handback != nil && a.Handback.HandedBack() }
 
 func (a *API) handleHandbackStatus(w http.ResponseWriter, r *http.Request) {

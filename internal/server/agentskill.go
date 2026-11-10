@@ -20,8 +20,12 @@ type skillView struct {
 // handleAgentSkill reports whether Switcher's skill for AI agents is
 // installed in this computer's ~/.agents/skills, and installs or removes it:
 // POST {"installed": true|false, "where": "here"|"host"|"both"}. Only a local
-// request may change it, or the paired Mac of a host, which can set up the
-// host's skill from there; a paired Mac's request never reaches further.
+// request may change it, or the paired computer of a host, which can install
+// or remove the host's own copy from there (not replace one edited by hand);
+// a paired computer's request never reaches further.
+//
+// GET ?wait=0 answers at once with the host's last known skill, so a page
+// never waits on a host that is slow to answer.
 func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 	if a.Home == "" {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "no home directory to keep the skill in"})
@@ -41,7 +45,12 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 		}
 		view := skillView{Status: st}
 		if paired {
-			host, _ := a.RemoteClient.HostSkill(r.Context(), nil, false)
+			var host remote.HostSkill
+			if r.URL.Query().Get("wait") == "0" {
+				host = a.RemoteClient.CachedHostSkill()
+			} else {
+				host = a.RemoteClient.HostSkill(r.Context())
+			}
 			view.Host = &host
 		}
 		writeJSON(w, http.StatusOK, view)
@@ -70,8 +79,8 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `where is "here", "host" or "both"`})
 		return
 	}
-	if fromPaired && body.Where != "" && body.Where != "here" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a paired device sets up only this computer's skill"})
+	if fromPaired {
+		a.pairedSkill(w, body.Where, *body.Installed, body.Replace)
 		return
 	}
 	if host && !paired {
@@ -87,29 +96,28 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 		} else {
 			view.Status, err = agentskill.Remove(a.Home, a.ClaudeConfigDir)
 		}
-		errs = append(errs, err)
+		if err != nil {
+			if host {
+				err = errors.New("this computer: " + err.Error())
+			}
+			errs = append(errs, err)
+		}
 	} else {
 		view.Status, _ = agentskill.Check(a.Home, a.ClaudeConfigDir)
-	}
-	if fromPaired {
-		if err != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, view.Status)
-		return
 	}
 	if paired {
 		var hs remote.HostSkill
 		if host {
 			// The host may be slow to answer; the change is still made there.
-			hs, err = a.RemoteClient.HostSkill(context.WithoutCancel(r.Context()), body.Installed, body.Replace)
-			errs = append(errs, err)
-			if err != nil && hs.Skill == nil {
-				hs, _ = a.RemoteClient.HostSkill(r.Context(), nil, false)
+			hs, err = a.RemoteClient.SetHostSkill(context.WithoutCancel(r.Context()), *body.Installed)
+			if err != nil {
+				errs = append(errs, err)
+				if hs.Skill == nil && hs.Reason == "refused" {
+					hs = a.RemoteClient.HostSkill(r.Context())
+				}
 			}
 		} else {
-			hs, _ = a.RemoteClient.HostSkill(r.Context(), nil, false)
+			hs = a.RemoteClient.CachedHostSkill()
 		}
 		view.Host = &hs
 	}
@@ -118,4 +126,32 @@ func (a *API) handleAgentSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// pairedSkill installs or removes this computer's skill for the computer
+// paired with it. A copy edited by hand here is replaced only here.
+func (a *API) pairedSkill(w http.ResponseWriter, where string, install, replace bool) {
+	if where != "" && where != "here" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a paired computer sets up only this computer's skill"})
+		return
+	}
+	if replace {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "a skill edited by hand is replaced only on its own computer"})
+		return
+	}
+	var st agentskill.Status
+	var err error
+	if install {
+		st, err = agentskill.Install(a.Home, a.ClaudeConfigDir, false)
+	} else {
+		st, err = agentskill.Remove(a.Home, a.ClaudeConfigDir)
+	}
+	switch {
+	case errors.Is(err, agentskill.ErrNotOurs):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "its skill was changed by hand; replace it there with: switcher skill install --replace"})
+	case err != nil:
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusOK, st)
+	}
 }

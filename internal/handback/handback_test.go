@@ -781,3 +781,32 @@ func TestSetUpWhenNotHandedBackChangesNothing(t *testing.T) {
 		t.Fatalf("setup without hand-back: %+v %v", status, err)
 	}
 }
+
+// A host or sharing turned back on while handed back, as older releases
+// allowed, is turned off at start and set up again with the rest.
+func TestSettleTurnsOffAHostUsedWhileHandedBack(t *testing.T) {
+	f := newFixture(t)
+	f.host.on = false // not using the host when handing back
+	m := New(f.dir, f.deps())
+	if _, err := m.HandBack(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Settle(); err != nil || f.host.on || f.sharing.on {
+		t.Fatalf("settle with nothing on: %v host=%v sharing=%v", err, f.host.on, f.sharing.on)
+	}
+	f.host.on = true // turned on by an older release
+	m = New(f.dir, f.deps())
+	if err := m.Settle(); err != nil || f.host.on || !m.HandedBack() {
+		t.Fatalf("settle: %v host=%v", err, f.host.on)
+	}
+	if !strings.Contains(readText(t, filepath.Join(f.dir, "handback.json")), `"use_host": true`) {
+		t.Fatal("the host turned off is not on record")
+	}
+	if _, err := m.SetUp(context.Background()); err != nil || !f.host.on {
+		t.Fatalf("set up again did not use the host again: %v host=%v", err, f.host.on)
+	}
+	// Not handed back: settling changes nothing.
+	if err := m.Settle(); err != nil || !f.host.on {
+		t.Fatalf("settle while set up: %v host=%v", err, f.host.on)
+	}
+}

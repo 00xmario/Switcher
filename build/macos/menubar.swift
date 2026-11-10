@@ -2322,6 +2322,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
         menu.addItem(menuItemWithView(centered(settingsCard(contentWidth: contentWidth,
             alerts: state?.reset_notifications == true), verticalPadding: 4)))
+        if let advanced = advancedItem() {
+            menu.addItem(advanced)
+        }
 
         let quitItem = NSMenuItem(title: "Quit Switcher", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -2668,22 +2671,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         return card
     }
 
-    // Start at login, using the paired host, handing the tools back and,
-    // while they are on, reset alerts: one card with a compact row each. The
-    // alerts row says in a few words what macOS allows; the full sentence is
-    // its tooltip.
+    // Start at login and, while they are on, reset alerts: one card with a
+    // compact row each. The alerts row says in a few words what macOS
+    // allows; the full sentence is its tooltip. Using the paired host and
+    // handing the tools back are rarer, in the Advanced submenu.
     func settingsCard(contentWidth: CGFloat, alerts: Bool) -> NSView {
         let row: CGFloat = 34, inner = contentWidth - 2 * cardInset
-        var toggles: [(title: String, tip: String, isOn: Bool, changed: () -> Void)] = [
+        let toggles: [(title: String, tip: String, isOn: Bool, changed: () -> Void)] = [
             ("Start at login", "", startAtLoginEnabled(), { [weak self] in self?.toggleStartAtLogin() })]
-        if let host = cachedState?.pairedHost {
-            toggles.append(("Use \(host)'s accounts", "Off: this Mac uses its own accounts and stays paired",
-                cachedState?.remote?.role == "client", { [weak self] in self?.toggleUseHost() }))
-        }
-        if cachedState != nil {
-            toggles.append(("Hand back to providers on this Mac", "Undo this Mac's Switcher setup so its tools use their providers directly, for example before removing Switcher. A paired host is not changed",
-                cachedState?.handed_back == true, { [weak self] in self?.toggleHandBack() }))
-        }
         let rows = CGFloat(toggles.count + (alerts ? 1 : 0))
         let card = cardView(width: contentWidth, height: rows * row + rows - 1)
         for (index, item) in toggles.enumerated() {
@@ -3326,6 +3321,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     // Hand every tool back to its provider, or set Switcher up again; both
     // change how this Mac's tools are routed, so both ask first.
+    // advancedItem holds what is rarely changed: using the paired host, and
+    // handing the tools back before removing Switcher. Handed back, this Mac
+    // uses no host until it is set up again, so that item waits.
+    func advancedItem() -> NSMenuItem? {
+        guard let state = cachedState else { return nil }
+        let handedBack = state.handed_back == true
+        let submenu = NSMenu(title: "Advanced")
+        submenu.autoenablesItems = false
+        if let host = state.pairedHost {
+            let use = NSMenuItem(title: "Use \(host)'s accounts", action: #selector(useHostItem(_:)), keyEquivalent: "")
+            use.target = self
+            use.state = state.remote?.role == "client" && !handedBack ? .on : .off
+            use.isEnabled = !handedBack
+            use.toolTip = handedBack
+                ? "This Mac's tools are handed back to their providers. Set Switcher up again to use \(host)'s accounts"
+                : "Off: this Mac uses its own accounts and stays paired"
+            submenu.addItem(use)
+        }
+        let handBack = NSMenuItem(title: handedBack ? "Set Switcher Up Again…" : "Hand Back to Providers…",
+            action: #selector(handBackItem(_:)), keyEquivalent: "")
+        handBack.target = self
+        handBack.toolTip = handedBack
+            ? "Route this Mac's tools through Switcher again"
+            : "Undo this Mac's Switcher setup so its tools use their providers directly, for example before removing Switcher. A paired host is not changed"
+        submenu.addItem(handBack)
+        let item = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    @objc func useHostItem(_ sender: NSMenuItem) { toggleUseHost() }
+    @objc func handBackItem(_ sender: NSMenuItem) { toggleHandBack() }
+
     func toggleHandBack() {
         let on = cachedState?.handed_back != true
         menu.cancelTracking()

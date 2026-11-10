@@ -82,6 +82,10 @@ func (a *API) handleRemoteHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "disconnect from the other Switcher before sharing this one"})
 		return
 	}
+	if body.Enabled && a.handedBack() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": errHandedBackHost})
+		return
+	}
 	if err := a.RemoteHost.SetEnabled(body.Enabled); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not save the sharing setting"})
 		return
@@ -211,6 +215,10 @@ func (a *API) handleRemoteConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "disconnect from the other Switcher first"})
 		return
 	}
+	if a.handedBack() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": errHandedBackHost})
+		return
+	}
 	var status remote.ClientStatus
 	var err error
 	if strings.TrimSpace(body.Code) == "" {
@@ -334,6 +342,12 @@ func (a *API) handleRemoteUseHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.RemoteClient.Paired() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "this Switcher is not paired with another Switcher"})
+		return
+	}
+	// Handed back, this computer's tools go to their providers: using the
+	// host would say otherwise. Setting up again uses it again.
+	if *body.Enabled && a.handedBack() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": errHandedBackHost})
 		return
 	}
 	status, err := a.RemoteClient.SetLocalOnly(!*body.Enabled)

@@ -160,7 +160,7 @@ func TestSkillOnTheHost(t *testing.T) {
 	if _, err := os.Stat(local); err != nil {
 		t.Fatal("install on both skipped this computer")
 	}
-	if code, out := skill("remove", "--on", "here", "--json"); code != 0 || len(posts) != 1 || !strings.Contains(out, `"host"`) {
+	if code, out := skill("remove", "--on", "here", "--json"); code != 0 || len(posts) != 1 || strings.Contains(out, `"host"`) {
 		t.Fatalf("remove here: %d %q %v", code, out, posts)
 	}
 	if _, err := os.Stat(local); !os.IsNotExist(err) {
@@ -186,5 +186,45 @@ func TestSkillOnHostNeedsAHost(t *testing.T) {
 		}})
 	if code == 0 || !strings.Contains(errOut.String()+out.String(), "no host") {
 		t.Fatalf("%d %q", code, errOut.String()+out.String())
+	}
+}
+
+// A host that cannot take the skill: an older one gets none by default, and
+// one that refuses says so after this computer's part is done.
+func TestSkillWithAHostThatCannotTakeIt(t *testing.T) {
+	home := t.TempDir()
+	answer := map[string]any{"host": map[string]any{"host": "k12\x1b[2J", "reason": "update"}}
+	refuse := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && refuse {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"error": "k12: its skill was changed by hand"})
+			return
+		}
+		json.NewEncoder(w).Encode(answer)
+	}))
+	t.Cleanup(srv.Close)
+	skill := func(args ...string) (int, string) {
+		var out, errOut bytes.Buffer
+		code := Run(append([]string{"skill"}, args...), Options{Port: 1, Stdout: &out, Stderr: &errOut,
+			Getenv: func(k string) string {
+				switch k {
+				case "HOME":
+					return home
+				case "SWITCHER_URL":
+					return srv.URL
+				}
+				return ""
+			}})
+		return code, out.String() + errOut.String()
+	}
+	if code, out := skill("install"); code != 0 || strings.Contains(out, "\x1b") {
+		t.Fatalf("an older host failed the default install: %d %q", code, out)
+	}
+	answer = map[string]any{"host": map[string]any{"host": "k12", "skill": map[string]any{"installed": true, "path": "/h"}}}
+	refuse = true
+	code, out := skill("install")
+	if code == 0 || !strings.Contains(out, "on this computer, but not on the host") || !strings.Contains(out, "changed by hand") {
+		t.Fatalf("a refusing host: %d %q", code, out)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // A paired Mac shows its host's load: numbers kept in range, named after the
@@ -94,11 +96,10 @@ func TestOnlyTheSkillRouteItselfIsOpen(t *testing.T) {
 // An older host has no skill route: reading says so, installing explains.
 func TestAnOlderHostHasNoSkill(t *testing.T) {
 	_, client := pairedWith(t, http.NotFoundHandler())
-	if got, err := client.HostSkill(context.Background(), nil, false); err != nil || got.Reason != "update" || got.Skill != nil {
-		t.Fatalf("older host: %+v %v", got, err)
+	if got := client.HostSkill(context.Background()); got.Reason != "update" || got.Skill != nil {
+		t.Fatalf("older host: %+v", got)
 	}
-	yes := true
-	if _, err := client.HostSkill(context.Background(), &yes, false); err == nil || !strings.Contains(err.Error(), "1.27.0") {
+	if _, err := client.SetHostSkill(context.Background(), true); err == nil || !strings.Contains(err.Error(), "1.27.0") {
 		t.Fatalf("install on an older host: %v", err)
 	}
 }
@@ -117,12 +118,43 @@ func TestAHostsSkillAnswerIsPlainText(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true, "path": "/home/x/SKILL.md\x07", "claude_link": "a\nb"})
 	})
 	_, client := pairedWith(t, next)
-	got, err := client.HostSkill(context.Background(), nil, false)
-	if err != nil || got.Skill == nil || !got.Skill.Current || got.Skill.Path != "/home/x/SKILL.md" || got.Skill.ClaudeLink != "ab" {
-		t.Fatalf("status: %+v %v", got.Skill, err)
+	got := client.HostSkill(context.Background())
+	if got.Skill == nil || !got.Skill.Current || got.Skill.Path != "/home/x/SKILL.md" || got.Skill.ClaudeLink != "ab" {
+		t.Fatalf("status: %+v", got.Skill)
 	}
-	yes := true
-	if _, err := client.HostSkill(context.Background(), &yes, false); err == nil || strings.ContainsAny(err.Error(), "\x1b") || !strings.Contains(err.Error(), "edited") {
+	if _, err := client.SetHostSkill(context.Background(), true); err == nil || strings.ContainsAny(err.Error(), "\x1b") || !strings.Contains(err.Error(), "edited") {
 		t.Fatalf("refusal: %v", err)
+	}
+}
+
+// The settings page never waits: the first reading is taken in the
+// background, and later ones answer from it while fresh.
+func TestTheHostsSkillIsReadInTheBackground(t *testing.T) {
+	var reads atomic.Int32
+	release := make(chan struct{})
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		<-release
+		json.NewEncoder(w).Encode(map[string]any{"installed": true, "current": true})
+	})
+	_, client := pairedWith(t, next)
+	start := time.Now()
+	if got := client.CachedHostSkill(); got.Reason != "checking" || got.Skill != nil || time.Since(start) > time.Second {
+		t.Fatalf("first: %+v after %v", got, time.Since(start))
+	}
+	client.CachedHostSkill() // one reading at a time
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := client.CachedHostSkill(); got.Skill != nil && got.Skill.Current {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the background reading never arrived")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := client.HostSkill(context.Background()); got.Skill == nil || reads.Load() != 1 {
+		t.Fatalf("a fresh reading was not reused: %+v, %d reads", got, reads.Load())
 	}
 }

@@ -162,6 +162,49 @@ func (m *Manager) apply(on bool) {
 	}
 }
 
+// Settle keeps a handed-back Switcher off sharing and its paired host.
+// Older releases let either be turned back on while handed back, which left
+// the menu saying both at once; each is turned off again and recorded, so
+// setting up again turns it back on.
+func (m *Manager) Settle() error {
+	if !m.busy.TryLock() {
+		return ErrBusy
+	}
+	defer m.busy.Unlock()
+	m.mu.Lock()
+	cur := m.rec
+	m.mu.Unlock()
+	if cur == nil || cur.Phase != "handed_back" {
+		return nil
+	}
+	rec := *cur
+	var toggles []Toggle
+	if s := m.deps.Sharing; s != nil && s.On() {
+		rec.Sharing = true
+		toggles = append(toggles, s)
+	}
+	if h := m.deps.UseHost; h != nil && h.On() {
+		rec.UseHost = true
+		toggles = append(toggles, h)
+	}
+	if len(toggles) == 0 {
+		return nil
+	}
+	// Recorded first: a Switcher that stops halfway still turns them back
+	// on when set up again.
+	if err := m.save(&rec); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.rec = &rec
+	m.mu.Unlock()
+	var errs []error
+	for _, t := range toggles {
+		errs = append(errs, t.Set(false))
+	}
+	return errors.Join(errs...)
+}
+
 // HandedBack reports whether the tools are handed back, fully or halfway.
 func (m *Manager) HandedBack() bool {
 	m.mu.Lock()
