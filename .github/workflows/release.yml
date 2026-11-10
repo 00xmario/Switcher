@@ -29,6 +29,8 @@ jobs:
   release:
     needs: verify-linux
     runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,9 +67,9 @@ jobs:
             os="${target%/*}"
             arch="${target#*/}"
             eval "addon=\${ADDON_SHA256_${os}_${arch}}"
-            # Mac builds keep Go's own cgo default, as before.
-            if [ "$os" = linux ]; then export CGO_ENABLED=0; else unset CGO_ENABLED; fi
-            GOOS="$os" GOARCH="$arch" \
+            cgo=0
+            if [ "$os" = darwin ]; then cgo=1; fi
+            CGO_ENABLED="$cgo" GOOS="$os" GOARCH="$arch" \
               go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X switcher/internal/remote.addonSHA256=${addon}" \
               -o "dist/switcher-server_${VERSION}_${os}_${arch}" .
           done
@@ -95,7 +97,7 @@ jobs:
           mkdir -p "$SLICES"
           for arch in arm64 amd64; do
             eval "addon=\${ADDON_SHA256_darwin_${arch}}"
-            GOOS=darwin GOARCH="$arch" \
+            CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" \
               go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X switcher/internal/remote.addonSHA256=${addon}" \
               -o "$SLICES/SwitcherServer-$arch" .
           done

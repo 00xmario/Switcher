@@ -43,8 +43,10 @@ func (m *Manager) refreshNativeLocked(ctx context.Context, a *store.Account, cur
 		return err
 	}
 	if m.paths.Keychain {
-		if validator, ok := m.keys.(interface{ Validate(string, []byte) error }); ok {
-			if err := validator.Validate(m.paths.Service, prepared); err != nil {
+		if validator, ok := m.keys.(interface {
+			Validate(string, []byte, bool) error
+		}); ok {
+			if err := validator.Validate(m.paths.Service, prepared, current.Keychain.Exists); err != nil {
 				return err
 			}
 		}

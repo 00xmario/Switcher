@@ -42,8 +42,8 @@ verify-linux: verify-common
 	git diff --cached --check
 	git diff --check
 
-# Every released platform must build without cgo: the Mac slices and Linux,
-# and the Tailscale add-on for Linux too.
+# Keep portable builds working without cgo on Mac and Linux.
+# Build the Linux Tailscale add-on without cgo as well.
 cross-build:
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 		for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do \
