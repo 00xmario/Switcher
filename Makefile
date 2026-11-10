@@ -98,6 +98,21 @@ verify-common:
 install: build
 	install -m 0755 $(BINARY) "$(shell go env GOPATH)/bin"
 
+# The README's menu bar pictures: the real menu views drawn from made-up
+# accounts into menu-shots/, in dark and light. Never starts a server or
+# reads real accounts. The app bundle lives in a temporary folder, as for
+# benchmark-menu below.
+showcase-menu:
+	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+		app="$$tmp/MenuShowcase.app"; mkdir -p "$$app/Contents/MacOS" "$$app/Contents/Resources"; \
+		cp build/macos/Info.plist "$$app/Contents/Info.plist"; \
+		plutil -replace CFBundleIdentifier -string sh.switcher.showcase "$$app/Contents/Info.plist"; \
+		plutil -replace CFBundleExecutable -string MenuShowcase "$$app/Contents/Info.plist"; \
+		cp build/macos/logos/*.svg build/macos/AppIcon.icns build/macos/MenubarTemplate*.png "$$app/Contents/Resources/"; \
+		swiftc -O -parse-as-library -D SWITCHER_LAYOUT_TEST build/macos/menubar.swift \
+			build/macos/menubar_showcase.swift -o "$$app/Contents/MacOS/MenuShowcase"; \
+		"$$app/Contents/MacOS/MenuShowcase" "$$PWD/menu-shots"
+
 # Optimized build with bundled logos and six synthetic accounts. Never starts
 # a server, reads real accounts, or invokes Desktop/session-sync actions.
 benchmark-menu:
