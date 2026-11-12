@@ -102,7 +102,7 @@ const PROVIDER_NAMES = { codex: 'Codex', claude: 'Claude', grok: 'Grok', opencod
 // Plan tiers as each provider markets them. Keys are the stored plan
 // values.
 const PLAN_NAMES = {
-  claude_max_5x: 'Max 5x', claude_max_20x: 'Max 20x', claude_max: 'Max', claude_pro: 'Pro',
+  claude_max_5x: 'Max', claude_max_20x: 'Ultra', claude_max: 'Max', claude_pro: 'Pro',
   max: 'Max',
   pro: 'Pro 20x',
   prolite: 'Pro 5x',

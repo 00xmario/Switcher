@@ -375,11 +375,11 @@ func TestSuccessorAccountIsDurableBeforeRecoveryCleanup(t *testing.T) {
 
 type preflightKeychain struct {
 	*memoryKeychain
-	validate func(string, []byte, bool) error
+	validate func(context.Context, string, []byte, fileValue) error
 }
 
-func (k preflightKeychain) Validate(service string, value []byte, exists bool) error {
-	return k.validate(service, value, exists)
+func (k preflightKeychain) Validate(ctx context.Context, service string, next []byte, current fileValue) error {
+	return k.validate(ctx, service, next, current)
 }
 
 func replaceFixtureLock(t *testing.T, path string) {
@@ -397,7 +397,7 @@ func TestLockCompromiseBeforeGrantPreventsConsumption(t *testing.T) {
 	expireNativeFixture(t, h)
 	a, _ := h.accounts.Get("claude-a")
 	lock := filepath.Join(h.paths.ConfigHome, ".oauth_refresh.lock")
-	h.manager.keys = preflightKeychain{h.keys, func(string, []byte, bool) error {
+	h.manager.keys = preflightKeychain{h.keys, func(context.Context, string, []byte, fileValue) error {
 		replaceFixtureLock(t, lock)
 		return nil
 	}}
@@ -440,7 +440,7 @@ func TestLockParentReplacementPreventsGrant(t *testing.T) {
 	h := newHarness(t, true)
 	expireNativeFixture(t, h)
 	a, _ := h.accounts.Get("claude-a")
-	h.manager.keys = preflightKeychain{h.keys, func(string, []byte, bool) error {
+	h.manager.keys = preflightKeychain{h.keys, func(context.Context, string, []byte, fileValue) error {
 		if err := os.Rename(h.paths.ConfigHome, h.paths.ConfigHome+"-displaced"); err != nil {
 			return err
 		}

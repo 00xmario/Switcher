@@ -92,8 +92,8 @@ export function menuPreviewHTML(bars) {
   return `<div class="menu-preview ${bars ? '' : 'no-bars'}" aria-hidden="true">
     <div class="mp-strip"><span class="mp-icon">${switcherMark({ mono: true, size: 13 })}</span><span>9:41</span></div>
     <div class="mp-menu">
-      <div class="mp-account"><span class="mp-email"></span><b>Max 20x</b></div>
-      ${row('Session', 66)}${row('Weekly', 39)}
+      <div class="mp-account"><span class="mp-email"></span><b>Ultra</b></div>
+      ${row('Weekly', 66)}${row('Fable', 39)}
     </div>
   </div>`;
 }

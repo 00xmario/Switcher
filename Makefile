@@ -1,7 +1,7 @@
 BINARY := switcher
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo dev)
 
-.PHONY: build test test-usage-update vet verify verify-common verify-linux cross-build benchmark-menu showcase-menu install run dev clean
+.PHONY: build test test-usage-update vet verify verify-common verify-linux cross-build cgo-build benchmark-menu showcase-menu install run dev clean
 
 build:
 	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o $(BINARY) .
@@ -32,6 +32,7 @@ verify: verify-common
 			build/macos/menubar_layout_test.swift -o "$$tmp/switcher-layout-test"; \
 		"$$tmp/switcher-layout-test"
 	$(MAKE) --no-print-directory cross-build
+	$(MAKE) --no-print-directory cgo-build
 	git diff --check HEAD^ HEAD
 	git diff --cached --check
 	git diff --check
@@ -52,6 +53,13 @@ cross-build:
 		for arch in amd64 arm64; do \
 			(cd cmd/switcher-tailnet && CGO_ENABLED=0 GOOS=linux GOARCH="$$arch" go build -o "$$tmp/tailnet-linux-$$arch" .); \
 		done
+
+# The released Mac slices are built with cgo, for the native Keychain
+# writer. Both must build on a Mac here, not first when a tag is pushed.
+cgo-build:
+	@set -eu; for arch in arm64 amd64; do \
+		CGO_ENABLED=1 GOOS=darwin GOARCH=$$arch go build -o /dev/null .; \
+	done
 
 verify-common:
 	test -z "$$(gofmt -l .)"

@@ -22,6 +22,20 @@ type Keychain interface {
 type SystemKeychain struct {
 	// Only tests replace Runner; production pins Apple's system executable.
 	Runner func(context.Context, []string, []byte) ([]byte, error)
+	// Only tests set Update; production updates through Security.framework.
+	Update func(ctx context.Context, account, service string, value []byte) error
+}
+
+// updater is the writer for records too large for the command line, if this
+// build has one. A test's Runner alone stands for a build without it.
+func (k SystemKeychain) updater() func(context.Context, string, string, []byte) error {
+	if k.Update != nil {
+		return k.Update
+	}
+	if nativeKeychainUpdate && k.Runner == nil {
+		return updateExistingKeychainItem
+	}
+	return nil
 }
 
 func keychainUser() string {
@@ -78,6 +92,9 @@ func keychainWriteLine(service string, value []byte) (string, error) {
 		return "", errors.New("invalid native Keychain item identifier")
 	}
 	prefix := fmt.Sprintf("add-generic-password -U -a %s -s %s -X ", securityQuote(keychainUser()), securityQuote(service))
+	// Unlike upstream's long-payload fallback, never put OAuth/MCP secrets in
+	// process arguments. security -i would truncate its fixed-size line
+	// buffer, so a longer record goes to the native writer or is refused.
 	if len(prefix)+hex.EncodedLen(len(value))+1 > 4032 {
 		return "", errKeychainLineTooLong
 	}
@@ -89,18 +106,29 @@ func (k SystemKeychain) writeLine(service string, value []byte) (string, error) 
 		return "", errors.New("native credentials exceed the supported size")
 	}
 	line, err := keychainWriteLine(service, value)
-	if nativeKeychainUpdate && k.Runner == nil && errors.Is(err, errKeychainLineTooLong) {
+	if k.updater() != nil && errors.Is(err, errKeychainLineTooLong) {
 		return "", nil // Use the native writer when the command cannot fit.
 	}
 	return line, err
 }
 
-func (k SystemKeychain) Validate(service string, value []byte, exists bool) error {
-	line, err := k.writeLine(service, value)
-	if err == nil && line == "" && !exists {
+// Validate says, before a refresh spends its grant, whether next can be
+// written over current. A record too large for the command line needs the
+// native writer, which only updates an item that exists, and only when macOS
+// lets this build of Switcher do so. Writing the bytes already there finds
+// that out while the grant is still unspent.
+func (k SystemKeychain) Validate(ctx context.Context, service string, next []byte, current fileValue) error {
+	line, err := k.writeLine(service, next)
+	if err != nil || line != "" {
+		return err
+	}
+	if !current.Exists {
 		return errKeychainItemMissing
 	}
-	return err
+	if len(current.Data) == 0 {
+		return nil // Nothing to write back; the write itself will say.
+	}
+	return k.updater()(ctx, keychainUser(), service, current.Data)
 }
 
 func (k SystemKeychain) Write(ctx context.Context, service string, value []byte) error {
@@ -111,7 +139,7 @@ func (k SystemKeychain) Write(ctx context.Context, service string, value []byte)
 	readTimeout := 5 * time.Second
 	if line == "" {
 		readTimeout = 12 * time.Second
-		if err := updateExistingKeychainItem(ctx, keychainUser(), service, value); err != nil {
+		if err := k.updater()(ctx, keychainUser(), service, value); err != nil {
 			return err
 		}
 	} else if _, err := k.run(ctx, []string{"-i"}, []byte(line), 5*time.Second); err != nil {

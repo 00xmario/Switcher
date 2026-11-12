@@ -30,6 +30,15 @@ func inactiveRecovery(predecessor string) []byte {
 	return raw
 }
 
+// keychainValidator is a Keychain that can tell, before a refresh spends its
+// grant, that the refreshed credential could not be written.
+type keychainValidator interface {
+	Validate(ctx context.Context, service string, next []byte, current fileValue) error
+}
+
+// A changed signature must not silently skip the check.
+var _ keychainValidator = SystemKeychain{}
+
 // Caller holds both the account mutex and Claude's credential/config locks.
 // Never consume the saved backup here: a was adopted from the locked live read.
 func (m *Manager) refreshNativeLocked(ctx context.Context, a *store.Account, current snapshot, grant Grant) error {
@@ -43,10 +52,8 @@ func (m *Manager) refreshNativeLocked(ctx context.Context, a *store.Account, cur
 		return err
 	}
 	if m.paths.Keychain {
-		if validator, ok := m.keys.(interface {
-			Validate(string, []byte, bool) error
-		}); ok {
-			if err := validator.Validate(m.paths.Service, prepared, current.Keychain.Exists); err != nil {
+		if validator, ok := m.keys.(keychainValidator); ok {
+			if err := validator.Validate(ctx, m.paths.Service, prepared, current.Keychain); err != nil {
 				return err
 			}
 		}

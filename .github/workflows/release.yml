@@ -43,6 +43,9 @@ jobs:
 
       - name: Verify
         run: make verify
+      # The native Keychain writer, on a throwaway keychain of this runner.
+      - name: Verify the native Keychain writer
+        run: build/macos/keychain-test.sh
 
       - name: Build plain binaries
         run: |

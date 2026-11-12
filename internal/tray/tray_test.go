@@ -183,12 +183,12 @@ func TestMenuShowsAccountsUsageAndTheSwitches(t *testing.T) {
 	_, ui, c, _ := newFixture(t)
 	c.Refresh(context.Background())
 	items := ui.last()
-	work := find(items, "work@example.com · Max 20x")
-	if work == nil || !work.Checked || work.Title != "work@example.com · Max 20x" || work.Action != "activate:claude-1" {
+	work := find(items, "work@example.com · Ultra")
+	if work == nil || !work.Checked || work.Title != "work@example.com · Ultra" || work.Action != "activate:claude-1" {
 		t.Fatalf("Claude Code's account:\n%s", titles(items))
 	}
 	// Its usage follows on dim lines, as what is left.
-	if text := titles(items); !strings.Contains(text, "work@example.com · Max 20x\n    Session: ▰▰▰▱▱ 66% left\n    Weekly: ▰▰▱▱▱ 39% left\n") {
+	if text := titles(items); !strings.Contains(text, "work@example.com · Ultra\n    Session: ▰▰▰▱▱ 66% left\n    Weekly: ▰▰▱▱▱ 39% left\n") {
 		t.Fatalf("usage lines:\n%s", text)
 	}
 	if line := find(items, "    Session:"); !line.Disabled || line.Action != "" {
@@ -250,7 +250,7 @@ func TestMenuFollowsTheHostAndTheHandBack(t *testing.T) {
 	if find(items, "Only this computer's Switcher changes; Studio's stays as it is") == nil {
 		t.Fatalf("the paired host is not named:\n%s", titles(items))
 	}
-	if work := find(items, "work@example.com · Max 20x"); !work.Disabled {
+	if work := find(items, "work@example.com · Ultra"); !work.Disabled {
 		t.Fatal("accounts switchable while handed back")
 	}
 }
@@ -407,12 +407,12 @@ func TestUsageReadsAsWhatIsLeftWithItsReset(t *testing.T) {
 	f.set("accounts", accounts)
 	c.Refresh(context.Background())
 	want := strings.Join([]string{
-		"work@example.com · Max 20x · ⚡ 2 banked",
+		"work@example.com · Ultra · ⚡ 2 banked",
 		"    Session: ▰▰▰▱▱ 66% left · ↻ 2h 20m",
 		"    Weekly: ▰▰▱▱▱ 31% left · ↻ 2d 8h",
 		"    Fable: ▰▱▱▱▱ 8% left · ↻ 1m",
 		"    Opus: ▰▰▰▰▰ 100% left",
-		"home@example.com · Max 5x",
+		"home@example.com · Max",
 		"    Out of usage · back in 1h 0m",
 		"    Sign in again",
 		"    Weekly: ▱▱▱▱▱ 0% left",
@@ -518,7 +518,7 @@ func TestTheMenuFollowsChangesAsTheyHappen(t *testing.T) {
 	}
 	switchClaudeToHome(f)
 	waitFor(t, "the switch to show", func() bool { return homeChecked(ui) })
-	if find(ui.last(), "work@example.com · Max 20x").Checked {
+	if find(ui.last(), "work@example.com · Ultra").Checked {
 		t.Fatal("the old account is still checked")
 	}
 }

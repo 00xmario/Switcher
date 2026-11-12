@@ -484,7 +484,7 @@ func recordDeliveredResetAlert(_ id: String, alerts: inout [ResetAlert], deliver
 
 let providerNames = ["codex": "Codex", "claude": "Claude", "grok": "Grok", "opencode": "OpenCode",
     "antigravity": "Antigravity", "gemini": "Gemini", "copilot": "Copilot"]
-let planNames = ["claude_max_5x": "Max 5x", "claude_max_20x": "Max 20x", "claude_max": "Max", "claude_pro": "Pro",
+let planNames = ["claude_max_5x": "Max", "claude_max_20x": "Ultra", "claude_max": "Max", "claude_pro": "Pro",
     "max": "Max", "pro": "Pro 20x", "prolite": "Pro 5x", "plus": "Plus", "go": "Go", "free": "Free",
     "team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu",
     "copilot_pro": "Pro", "copilot_pro_plus": "Pro+", "copilot_business": "Business", "copilot_enterprise": "Enterprise",

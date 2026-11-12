@@ -816,8 +816,8 @@ struct MenuBarLayoutTest {
             contentWidth: menuWidth - 2 * edgeInset, showUsageBars: true)).contains("· Go") else {
             fail("A Go account's row must show its plan")
         }
-        guard planNames["claude_max_5x"] == "Max 5x",
-              planNames["claude_max_20x"] == "Max 20x",
+        guard planNames["claude_max_5x"] == "Max",
+              planNames["claude_max_20x"] == "Ultra",
               planNames["claude_max"] == "Max" else { fail("Claude Max tiers must not be inferred from a generic max flag") }
         for phase in ["idle", "running", "success", "error"] {
             let head = sectionHead("claude", contentWidth: menuWidth - 2 * edgeInset, syncPhase: phase)

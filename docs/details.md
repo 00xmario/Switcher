@@ -263,8 +263,8 @@ required; OpenCode Go uses its own API key.
   Both controls use the same loopback-only backend operation and report
   added-pointer counts. On failure, Details includes the backup location
   if one was created. Quit or backup failures stop the merge.
-- **Claude plan labels**: profile metadata distinguishes Max 5x, Max 20x,
-  and Pro in both UIs. Existing accounts receive plan metadata during usage
+- **Claude plan labels**: profile metadata distinguishes Max (formerly
+  Max 5x), Ultra (formerly Max 20x) and Pro in both UIs. Existing accounts receive plan metadata during usage
   checks, at most hourly after success. Recheck retries a failed lookup.
   A generic Max flag is displayed as Max rather than guessing a multiplier.
 - **Relogin per account**: sign in again in one click; the tokens overwrite
