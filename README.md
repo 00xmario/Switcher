@@ -50,9 +50,11 @@ Desktop relay, Claude Code uses the account you pick and keeps its login, so
 Remote Control sessions survive a switch. All of it from the menu bar, the
 dashboard or `switcher use`.
 
-Every quota is in view while you choose: session, weekly and monthly windows
-with reset countdowns, side by side per account if you merge them, with
-optional alerts when a window resets.
+Every quota is in view while you choose: session, weekly, monthly and
+per-model windows (Fable's, say) with reset countdowns, side by side per
+account if you merge them, with optional alerts when a window resets. An
+account shows the windows its plan has: a Claude Ultra account, for one, has
+no 5-hour session limit.
 
 <p align="center">
   <img src="docs/screenshots/merged.png" width="820" alt="Merged accounts: both Claude accounts side by side per quota window, with a usage limit marked on one">
