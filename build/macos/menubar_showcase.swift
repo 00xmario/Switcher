@@ -42,10 +42,10 @@ struct MenuShowcase {
         let h = 3600.0, d = 86400.0
         let accounts = [
             Account(id: "claude-you", provider: "claude", email: "you@example.com", plan: "claude_max_20x", active: true,
-                exhausted_until: nil, usage: Usage(available: true, windows: [w("Session", left: 64, 2 * h + 1200), w("Weekly", left: 58, 3 * d + 3 * h)]),
+                exhausted_until: nil, usage: Usage(available: true, windows: [w("Weekly", left: 58, 3 * d + 3 * h), w("Fable", left: 71, 3 * d + 3 * h)]),
                 reset_credits: nil, native_switch_available: true, native_active: true),
             Account(id: "claude-work", provider: "claude", email: "work@example.com", plan: "claude_max_5x", active: false,
-                exhausted_until: nil, usage: Usage(available: true, windows: [w("Session", left: 81, 46 * 60), w("Weekly", left: 23, d + 6 * h)]),
+                exhausted_until: nil, usage: Usage(available: true, windows: [w("Session", left: 81, 46 * 60), w("Weekly", left: 23, d + 6 * h), w("Fable", left: 64, d + 6 * h)]),
                 reset_credits: nil, native_switch_available: true, native_active: false, usage_limit: 10),
             Account(id: "codex-you", provider: "codex", email: "you@example.com", plan: "prolite", active: true,
                 exhausted_until: nil, usage: Usage(available: true, windows: [w("5 hour", left: 78, 3 * h + 240), w("Weekly", left: 53, 4 * d + 23 * h)]),
@@ -54,8 +54,8 @@ struct MenuShowcase {
                 exhausted_until: nil, usage: Usage(available: true, windows: [w("5 hour", left: 92, 4 * h + 3540), w("Weekly", left: 9, 2 * d + 5 * h)]),
                 reset_credits: nil, usage_limit: 10, at_limit: true),
         ]
-        return AppState(accounts: accounts, order: ["claude", "codex"], hidden: [], version: "1.28.0",
-            update: UpdateInfo(latest: "v1.28.0", update_available: false), menu_usage_bars: true, reset_notifications: false,
+        return AppState(accounts: accounts, order: ["claude", "codex"], hidden: [], version: "1.30.0",
+            update: UpdateInfo(latest: "v1.30.0", update_available: false), menu_usage_bars: true, reset_notifications: false,
             awake: AwakeState(supported: true, active: false))
     }
 

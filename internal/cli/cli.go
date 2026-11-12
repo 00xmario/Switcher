@@ -307,7 +307,7 @@ var providerNames = map[string]string{"claude": "Claude", "codex": "Codex", "gro
 var addMethod = map[string]string{"claude": "browser", "codex": "browser", "antigravity": "browser", "gemini": "browser",
 	"grok": "device", "copilot": "device", "opencode": "key"}
 
-var planNames = map[string]string{"claude_max_5x": "Max 5x", "claude_max_20x": "Max 20x", "claude_max": "Max", "claude_pro": "Pro",
+var planNames = map[string]string{"claude_max_5x": "Max", "claude_max_20x": "Ultra", "claude_max": "Max", "claude_pro": "Pro",
 	"max": "Max", "pro": "Pro 20x", "prolite": "Pro 5x", "plus": "Plus", "go": "Go", "free": "Free",
 	"team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu", "copilot_pro": "Pro",
 	"copilot_pro_plus": "Pro+", "copilot_business": "Business", "copilot_enterprise": "Enterprise", "copilot_free": "Free"}
