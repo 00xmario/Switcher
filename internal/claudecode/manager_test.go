@@ -496,7 +496,7 @@ func TestSwitchAwayRepairsOutgoingNativeRefreshFirst(t *testing.T) {
 
 type boundedMemoryKeychain struct{ *memoryKeychain }
 
-func (k boundedMemoryKeychain) Validate(service string, value []byte, _ bool) error {
+func (k boundedMemoryKeychain) Validate(_ context.Context, service string, value []byte, _ fileValue) error {
 	_, err := keychainWriteLine(service, value)
 	return err
 }
@@ -517,27 +517,74 @@ func TestNativeRefreshPreflightsDeterministicallyUnwritableKeychainPayload(t *te
 	}
 }
 
-func TestNativeRefreshKeepsGrantWhenOversizedFileLoginHasNoKeychainItem(t *testing.T) {
-	if !nativeKeychainUpdate {
-		t.Skip("requires the macOS native Keychain writer")
-	}
-	h := newHarness(t, true)
-	expireNativeFixture(t, h)
+// oversizeLive makes the live login too large for the security command.
+func oversizeLive(t *testing.T, h *harness) []byte {
+	t.Helper()
 	fields, _ := object(h.keys.values[h.paths.Service])
 	fields["mcpOAuth"] = encoded(strings.Repeat("fixture-large-shared-field", 200))
-	file := fileValue{Data: encoded(fields), Exists: true}
-	if err := writePrivate(h.paths.CredentialsFile, file); err != nil {
+	raw := encoded(fields)
+	if _, err := keychainWriteLine(h.paths.Service, raw); !errors.Is(err, errKeychainLineTooLong) {
+		t.Fatal("fixture is not oversized")
+	}
+	if err := writePrivate(h.paths.CredentialsFile, fileValue{Data: raw, Exists: true}); err != nil {
 		t.Fatal(err)
 	}
+	h.keys.values[h.paths.Service] = raw
+	return raw
+}
+
+func TestNativeRefreshKeepsGrantWhenOversizedFileLoginHasNoKeychainItem(t *testing.T) {
+	h := newHarness(t, true)
+	expireNativeFixture(t, h)
+	oversizeLive(t, h)
 	delete(h.keys.values, h.paths.Service)
-	h.manager.keys = preflightKeychain{h.keys, (SystemKeychain{}).Validate}
+	updates := 0
+	native := SystemKeychain{Update: func(context.Context, string, string, []byte) error { updates++; return nil }}
+	h.manager.keys = preflightKeychain{h.keys, native.Validate}
 
 	a, _ := h.accounts.Get("claude-a")
 	if err := h.manager.Refresh(context.Background(), &a, h.manager.grant); !errors.Is(err, errKeychainItemMissing) {
 		t.Fatalf("expected a missing Keychain item error, got %v", err)
 	}
-	if h.grants != 0 || h.keys.writes != 0 {
+	if h.grants != 0 || h.keys.writes != 0 || updates != 0 {
 		t.Fatal("refresh consumed the grant or wrote to the Keychain")
+	}
+}
+
+// The native writer works only where macOS lets this build update the item.
+// A refresh finds that out with the bytes already there, grant unspent.
+func TestNativeRefreshProvesTheKeychainWriterBeforeSpendingTheGrant(t *testing.T) {
+	denied := errors.New("fixture: macOS refused the update")
+	for _, refuse := range []bool{true, false} {
+		h := newHarness(t, true)
+		expireNativeFixture(t, h)
+		live := oversizeLive(t, h)
+		var proved [][]byte
+		native := SystemKeychain{Update: func(_ context.Context, account, service string, value []byte) error {
+			if service != h.paths.Service || account != keychainUser() {
+				t.Fatalf("proof went to %q for %q", service, account)
+			}
+			proved = append(proved, append([]byte(nil), value...))
+			if refuse {
+				return denied
+			}
+			return nil
+		}}
+		h.manager.keys = preflightKeychain{h.keys, native.Validate}
+		a, _ := h.accounts.Get("claude-a")
+		err := h.manager.Refresh(context.Background(), &a, h.manager.grant)
+		if len(proved) != 1 || !bytes.Equal(proved[0], live) {
+			t.Fatal("the proof did not write back exactly the live bytes, once")
+		}
+		if refuse {
+			if !errors.Is(err, denied) || h.grants != 0 || h.keys.writes != 0 {
+				t.Fatalf("a refused writer spent the grant or wrote: err=%v grants=%d", err, h.grants)
+			}
+			continue
+		}
+		if err != nil || h.grants != 1 {
+			t.Fatalf("an allowed writer did not refresh: err=%v grants=%d", err, h.grants)
+		}
 	}
 }
 

@@ -65,7 +65,7 @@ func updateExistingKeychainItem(ctx context.Context, account, service string, va
 		return nil
 	case C.errSecItemNotFound:
 		return errKeychainItemMissing
-	case C.errSecInteractionNotAllowed, C.errSecAuthFailed:
+	case C.errSecInteractionNotAllowed, C.errSecAuthFailed, C.errSecNoAccessForItem, C.errSecInvalidOwnerEdit:
 		return errors.New("Claude Code Keychain item is locked or denied; unlock Keychain or sign in with Claude Code")
 	default:
 		return fmt.Errorf("could not update the existing Claude Code Keychain item (macOS status %d)", int(status))

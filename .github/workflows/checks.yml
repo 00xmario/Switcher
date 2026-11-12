@@ -17,6 +17,9 @@ jobs:
           go-version-file: go.mod
       - name: Verify
         run: make verify
+      # The native Keychain writer, on a throwaway keychain of this runner.
+      - name: Verify the native Keychain writer
+        run: build/macos/keychain-test.sh
 
   verify-linux:
     runs-on: ubuntu-24.04

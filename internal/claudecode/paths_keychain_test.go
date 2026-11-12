@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -120,6 +121,61 @@ func TestOversizedKeychainPayloadNeverFallsBackToSecretArgv(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatal("overflow attempted a credential write")
+	}
+}
+
+// A record too large for the command line updates the existing item through
+// the native writer, is read back through the command, and never reaches
+// process arguments or the command's stdin.
+func TestOversizedKeychainWriteUpdatesTheExistingItemNatively(t *testing.T) {
+	t.Setenv("USER", "fixture-user")
+	secret := []byte(`{"claudeAiOauth":{"accessToken":"fixture-sensitive"},"mcpOAuth":"` + strings.Repeat("x", 6000) + `"}`)
+	var stored []byte
+	updates := 0
+	k := SystemKeychain{
+		Runner: func(_ context.Context, args []string, input []byte) ([]byte, error) {
+			if len(input) != 0 || strings.Contains(strings.Join(args, " "), "fixture-sensitive") {
+				t.Fatal("the oversized credential reached the security command")
+			}
+			if len(args) == 0 || args[0] != "find-generic-password" {
+				t.Fatalf("unexpected security command %v", args)
+			}
+			return append(append([]byte(nil), stored...), '\n'), nil
+		},
+		Update: func(_ context.Context, account, service string, value []byte) error {
+			if account != "fixture-user" || service != "Claude Code-credentials" {
+				t.Fatalf("update went to %q for %q", service, account)
+			}
+			updates++
+			stored = append([]byte(nil), value...)
+			return nil
+		},
+	}
+	if err := k.Write(context.Background(), "Claude Code-credentials", secret); err != nil {
+		t.Fatal(err)
+	}
+	if updates != 1 || !bytes.Equal(stored, secret) {
+		t.Fatal("the native writer did not store the credential once")
+	}
+	// A small record still goes through the command.
+	if err := k.Validate(context.Background(), "Claude Code-credentials", []byte(`{}`), fileValue{}); err != nil || updates != 1 {
+		t.Fatalf("a small record asked for the native writer: %v", err)
+	}
+	// A write that does not read back is not a write.
+	lossy := k
+	lossy.Update = func(context.Context, string, string, []byte) error { return nil }
+	stored = []byte("something else")
+	if err := lossy.Write(context.Background(), "Claude Code-credentials", secret); err == nil {
+		t.Fatal("an unverified native write was accepted")
+	}
+	// No item yet: nothing is created natively, the caller is told.
+	missing := k
+	missing.Update = func(context.Context, string, string, []byte) error { return errKeychainItemMissing }
+	if err := missing.Write(context.Background(), "Claude Code-credentials", secret); !errors.Is(err, errKeychainItemMissing) {
+		t.Fatalf("expected a missing item, got %v", err)
+	}
+	if err := k.Write(context.Background(), "Claude Code-credentials", bytes.Repeat([]byte("a"), nativeFileLimit+1)); err == nil {
+		t.Fatal("a record over the storage limit was accepted")
 	}
 }
 
