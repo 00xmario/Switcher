@@ -496,8 +496,9 @@ func TestSwitchAwayRepairsOutgoingNativeRefreshFirst(t *testing.T) {
 
 type boundedMemoryKeychain struct{ *memoryKeychain }
 
-func (k boundedMemoryKeychain) Validate(service string, value []byte) error {
-	return (SystemKeychain{}).Validate(service, value)
+func (k boundedMemoryKeychain) Validate(service string, value []byte, _ bool) error {
+	_, err := keychainWriteLine(service, value)
+	return err
 }
 
 func TestNativeRefreshPreflightsDeterministicallyUnwritableKeychainPayload(t *testing.T) {
@@ -513,6 +514,30 @@ func TestNativeRefreshPreflightsDeterministicallyUnwritableKeychainPayload(t *te
 	}
 	if h.grants != 0 || h.keys.writes != 0 {
 		t.Fatal("unwritable wrapper consumed the native grant")
+	}
+}
+
+func TestNativeRefreshKeepsGrantWhenOversizedFileLoginHasNoKeychainItem(t *testing.T) {
+	if !nativeKeychainUpdate {
+		t.Skip("requires the macOS native Keychain writer")
+	}
+	h := newHarness(t, true)
+	expireNativeFixture(t, h)
+	fields, _ := object(h.keys.values[h.paths.Service])
+	fields["mcpOAuth"] = encoded(strings.Repeat("fixture-large-shared-field", 200))
+	file := fileValue{Data: encoded(fields), Exists: true}
+	if err := writePrivate(h.paths.CredentialsFile, file); err != nil {
+		t.Fatal(err)
+	}
+	delete(h.keys.values, h.paths.Service)
+	h.manager.keys = preflightKeychain{h.keys, (SystemKeychain{}).Validate}
+
+	a, _ := h.accounts.Get("claude-a")
+	if err := h.manager.Refresh(context.Background(), &a, h.manager.grant); !errors.Is(err, errKeychainItemMissing) {
+		t.Fatalf("expected a missing Keychain item error, got %v", err)
+	}
+	if h.grants != 0 || h.keys.writes != 0 {
+		t.Fatal("refresh consumed the grant or wrote to the Keychain")
 	}
 }
 
