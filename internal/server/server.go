@@ -1384,13 +1384,13 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	summary := a.Usage.Get(days)
 	if summary == nil {
-		go a.Usage.Scan(days)
+		go a.Usage.Rescan()
 		writeJSON(w, http.StatusAccepted, map[string]any{"scanning": true, "days": days})
 		return
 	}
 	stale := a.Usage.Age(days) > 10*time.Minute
 	if stale {
-		go a.Usage.Scan(days)
+		go a.Usage.Rescan()
 	}
 	// On a client, the page asks for the host's usage, and the other
 	// computers', to be fetched again when it is more than a minute old.
@@ -1413,7 +1413,7 @@ func (a *API) handleUsageRefresh(w http.ResponseWriter, r *http.Request) {
 	// One scan serves every window; a client then exchanges usage with its
 	// host, so the refresh shows the other computers' latest too.
 	go func() {
-		a.Usage.Scan(30)
+		a.Usage.Rescan()
 		a.syncUsage(context.Background())
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})

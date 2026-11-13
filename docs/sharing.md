@@ -144,10 +144,18 @@ is at the other end when pairing without a code.
   host its own usage (from its CLIs' logs) every few minutes, at once when it
   pairs, and when you refresh the page; the host keeps it, so a computer
   that is away still counts, and gives every client everyone's. A client
-  shows the host's last numbers while the host is away. A computer's usage
-  stays counted after it is removed; pairing it again replaces its numbers
-  rather than adding them twice. The host and the client both need 1.31 or
+  shows the host's last numbers while the host is away. A computer counts
+  while it stays paired: removing it (or Disconnect on it) takes its usage
+  out, and pairing it again brings it back, counted once, since each
+  computer sends all of its last 91 days. Days follow each viewer's own time
+  zone, to the quarter hour. The host and the client both need 1.31 or
   later.
+
+  What a paired computer sends is checked like everything else it sends:
+  one computer's usage per pairing, known providers only, plain model
+  names, bounded sizes and totals, and read within fixed limits, so a
+  computer that was lost or turned against its owner can neither flood the
+  host nor put anything but numbers on another computer's Usage page.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the

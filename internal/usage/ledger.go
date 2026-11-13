@@ -1,8 +1,11 @@
 package usage
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"math"
 	"sort"
 	"strings"
@@ -11,57 +14,200 @@ import (
 )
 
 // A Ledger is one computer's usage, condensed so that computers can share
-// it: the token counts and cost of each hour, provider and model, and the
-// sessions with the hours they ran. A host keeps its clients' ledgers and
-// every computer adds them up in its own time zone, so each shows the same
-// usage across all of them. Hours are counted in UTC; in a time zone half an
-// hour off UTC, a record in the last half hour of a day can count for the
-// next.
+// it: the token counts and cost of each quarter hour, provider and model,
+// and the sessions with the quarter hours they ran. A host keeps its
+// clients' ledgers and every computer adds them up in its own time zone, so
+// each shows the same usage across all of them. Quarter hours are counted
+// in UTC; every time zone is a whole number of them off UTC, so each falls
+// in one local day.
 type Ledger struct {
 	Entries     []LedgerEntry `json:"entries"`
 	Sessions    []SessionSpan `json:"sessions"`
 	ScannedAtMs int64         `json:"scanned_at_ms"`
 }
 
-// LedgerEntry is the usage of one hour, provider and model.
+// LedgerEntry is the usage of one quarter hour, provider and model. It is
+// sent as an array: [quarter, provider, model, [uncached input, cached
+// input, cache creation, output, reasoning], cost, savings, records,
+// unpriced].
 type LedgerEntry struct {
-	Hour     int64   `json:"h"` // hours since the Unix epoch, UTC
-	Provider string  `json:"p"`
-	Model    string  `json:"m"`
-	Totals   Totals  `json:"t"`
-	Cost     float64 `json:"c"`
-	Savings  float64 `json:"s"`
-	Records  int64   `json:"r"`
-	Unpriced int64   `json:"u"`
+	Quarter  int64 // quarter hours since the Unix epoch, UTC
+	Provider string
+	Model    string
+	Totals   Totals
+	Cost     float64
+	Savings  float64
+	Records  int64
+	Unpriced int64
 }
 
-// SessionSpan is one session and the first and last hour it had usage in.
-// Its ID is a hash: the session's own id stays on the computer.
+// SessionSpan is one session and the first and last quarter hour it had
+// usage in. Its ID is a hash: the session's own id stays on the computer.
+// It is sent as an array: [provider, id, first, last].
 type SessionSpan struct {
-	Provider string `json:"p"`
-	ID       string `json:"i"`
-	First    int64  `json:"f"`
-	Last     int64  `json:"l"`
+	Provider string
+	ID       string
+	First    int64
+	Last     int64
+}
+
+func (e LedgerEntry) MarshalJSON() ([]byte, error) {
+	t := e.Totals
+	return json.Marshal([]any{e.Quarter, e.Provider, e.Model,
+		[5]int64{t.UncachedInput, t.CachedInput, t.CacheCreation, t.Output, t.Reasoning},
+		amount(e.Cost), amount(e.Savings), e.Records, e.Unpriced})
+}
+
+func (e *LedgerEntry) UnmarshalJSON(data []byte) error {
+	var raw [8]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var t [5]int64
+	var out LedgerEntry
+	for i, field := range []any{&out.Quarter, &out.Provider, &out.Model, &t, &out.Cost, &out.Savings, &out.Records, &out.Unpriced} {
+		if err := json.Unmarshal(raw[i], field); err != nil {
+			return errInvalidLedger
+		}
+	}
+	out.Totals = Totals{UncachedInput: t[0], CachedInput: t[1], CacheCreation: t[2], Output: t[3], Reasoning: t[4]}
+	*e = out
+	return nil
+}
+
+func (s SessionSpan) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]any{s.Provider, s.ID, s.First, s.Last})
+}
+
+func (s *SessionSpan) UnmarshalJSON(data []byte) error {
+	var raw [4]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var out SessionSpan
+	for i, field := range []any{&out.Provider, &out.ID, &out.First, &out.Last} {
+		if err := json.Unmarshal(raw[i], field); err != nil {
+			return errInvalidLedger
+		}
+	}
+	*s = out
+	return nil
+}
+
+var errInvalidLedger = errors.New("invalid usage ledger")
+
+// UnmarshalJSON reads a ledger one entry at a time and refuses one longer
+// than a ledger may be, so a ledger from another computer takes no more
+// memory than an honest one.
+func (l *Ledger) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return errInvalidLedger
+	}
+	var out Ledger
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return errInvalidLedger
+		}
+		switch tok {
+		case "entries":
+			err = decodeList(dec, func() int { return len(out.Entries) }, maxLedgerEntries, func(e LedgerEntry) { out.Entries = append(out.Entries, e) })
+		case "sessions":
+			err = decodeList(dec, func() int { return len(out.Sessions) }, maxLedgerSessions, func(s SessionSpan) { out.Sessions = append(out.Sessions, s) })
+		case "scanned_at_ms":
+			err = dec.Decode(&out.ScannedAtMs)
+		default:
+			var skip json.RawMessage
+			err = dec.Decode(&skip)
+		}
+		if err != nil {
+			return errInvalidLedger
+		}
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return errInvalidLedger
+	}
+	*l = out
+	return nil
+}
+
+// decodeList reads a JSON array (or null) one element at a time, refusing
+// it once it would hold more than limit.
+func decodeList[T any](dec *json.Decoder, held func() int, limit int, add func(T)) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil
+	}
+	if tok != json.Delim('[') {
+		return errInvalidLedger
+	}
+	for dec.More() {
+		if held() >= limit {
+			return errInvalidLedger
+		}
+		var v T
+		if err := dec.Decode(&v); err != nil {
+			return err
+		}
+		add(v)
+	}
+	_, err = dec.Token()
+	return err
+}
+
+// DeviceLedgers is a list of computers' ledgers, read one at a time and no
+// more than a host keeps.
+type DeviceLedgers []DeviceLedger
+
+func (d *DeviceLedgers) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	var out DeviceLedgers
+	if err := decodeList(dec, func() int { return len(out) }, MaxDevices, func(l DeviceLedger) { out = append(out, l) }); err != nil {
+		return errInvalidLedger
+	}
+	*d = out
+	return nil
 }
 
 // LedgerDays is how far back a ledger reaches: the longest window shown,
 // and a day more for time zones ahead of UTC.
 const LedgerDays = 91
 
-// Limits on a ledger taken from another computer.
+// Limits on a ledger taken from another computer. A computer's own ledger
+// is cut to them before it is sent: the oldest usage goes first.
 const (
-	maxLedgerEntries  = 200_000
-	maxLedgerSessions = 200_000
+	// A quarter hour's entries are one per model used in it: three models
+	// around the clock for 92 days are 26,500.
+	maxLedgerEntries  = 50_000
+	maxLedgerSessions = 50_000
 	maxLedgerName     = 128
+	// maxLedgerTotal bounds each count summed over one ledger, so the
+	// ledgers of every computer a summary adds up cannot overflow.
+	maxLedgerTotal = 1 << 54
 )
 
-func unixHour(t time.Time) int64 { return t.Unix() / 3600 }
+// MaxDevices is how many computers' ledgers are added up at most: those a
+// host keeps and the host's own.
+const MaxDevices = maxStoredDevices + 1
+
+// quarterSeconds is the span of a ledger entry.
+const quarterSeconds = 15 * 60
+
+func unixQuarter(t time.Time) int64 { return t.Unix() / quarterSeconds }
+
+// knownProviders are the providers whose usage is counted: names from
+// another computer are taken only from this list, as they are shown.
+var knownProviders = map[string]bool{ProviderClaude: true, ProviderCodex: true, ProviderGrok: true}
 
 // collectLedger scans the sources for records since start and condenses
 // them, deduplicated and priced, into a ledger.
 func collectLedger(sources []Source, cache *ScanCache, table RateTable, start time.Time) *Ledger {
 	type key struct {
-		hour            int64
+		quarter         int64
 		provider, model string
 	}
 	entries := map[key]*LedgerEntry{}
@@ -79,12 +225,12 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 			}
 			seen[dk] = struct{}{}
 		}
-		hour := unixHour(r.Timestamp)
+		quarter := unixQuarter(r.Timestamp)
 		cost, source := Price(table, r)
-		k := key{hour, r.Provider, r.Model}
+		k := key{quarter, r.Provider, r.Model}
 		e := entries[k]
 		if e == nil {
-			e = &LedgerEntry{Hour: hour, Provider: r.Provider, Model: r.Model}
+			e = &LedgerEntry{Quarter: quarter, Provider: r.Provider, Model: r.Model}
 			entries[k] = e
 		}
 		e.Totals = addTotals(e.Totals, r.Totals)
@@ -100,10 +246,10 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 			sk := [2]string{r.Provider, id}
 			span := sessions[sk]
 			if span == nil {
-				span = &SessionSpan{Provider: r.Provider, ID: id, First: hour, Last: hour}
+				span = &SessionSpan{Provider: r.Provider, ID: id, First: quarter, Last: quarter}
 				sessions[sk] = span
 			}
-			span.First, span.Last = min(span.First, hour), max(span.Last, hour)
+			span.First, span.Last = min(span.First, quarter), max(span.Last, quarter)
 		}
 	}
 	began := time.Now()
@@ -120,14 +266,22 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 	}
 	sort.Slice(l.Entries, func(i, j int) bool {
 		a, b := l.Entries[i], l.Entries[j]
-		if a.Hour != b.Hour {
-			return a.Hour < b.Hour
+		if a.Quarter != b.Quarter {
+			return a.Quarter < b.Quarter
 		}
 		if a.Provider != b.Provider {
 			return a.Provider < b.Provider
 		}
 		return a.Model < b.Model
 	})
+	// Within the limits another computer takes: the newest usage stays.
+	if len(l.Entries) > maxLedgerEntries {
+		l.Entries = l.Entries[len(l.Entries)-maxLedgerEntries:]
+	}
+	if len(l.Sessions) > maxLedgerSessions {
+		sort.Slice(l.Sessions, func(i, j int) bool { return l.Sessions[i].Last > l.Sessions[j].Last })
+		l.Sessions = l.Sessions[:maxLedgerSessions]
+	}
 	sort.Slice(l.Sessions, func(i, j int) bool { return l.Sessions[i].ID < l.Sessions[j].ID })
 	return l
 }
@@ -161,12 +315,14 @@ func Combine(devices []DeviceLedger, self string, since, until time.Time, loc *t
 	}
 	start := time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, loc)
 	end := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
-	firstHour, endHour := unixHour(start), unixHour(end)
-	if start.Unix()%3600 != 0 {
-		firstHour++ // an hour that began before the day is the previous day's
+	first, last := unixQuarter(start), unixQuarter(end)
+	// Days start on a quarter hour in every time zone there is; in one that
+	// did not, a quarter that began before the day is the previous day's.
+	if start.Unix()%quarterSeconds != 0 {
+		first++
 	}
-	if end.Unix()%3600 != 0 {
-		endHour++
+	if end.Unix()%quarterSeconds != 0 {
+		last++
 	}
 
 	buckets := map[bucketKey]*bucket{}
@@ -182,10 +338,10 @@ func Combine(devices []DeviceLedger, self string, since, until time.Time, loc *t
 		}
 		share := DeviceUsage{Name: d.Name, This: d.Key == self, Host: d.Host, UpdatedMs: d.UpdatedMs}
 		for _, e := range d.Ledger.Entries {
-			if e.Hour < firstHour || e.Hour >= endHour {
+			if e.Quarter < first || e.Quarter >= last {
 				continue
 			}
-			day := time.Unix(e.Hour*3600, 0).In(loc).Format("2006-01-02")
+			day := time.Unix(e.Quarter*quarterSeconds, 0).In(loc).Format("2006-01-02")
 			b := bucketFor(buckets, bucketKey{day: day, provider: e.Provider, model: e.Model})
 			b.totals = addTotals(b.totals, e.Totals)
 			b.cost += e.Cost
@@ -201,7 +357,7 @@ func Combine(devices []DeviceLedger, self string, since, until time.Time, loc *t
 			share.Tokens += e.Totals.Processed()
 		}
 		for _, s := range d.Ledger.Sessions {
-			if s.Last < firstHour || s.First >= endHour {
+			if s.Last < first || s.First >= last {
 				continue
 			}
 			sessions[[2]string{s.Provider, s.ID}] = struct{}{}
@@ -235,38 +391,46 @@ func Combine(devices []DeviceLedger, self string, since, until time.Time, loc *t
 }
 
 // Clean makes a ledger from another computer safe to keep and show: only
-// the last LedgerDays and no future, plain short names, counts that are
-// whole and not negative, and bounded sizes. It reports whether anything
-// is left.
+// the last LedgerDays and no future, known providers, plain short model
+// names, counts that are whole and not negative, totals that cannot
+// overflow, and bounded sizes. It reports whether anything is left.
 func (l *Ledger) Clean(now time.Time) bool {
 	if l == nil {
 		return false
 	}
-	oldest, newest := unixHour(now.AddDate(0, 0, -LedgerDays-1)), unixHour(now)+24
+	oldest, newest := unixQuarter(now.AddDate(0, 0, -LedgerDays-1)), unixQuarter(now.Add(24*time.Hour))
+	var sum [7]int64 // each count over the whole ledger
 	entries := l.Entries[:0]
 	for _, e := range l.Entries {
-		if len(entries) >= maxLedgerEntries || e.Hour < oldest || e.Hour > newest {
+		if len(entries) >= maxLedgerEntries || e.Quarter < oldest || e.Quarter > newest || !knownProviders[e.Provider] {
 			continue
 		}
-		e.Provider, e.Model = plainName(e.Provider, 32), plainName(e.Model, maxLedgerName)
-		if e.Provider == "" {
-			continue
-		}
+		e.Model = plainName(e.Model, maxLedgerName)
 		e.Totals = Totals{UncachedInput: count(e.Totals.UncachedInput), CachedInput: count(e.Totals.CachedInput),
 			CacheCreation: count(e.Totals.CacheCreation), Output: count(e.Totals.Output), Reasoning: count(e.Totals.Reasoning)}
 		e.Cost, e.Savings = amount(e.Cost), amount(e.Savings)
 		e.Records, e.Unpriced = count(e.Records), count(e.Unpriced)
 		e.Unpriced = min(e.Unpriced, e.Records)
+		counts := [7]int64{e.Totals.UncachedInput, e.Totals.CachedInput, e.Totals.CacheCreation, e.Totals.Output, e.Totals.Reasoning, e.Records, e.Unpriced}
+		fits := true
+		for i, n := range counts {
+			fits = fits && sum[i]+n <= maxLedgerTotal
+		}
+		if !fits {
+			continue
+		}
+		for i, n := range counts {
+			sum[i] += n
+		}
 		entries = append(entries, e)
 	}
 	l.Entries = entries
 	sessions := l.Sessions[:0]
 	for _, s := range l.Sessions {
-		if len(sessions) >= maxLedgerSessions || s.Last < oldest || s.First > newest || s.First > s.Last {
+		if len(sessions) >= maxLedgerSessions || s.Last < oldest || s.First > newest || s.First > s.Last || !knownProviders[s.Provider] {
 			continue
 		}
-		s.Provider = plainName(s.Provider, 32)
-		if s.Provider == "" || len(s.ID) == 0 || len(s.ID) > 32 || strings.Trim(s.ID, "0123456789abcdef") != "" {
+		if len(s.ID) == 0 || len(s.ID) > 32 || strings.Trim(s.ID, "0123456789abcdef") != "" {
 			continue
 		}
 		sessions = append(sessions, s)
@@ -276,8 +440,8 @@ func (l *Ledger) Clean(now time.Time) bool {
 }
 
 // count is a token or record count as it may be: whole, not negative, and
-// short of what adding thousands of them could overflow.
-func count(n int64) int64 { return min(max(n, 0), 1<<50) }
+// no more than a ledger may hold in all.
+func count(n int64) int64 { return min(max(n, 0), maxLedgerTotal) }
 
 // amount is a cost as it may be: a finite, non-negative number of dollars.
 func amount(v float64) float64 {

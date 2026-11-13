@@ -128,6 +128,10 @@ func (s *Service) Scan(days int) *Summary {
 	return s.Get(days)
 }
 
+// Rescan is Scan for a caller that has no use for the summary: it only
+// rescans, and asks nothing of the other computers.
+func (s *Service) Rescan() { s.scanOwn() }
+
 func (s *Service) scanOwn() bool {
 	s.mu.Lock()
 	if s.scanning {

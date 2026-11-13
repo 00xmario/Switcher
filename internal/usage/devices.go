@@ -23,16 +23,24 @@ func DeviceKey(install string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// ErrClaimed refuses a ledger for an install another paired computer sends.
-var ErrClaimed = errors.New("another paired computer sends the usage of that Switcher")
+// ErrStoreFull refuses a computer's ledger when the host keeps as many as
+// it can, all of computers still paired.
+var ErrStoreFull = errors.New("this host keeps the usage of as many computers as it can")
 
 // maxStoredDevices bounds how many computers' ledgers a host keeps.
-const maxStoredDevices = 64
+const maxStoredDevices = 32
+
+// storedLedgerLimit bounds a kept ledger's file.
+const storedLedgerLimit = 16 << 20
 
 // DeviceStore keeps, on a host, the ledgers its paired computers send: one
 // per Switcher install, on disk, so a computer that is away still counts.
-// A paired computer may write only the ledger it claimed first, while it
-// stays paired: no other can change its numbers.
+// Each pairing has one: a pairing that sends another install's ledger gives
+// up the one it sent before. The install's id is the computer's own secret
+// (the host passes on only its hash), so the pairing that sends it last
+// holds its ledger: a computer that paired again, after an unpairing that
+// never reached the host, keeps its numbers. A ledger counts while its
+// pairing is in place; the owner removing the pairing removes it.
 type DeviceStore struct {
 	dir     string
 	mu      sync.Mutex
@@ -66,7 +74,7 @@ func OpenDeviceStore(dir string) *DeviceStore {
 			continue
 		}
 		var stored storedLedger
-		err = json.NewDecoder(io.LimitReader(f, 64<<20)).Decode(&stored)
+		err = json.NewDecoder(io.LimitReader(f, storedLedgerLimit)).Decode(&stored)
 		f.Close()
 		if err != nil || stored.Key != key || !stored.Ledger.Clean(now) {
 			continue
@@ -85,30 +93,22 @@ func validKey(key string) bool {
 // whether a pairing is still in place.
 func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(device string) bool, now time.Time) error {
 	if !validKey(key) || device == "" {
-		return errors.New("invalid usage ledger")
+		return errInvalidLedger
 	}
 	if !ledger.Clean(now) {
-		return errors.New("invalid usage ledger")
+		return errInvalidLedger
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if old := s.devices[key]; old != nil && old.Device != device && paired(old.Device) {
-		return ErrClaimed
+	// Ledgers of pairings that are gone, and the one this pairing sent for
+	// another install, no longer count.
+	for k, d := range s.devices {
+		if k != key && (d.Device == device || !paired(d.Device)) {
+			s.removeLocked(k)
+		}
 	}
 	if _, known := s.devices[key]; !known && len(s.devices) >= maxStoredDevices {
-		// Make room by the ledger longest unchanged of a computer no longer
-		// paired; with every one still paired, there is none to give up.
-		oldest := ""
-		for k, d := range s.devices {
-			if !paired(d.Device) && (oldest == "" || d.UpdatedMs < s.devices[oldest].UpdatedMs) {
-				oldest = k
-			}
-		}
-		if oldest == "" {
-			return errors.New("this host keeps the usage of as many computers as it can")
-		}
-		_ = os.Remove(filepath.Join(s.dir, oldest+".json"))
-		delete(s.devices, oldest)
+		return ErrStoreFull
 	}
 	stored := &storedLedger{Key: key, Device: device, Name: plainName(name, maxLedgerName), UpdatedMs: now.UnixMilli(), Ledger: ledger}
 	raw, err := json.Marshal(stored)
@@ -122,13 +122,20 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 	return nil
 }
 
-// Ledgers are the kept ledgers, for adding up.
-func (s *DeviceStore) Ledgers() []DeviceLedger {
+func (s *DeviceStore) removeLocked(key string) {
+	_ = os.Remove(filepath.Join(s.dir, key+".json"))
+	delete(s.devices, key)
+}
+
+// Ledgers are the kept ledgers of computers still paired, for adding up.
+func (s *DeviceStore) Ledgers(paired func(device string) bool) []DeviceLedger {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]DeviceLedger, 0, len(s.devices))
 	for _, d := range s.devices {
-		out = append(out, DeviceLedger{Key: d.Key, Name: d.Name, UpdatedMs: d.UpdatedMs, Ledger: d.Ledger})
+		if paired(d.Device) {
+			out = append(out, DeviceLedger{Key: d.Key, Name: d.Name, UpdatedMs: d.UpdatedMs, Ledger: d.Ledger})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out

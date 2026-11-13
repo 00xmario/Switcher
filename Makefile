@@ -70,6 +70,7 @@ verify-common:
 	node --check web/app.js
 	node --check web/login.js
 	node web/app_state_test.mjs
+	node web/usage-devices_test.mjs
 	node web/login_test.mjs
 	node web/claude-sync_test.mjs
 	node web/account-updates_test.mjs

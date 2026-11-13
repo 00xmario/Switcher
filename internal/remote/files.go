@@ -38,11 +38,25 @@ func readJSON(path string, v any) error {
 
 // writeJSON replaces path atomically with owner-only permissions.
 func writeJSON(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
+		return err
+	}
+	return writePrivate(path, b)
+}
+
+// writeCompactJSON is writeJSON without the indentation, for large files.
+func writeCompactJSON(path string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return writePrivate(path, b)
+}
+
+// writePrivate replaces path with b atomically, for this user alone.
+func writePrivate(path string, b []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")

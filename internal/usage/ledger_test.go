@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 )
 
 func entryAt(t time.Time, provider, model string, tokens int64, cost float64) LedgerEntry {
-	return LedgerEntry{Hour: unixHour(t), Provider: provider, Model: model, Totals: Totals{Output: tokens}, Cost: cost, Records: 1}
+	return LedgerEntry{Quarter: unixQuarter(t), Provider: provider, Model: model, Totals: Totals{Output: tokens}, Cost: cost, Records: 1}
 }
 
 // Every computer's usage is added up, each computer's share is kept, and
@@ -19,11 +20,11 @@ func TestCombineAddsUpEveryComputer(t *testing.T) {
 	day := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	host := &Ledger{
 		Entries:  []LedgerEntry{entryAt(day, "claude", "fable", 100, 1.5), entryAt(day.Add(time.Hour), "codex", "gpt", 50, 0.5)},
-		Sessions: []SessionSpan{{Provider: "claude", ID: "aa", First: unixHour(day), Last: unixHour(day)}},
+		Sessions: []SessionSpan{{Provider: "claude", ID: "aa", First: unixQuarter(day), Last: unixQuarter(day)}},
 	}
 	laptop := &Ledger{
 		Entries:  []LedgerEntry{entryAt(day, "claude", "fable", 300, 3)},
-		Sessions: []SessionSpan{{Provider: "claude", ID: "bb", First: unixHour(day), Last: unixHour(day)}},
+		Sessions: []SessionSpan{{Provider: "claude", ID: "bb", First: unixQuarter(day), Last: unixQuarter(day)}},
 	}
 	devices := []DeviceLedger{
 		{Key: "host", Name: "k12", Host: true, Ledger: host},
@@ -74,12 +75,33 @@ func TestCombineUsesTheViewersDays(t *testing.T) {
 			t.Errorf("%s: days %+v", c.loc, s.Days)
 		}
 	}
-	// In a time zone half an hour off, the hour that starts before midnight
-	// counts for the day it starts on: 18:00 UTC is 23:30 in India.
-	evening := &Ledger{Entries: []LedgerEntry{entryAt(time.Date(2026, 11, 13, 18, 0, 0, 0, time.UTC), "claude", "m", 5, 1)}}
-	got := Combine([]DeviceLedger{{Key: "a", Ledger: evening}}, "a", time.Date(2026, 11, 13, 0, 0, 0, 0, india), time.Date(2026, 11, 13, 0, 0, 0, 0, india), india)
-	if got.TotalTokens != 5 {
-		t.Errorf("half-hour zone: %d tokens", got.TotalTokens)
+	// In time zones a half or three quarters of an hour off UTC, usage just
+	// before local midnight counts for that day and usage from midnight on
+	// for the next: 18:15 UTC is 23:45 in India, 18:30 is midnight there,
+	// and 18:15 is midnight in Nepal.
+	nepal := time.FixedZone("UTC+5:45", 5*3600+45*60)
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 13, h, m, 0, 0, time.UTC) }
+	evening := &Ledger{Entries: []LedgerEntry{
+		entryAt(at(18, 15), "claude", "m", 5, 1),
+		entryAt(at(18, 30), "claude", "m", 7, 1),
+		entryAt(at(18, 0), "codex", "m", 11, 1),
+	}}
+	for _, c := range []struct {
+		loc        *time.Location
+		day        int
+		want       int64
+		whatsCount string
+	}{
+		{india, 13, 16, "18:00 and 18:15 UTC"},
+		{india, 14, 7, "18:30 UTC"},
+		{nepal, 13, 11, "18:00 UTC"},
+		{nepal, 14, 12, "18:15 and 18:30 UTC"},
+	} {
+		day := time.Date(2026, 11, c.day, 0, 0, 0, 0, c.loc)
+		got := Combine([]DeviceLedger{{Key: "a", Ledger: evening}}, "a", day, day, c.loc)
+		if got.TotalTokens != c.want {
+			t.Errorf("%s on the %d: %d tokens, want %d (%s)", c.loc, c.day, got.TotalTokens, c.want, c.whatsCount)
+		}
 	}
 }
 
@@ -89,17 +111,19 @@ func TestCleanMakesAnotherComputersLedgerSafe(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	l := &Ledger{
 		Entries: []LedgerEntry{
-			{Hour: unixHour(now), Provider: "claude", Model: "fable\x1b[2J", Totals: Totals{Output: -5, CachedInput: 1 << 62}, Cost: math.NaN(), Savings: math.Inf(1), Records: 2, Unpriced: 9},
-			{Hour: unixHour(now.AddDate(0, 0, -200)), Provider: "claude", Model: "old", Records: 1},
-			{Hour: unixHour(now.AddDate(0, 0, 5)), Provider: "claude", Model: "future", Records: 1},
-			{Hour: unixHour(now), Provider: "\x00\x01", Model: "no provider", Records: 1},
-			{Hour: unixHour(now), Provider: "codex", Model: strings.Repeat("m", 500), Cost: -3, Records: 1},
+			{Quarter: unixQuarter(now), Provider: "claude", Model: "fable\x1b[2J", Totals: Totals{Output: -5, CachedInput: 1 << 62}, Cost: math.NaN(), Savings: math.Inf(1), Records: 2, Unpriced: 9},
+			{Quarter: unixQuarter(now.AddDate(0, 0, -200)), Provider: "claude", Model: "old", Records: 1},
+			{Quarter: unixQuarter(now.AddDate(0, 0, 5)), Provider: "claude", Model: "future", Records: 1},
+			{Quarter: unixQuarter(now), Provider: "\x00\x01", Model: "no provider", Records: 1},
+			{Quarter: unixQuarter(now), Provider: `"><style>*{display:none}</style>`, Model: "unknown provider", Records: 1},
+			{Quarter: unixQuarter(now), Provider: "codex", Model: strings.Repeat("m", 500), Cost: -3, Records: 1},
 		},
 		Sessions: []SessionSpan{
-			{Provider: "claude", ID: "0123abcd", First: unixHour(now), Last: unixHour(now)},
-			{Provider: "claude", ID: "<script>", First: unixHour(now), Last: unixHour(now)},
-			{Provider: "claude", ID: "ab", First: unixHour(now), Last: unixHour(now) - 5},
-			{Provider: "claude", ID: strings.Repeat("a", 40), First: unixHour(now), Last: unixHour(now)},
+			{Provider: "claude", ID: "0123abcd", First: unixQuarter(now), Last: unixQuarter(now)},
+			{Provider: "claude", ID: "<script>", First: unixQuarter(now), Last: unixQuarter(now)},
+			{Provider: "claude", ID: "ab", First: unixQuarter(now), Last: unixQuarter(now) - 5},
+			{Provider: "claude", ID: strings.Repeat("a", 40), First: unixQuarter(now), Last: unixQuarter(now)},
+			{Provider: "<b>", ID: "0123abce", First: unixQuarter(now), Last: unixQuarter(now)},
 		},
 	}
 	if !l.Clean(now) {
@@ -109,7 +133,7 @@ func TestCleanMakesAnotherComputersLedgerSafe(t *testing.T) {
 		t.Fatalf("entries kept: %+v", l.Entries)
 	}
 	e := l.Entries[0]
-	if e.Model != "fable[2J" || e.Totals.Output != 0 || e.Totals.CachedInput != 1<<50 || e.Cost != 0 || e.Savings != 0 || e.Unpriced != 2 {
+	if e.Model != "fable[2J" || e.Totals.Output != 0 || e.Totals.CachedInput != maxLedgerTotal || e.Cost != 0 || e.Savings != 0 || e.Unpriced != 2 {
 		t.Fatalf("first entry: %+v", e)
 	}
 	if len([]rune(l.Entries[1].Model)) != maxLedgerName || l.Entries[1].Cost != 0 {
@@ -124,9 +148,11 @@ func TestCleanMakesAnotherComputersLedgerSafe(t *testing.T) {
 	}
 }
 
-// The host keeps one ledger per install. A computer may write only the
-// one it claimed while it stays paired; once it is gone, its install can be
-// claimed again, as when the same computer pairs anew.
+// The host keeps one ledger per install and pairing: a pairing that sends
+// another install's ledger gives up its earlier one; the pairing that sends
+// an install's id last holds its ledger, as when a computer pairs again
+// after an unpairing that never reached the host; and a ledger counts only
+// while its pairing is in place.
 func TestDeviceStoreKeepsEachComputersLedger(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "usage-devices")
 	store := OpenDeviceStore(dir)
@@ -136,34 +162,49 @@ func TestDeviceStoreKeepsEachComputersLedger(t *testing.T) {
 	ledger := func(tokens int64) *Ledger {
 		return &Ledger{Entries: []LedgerEntry{entryAt(now, "claude", "m", tokens, 1)}}
 	}
-	keyA, keyB := DeviceKey("install-a"), DeviceKey("install-b")
+	counted := func(s *DeviceStore) map[string]int64 {
+		got := map[string]int64{}
+		for _, d := range s.Ledgers(isPaired) {
+			got[d.Name] = d.Ledger.Entries[0].Totals.Output
+		}
+		return got
+	}
+	keyA, keyB, keyC := DeviceKey("install-a"), DeviceKey("install-b"), DeviceKey("install-c")
 	if err := store.Put(keyA, "dev-a", "MacBook\x1b]0;x\a", ledger(10), isPaired, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Put(keyB, "dev-b", "Mini", ledger(20), isPaired, now); err != nil {
 		t.Fatal(err)
 	}
-	// Another paired computer cannot write A's ledger.
-	if err := store.Put(keyA, "dev-b", "Mini", ledger(999), isPaired, now); err != ErrClaimed {
-		t.Fatalf("a claimed ledger was taken over: %v", err)
-	}
 	// A updates its own.
 	if err := store.Put(keyA, "dev-a", "MacBook", ledger(11), isPaired, now); err != nil {
 		t.Fatal(err)
 	}
-	// A pairs anew: its old pairing is gone, its new one takes the ledger.
-	delete(paired, "dev-a")
+	// A pairs again while its old pairing is still on the host: the new
+	// pairing holds A's ledger.
 	paired["dev-a2"] = true
 	if err := store.Put(keyA, "dev-a2", "MacBook", ledger(12), isPaired, now); err != nil {
-		t.Fatalf("a computer paired anew: %v", err)
+		t.Fatalf("a computer paired again: %v", err)
+	}
+	if got := counted(store); len(got) != 2 || got["MacBook"] != 12 || got["Mini"] != 20 {
+		t.Fatalf("after pairing again: %v", got)
+	}
+	// One pairing, one ledger: B sending another install's gives up its own.
+	if err := store.Put(keyC, "dev-b", "Mini", ledger(30), isPaired, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := counted(store); len(got) != 2 || got["Mini"] != 30 {
+		t.Fatalf("one pairing kept two ledgers: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, keyB+".json")); !os.IsNotExist(err) {
+		t.Fatalf("the ledger given up is still on disk: %v", err)
+	}
+	if err := store.Put(keyB, "dev-b", "Mini", ledger(20), isPaired, now); err != nil {
+		t.Fatal(err)
 	}
 	// Kept on disk, privately, and read back after a restart.
 	reopened := OpenDeviceStore(dir)
-	got := map[string]int64{}
-	for _, d := range reopened.Ledgers() {
-		got[d.Name] = d.Ledger.Entries[0].Totals.Output
-	}
-	if len(got) != 2 || got["MacBook"] != 12 || got["Mini"] != 20 {
+	if got := counted(reopened); len(got) != 2 || got["MacBook"] != 12 || got["Mini"] != 20 {
 		t.Fatalf("after a restart: %v", got)
 	}
 	for _, key := range []string{keyA, keyB} {
@@ -174,6 +215,18 @@ func TestDeviceStoreKeepsEachComputersLedger(t *testing.T) {
 	}
 	if info, _ := os.Stat(dir); info.Mode().Perm() != 0o700 {
 		t.Fatalf("the folder is %o", info.Mode().Perm())
+	}
+	// A removed pairing's ledger no longer counts, and goes with the next
+	// ledger kept.
+	delete(paired, "dev-a2")
+	if got := counted(store); len(got) != 1 || got["Mini"] != 20 {
+		t.Fatalf("a removed pairing still counts: %v", got)
+	}
+	if err := store.Put(keyB, "dev-b", "Mini", ledger(21), isPaired, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, keyA+".json")); !os.IsNotExist(err) {
+		t.Fatalf("a removed pairing's ledger is still on disk: %v", err)
 	}
 	// Bad keys and ledgers are refused.
 	for _, key := range []string{"", "../../etc/passwd", strings.Repeat("g", 32), keyA + "0"} {
@@ -187,13 +240,12 @@ func TestDeviceStoreKeepsEachComputersLedger(t *testing.T) {
 	// A file that is not a ledger, or under the wrong name, is not read.
 	_ = os.WriteFile(filepath.Join(dir, strings.Repeat("a", 32)+".json"), []byte(`{"key":"`+keyB+`","ledger":{}}`), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "notes.json"), []byte(`{}`), 0o600)
-	if n := len(OpenDeviceStore(dir).Ledgers()); n != 2 {
+	if n := len(OpenDeviceStore(dir).Ledgers(isPaired)); n != 1 {
 		t.Fatalf("read %d ledgers", n)
 	}
 }
 
-// The host keeps a bounded number of ledgers; room is made only from
-// computers no longer paired.
+// The host keeps a bounded number of ledgers, of computers still paired.
 func TestDeviceStoreIsBounded(t *testing.T) {
 	store := OpenDeviceStore(t.TempDir())
 	now := time.Now()
@@ -207,15 +259,95 @@ func TestDeviceStoreIsBounded(t *testing.T) {
 		}
 	}
 	paired["new"] = true
-	if err := store.Put(DeviceKey("new"), "new", "new", &Ledger{}, isPaired, now); err == nil {
-		t.Fatal("a ledger beyond the bound was kept while every computer is paired")
+	if err := store.Put(DeviceKey("new"), "new", "new", &Ledger{}, isPaired, now); err != ErrStoreFull {
+		t.Fatalf("a ledger beyond the bound, with every computer paired: %v", err)
 	}
 	delete(paired, "dev-Aa")
 	if err := store.Put(DeviceKey("new"), "new", "new", &Ledger{}, isPaired, now); err != nil {
 		t.Fatalf("no room was made from a computer no longer paired: %v", err)
 	}
-	if n := len(store.Ledgers()); n != maxStoredDevices {
+	if n := len(store.Ledgers(isPaired)); n != maxStoredDevices {
 		t.Fatalf("%d ledgers kept", n)
+	}
+}
+
+// A ledger travels as compact arrays and is read one entry at a time: one
+// longer than a ledger may be, or with entries of the wrong shape, is
+// refused before it takes memory.
+func TestLedgerIsReadWithinItsLimits(t *testing.T) {
+	now := time.Now()
+	l := &Ledger{
+		Entries:     []LedgerEntry{{Quarter: unixQuarter(now), Provider: "claude", Model: "fable", Totals: Totals{UncachedInput: 1, CachedInput: 2, CacheCreation: 3, Output: 4, Reasoning: 5}, Cost: 1.25, Savings: 0.5, Records: 6, Unpriced: 1}},
+		Sessions:    []SessionSpan{{Provider: "claude", ID: "0123abcd", First: unixQuarter(now) - 4, Last: unixQuarter(now)}},
+		ScannedAtMs: now.UnixMilli(),
+	}
+	raw, err := json.Marshal(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"entries":[[`) || !strings.Contains(string(raw), `[1,2,3,4,5]`) {
+		t.Fatalf("not compact: %s", raw)
+	}
+	var back Ledger
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Entries) != 1 || back.Entries[0] != l.Entries[0] || len(back.Sessions) != 1 || back.Sessions[0] != l.Sessions[0] || back.ScannedAtMs != l.ScannedAtMs {
+		t.Fatalf("round trip: %+v", back)
+	}
+	many := func(field, element string, n int) []byte {
+		return []byte(`{"` + field + `":[` + strings.TrimSuffix(strings.Repeat(element+",", n), ",") + `]}`)
+	}
+	entry := `[1,"claude","m",[0,0,0,0,0],0,0,0,0]`
+	session := `["claude","ab",1,1]`
+	if err := json.Unmarshal(many("entries", entry, maxLedgerEntries), &back); err != nil || len(back.Entries) != maxLedgerEntries {
+		t.Fatalf("a ledger at the limit: %v", err)
+	}
+	for name, body := range map[string][]byte{
+		"too many entries":      many("entries", entry, maxLedgerEntries+1),
+		"too many sessions":     many("sessions", session, maxLedgerSessions+1),
+		"entries in two halves": []byte(`{"entries":[` + strings.TrimSuffix(strings.Repeat(entry+",", maxLedgerEntries), ",") + `],"entries":[` + entry + `]}`),
+		"empty objects":         many("entries", `{}`, 3),
+		"short entries":         many("entries", `[1,"claude"]`, 1),
+		"wrong types":           many("entries", `[1,"claude","m",[0,0,0,0,0],"x",0,0,0]`, 1),
+		"not an object":         []byte(`[]`),
+	} {
+		var got Ledger
+		if err := json.Unmarshal(body, &got); err == nil {
+			t.Errorf("%s: taken", name)
+		}
+	}
+	devices := `[` + strings.TrimSuffix(strings.Repeat(`{"key":"k","ledger":null},`, MaxDevices+1), ",") + `]`
+	var list DeviceLedgers
+	if err := json.Unmarshal([]byte(devices), &list); err == nil {
+		t.Errorf("%d computers' ledgers were taken", MaxDevices+1)
+	}
+}
+
+// Every ledger's totals are bounded, so even the most computers a summary
+// adds up, each with a ledger at the bound, cannot overflow.
+func TestTotalsCannotOverflow(t *testing.T) {
+	now := time.Now()
+	big := Totals{UncachedInput: 1 << 62, CachedInput: 1 << 62, CacheCreation: 1 << 62, Output: 1 << 62, Reasoning: 1 << 62}
+	var devices []DeviceLedger
+	for i := 0; i < MaxDevices+1; i++ {
+		l := &Ledger{}
+		for j := 0; j < 50; j++ {
+			l.Entries = append(l.Entries, LedgerEntry{Quarter: unixQuarter(now) - int64(j), Provider: "claude", Model: "m", Totals: big, Cost: 1e300, Records: 1 << 62, Unpriced: 1 << 62})
+		}
+		if !l.Clean(now) {
+			t.Fatal("refused")
+		}
+		devices = append(devices, DeviceLedger{Key: strings.Repeat(string(rune('a'+i%26)), 1) + string(rune('a'+i/26)), Name: "c", Ledger: l})
+	}
+	s := Combine(devices, "", now.AddDate(0, 0, -1), now, time.UTC)
+	if s.TotalTokens <= 0 || s.Records <= 0 || s.Totals.Output <= 0 || math.IsInf(s.TotalCost, 0) || math.IsNaN(s.TotalCost) {
+		t.Fatalf("overflowed: tokens %d records %d output %d cost %v", s.TotalTokens, s.Records, s.Totals.Output, s.TotalCost)
+	}
+	for _, d := range s.Devices {
+		if d.Tokens <= 0 {
+			t.Fatalf("a computer's share overflowed: %+v", d)
+		}
 	}
 }
 

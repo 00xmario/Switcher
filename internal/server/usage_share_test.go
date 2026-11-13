@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -127,19 +128,77 @@ func TestUsageIsCombinedAcrossHostAndClients(t *testing.T) {
 		t.Fatalf("this computer's own request was taken as a paired computer's: %d", stranger.Code)
 	}
 
-	// The Mini goes away: its usage still counts on the host, and the
-	// MacBook keeps counting it.
-	if err := host.Revoke(deviceNamed(t, host, "Mini")); err != nil {
-		t.Fatal(err)
-	}
+	// The Mini is away (its Switcher is not running): its usage still
+	// counts on the host, and the MacBook keeps counting it.
 	laptopAPI.syncUsage(context.Background())
 	if s := laptopUsage.Get(30); s.TotalTokens != 123 {
-		t.Fatalf("after the Mini left: %d tokens", s.TotalTokens)
+		t.Fatalf("with the Mini away: %d tokens", s.TotalTokens)
+	}
+	// The Mini pairs again while its old pairing is still on the host, as
+	// after an unpairing that never reached it: it keeps sending its usage,
+	// counted once.
+	oldMini := deviceNamed(t, host, "Mini")
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	install, err := miniAPI.RemoteClient.InstallID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	againAPI, _ := usageComputer(t, "Mini", 3)
+	againAPI.RemoteClient = remote.NewClient(t.TempDir(), "")
+	if err := os.WriteFile(filepath.Join(againAPI.RemoteClient.Dir(), "install.json"), []byte(mustJSON(t, map[string]string{"id": install})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := againAPI.RemoteClient.InstallID(); id != install {
+		t.Fatalf("the install id did not carry over: %q", id)
+	}
+	if _, err := againAPI.RemoteClient.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Mini"); err != nil {
+		t.Fatal(err)
+	}
+	againAPI.syncUsage(context.Background())
+	if sharing := againAPI.usageSharing(); sharing["error"] != nil {
+		t.Fatalf("pairing again: %v", sharing)
+	}
+	if s := hostUsage.Get(30); s.TotalTokens != 123 || len(s.Devices) != 3 {
+		t.Fatalf("after the Mini paired again: %d tokens, %+v", s.TotalTokens, s.Devices)
+	}
+	// The owner removes the Mini's pairings: its usage no longer counts.
+	var minis []string
+	for _, d := range host.Status().Devices {
+		if d.Name == "Mini" {
+			minis = append(minis, d.ID)
+		}
+	}
+	if len(minis) != 2 || !slices.Contains(minis, oldMini) {
+		t.Fatalf("the Mini's pairings: %v", minis)
+	}
+	for _, id := range minis {
+		if err := host.Revoke(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	laptopAPI.syncUsage(context.Background())
+	if s := laptopUsage.Get(30); s.TotalTokens != 120 || len(s.Devices) != 2 {
+		t.Fatalf("after the Mini was removed: %d tokens", s.TotalTokens)
+	}
+	if s := hostUsage.Get(30); s.TotalTokens != 120 {
+		t.Fatalf("the host still counts the removed Mini: %d tokens", s.TotalTokens)
+	}
+	// The removed Mini learns it at its next exchange: it counts only its
+	// own usage, and says why.
+	miniAPI.syncUsage(context.Background())
+	if s := miniUsage.Get(30); s.TotalTokens != 3 || s.Devices != nil {
+		t.Fatalf("the removed Mini: %d tokens, %+v", s.TotalTokens, s.Devices)
+	}
+	if sharing := miniAPI.usageSharing(); sharing["reason"] != "rejected" {
+		t.Fatalf("the removed Mini does not say why: %v", sharing)
 	}
 	// The host goes away: the MacBook shows the host's last numbers.
 	host.Close()
 	laptopAPI.syncUsage(context.Background())
-	if s := laptopUsage.Get(30); s.TotalTokens != 123 {
+	if s := laptopUsage.Get(30); s.TotalTokens != 120 {
 		t.Fatalf("with the host away: %d tokens", s.TotalTokens)
 	}
 	if sharing := laptopAPI.usageSharing(); sharing["error"] == nil {
@@ -147,8 +206,15 @@ func TestUsageIsCombinedAcrossHostAndClients(t *testing.T) {
 	}
 	// Kept on disk: after a restart of the MacBook's Switcher too.
 	reopened := remote.NewClient(laptopAPI.RemoteClient.Dir(), "")
-	if ledgers, at := reopened.UsageLedgers(); len(ledgers) != 3 || at.IsZero() {
+	if ledgers, at := reopened.UsageLedgers(); len(ledgers) != 2 || at.IsZero() {
 		t.Fatalf("after a restart: %d ledgers, at %v", len(ledgers), at)
+	}
+	// A computer that stops sharing counts no computers paired with it.
+	if err := host.SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if s := hostUsage.Get(30); s.TotalTokens != 100 || s.Devices != nil {
+		t.Fatalf("a computer that stopped sharing: %d tokens, %+v", s.TotalTokens, s.Devices)
 	}
 }
 
@@ -186,5 +252,66 @@ func TestOlderHostLeavesUsageAlone(t *testing.T) {
 	}
 	if sharing := api.usageSharing(); sharing["error"] == nil || !strings.Contains(sharing["error"].(string), "update") {
 		t.Fatalf("why is not said: %v", sharing)
+	}
+}
+
+// A computer that pairs again exchanges at once, not at the next round: the
+// host counts it only from its new pairing on.
+func TestPairingAgainExchangesAtOnce(t *testing.T) {
+	was := usageTick
+	usageTick = 20 * time.Millisecond
+	t.Cleanup(func() { usageTick = was })
+	hostAPI, hostUsage := usageComputer(t, "k12", 100)
+	hostAPI.UsageDevices = usage.OpenDeviceStore(filepath.Join(t.TempDir(), "usage-devices"))
+	mux := http.NewServeMux()
+	hostAPI.Register(mux)
+	host, err := remote.NewHost(t.TempDir(), 0, mux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	hostAPI.RemoteHost = host
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	laptopAPI, _ := usageComputer(t, "MacBook", 20)
+	laptopAPI.RemoteClient = remote.NewClient(t.TempDir(), "")
+	connect := func() {
+		code, err := host.NewPairingCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := laptopAPI.RemoteClient.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "MacBook"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts := func(tokens int64) bool {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if hostUsage.Get(30).TotalTokens == tokens {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}
+	connect()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { laptopAPI.RunUsageSharing(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	if !counts(120) {
+		t.Fatalf("the first pairing did not exchange: %d tokens", hostUsage.Get(30).TotalTokens)
+	}
+	old := deviceNamed(t, host, "MacBook")
+	connect()
+	if host.Paired(old) {
+		if err := host.Revoke(old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !counts(120) {
+		t.Fatalf("pairing again did not exchange at once: %d tokens", hostUsage.Get(30).TotalTokens)
 	}
 }

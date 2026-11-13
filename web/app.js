@@ -1965,7 +1965,7 @@ function renderUsage() {
     row.className = 'usage-provider';
     row.innerHTML = `
       <div class="usage-provider-main">
-        <span class="provider-dot ${p.provider}"></span>
+        <span class="provider-dot ${escapeHTML(p.provider)}"></span>
         <span class="logo">${LOGOS[p.provider] || ''}</span>
         ${escapeHTML(USAGE_PROVIDER_NAMES[p.provider] || p.provider)}
         <span class="usage-provider-count">${p.sessions} sessions</span>
@@ -1996,10 +1996,13 @@ function renderUsage() {
 }
 
 // usageSharingNote says, on a computer that uses a host, when the host's
-// part of the combined usage is not current.
+// part of the combined usage is not current, or why it is not added up.
 function usageSharingNote(sharing) {
   if (!sharing) return '';
   const host = sharing.host || 'the host';
+  if (sharing.reason === 'old_host') return `${host} does not add up usage yet; update Switcher there`;
+  if (sharing.reason === 'rejected') return `${host} no longer accepts this computer; pair again to add up usage`;
+  if (sharing.reason === 'refused') return `${host} did not take this computer's usage (${sharing.error})`;
   const age = sharing.updated_ms ? Date.now() - sharing.updated_ms : Infinity;
   if (!sharing.updated_ms) return sharing.error ? `${host}'s usage could not be read yet` : `reading ${host}'s usage`;
   if (age < 30 * 60 * 1000) return '';

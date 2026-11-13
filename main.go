@@ -476,7 +476,7 @@ func run(port, desktopRelayPort int) {
 	// Cost/token usage: rescan the common windows periodically in the
 	// background so the API always has a recent summary ready.
 	// One scan serves every window.
-	go usageService.Scan(30)
+	go usageService.Rescan()
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()

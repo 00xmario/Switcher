@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,63 +22,110 @@ import (
 
 // usageShare remembers, on a client, how the last exchange went.
 type usageShare struct {
-	mu     sync.Mutex
-	last   time.Time // the last exchange tried
-	err    error     // what it failed with, if it did
-	paired bool      // paired at the last look, so a new pairing exchanges at once
+	mu      sync.Mutex
+	last    time.Time // the last exchange tried
+	err     error     // what it failed with, if it did
+	pairing string    // the pairing at the last look, so a new one exchanges at once
 }
 
 const (
 	// usageSyncEvery is how often a client sends its usage and takes
 	// everyone's; a client whose exchange failed tries again after
-	// usageRetry, and the Usage page asks for one after usagePageSync.
-	usageSyncEvery = 5 * time.Minute
-	usageRetry     = time.Minute
-	usagePageSync  = time.Minute
+	// usageRetry, or usageRefusedRetry when the host turned it down, and
+	// the Usage page asks for one after usagePageSync.
+	usageSyncEvery    = 5 * time.Minute
+	usageRetry        = time.Minute
+	usageRefusedRetry = time.Hour
+	usagePageSync     = time.Minute
+	// usageUploadLimit bounds a ledger a paired computer sends; the largest
+	// a ledger may be is well within it.
+	usageUploadLimit = 16 << 20
+	// usageAnswerLimit bounds the ledgers a host gives at once: a client
+	// takes up to remote's usageLimit.
+	usageAnswerLimit = 48 << 20
 )
+
+// usageUploads bounds how many ledgers from paired computers are read at
+// once.
+var usageUploads = make(chan struct{}, 2)
+
+// usageTick is how often the sharing loop looks whether an exchange is due.
+var usageTick = 30 * time.Second
 
 // handleUsageDevice keeps the ledger a paired computer sends: its own only.
 func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 	device, ok := remote.PairedDeviceID(r)
 	name, _ := remote.PairedDevice(r)
-	if !ok || a.UsageDevices == nil || a.RemoteHost == nil {
+	if !ok || a.UsageDevices == nil || !a.hostingUsage() {
 		http.NotFound(w, r)
+		return
+	}
+	select {
+	case usageUploads <- struct{}{}:
+		defer func() { <-usageUploads }()
+	default:
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "the host is reading other computers' usage; try again in a moment"})
 		return
 	}
 	var body struct {
 		Install string        `json:"install"`
 		Ledger  *usage.Ledger `json:"ledger"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<20)).Decode(&body); err != nil || !remote.ValidInstallID(body.Install) || body.Ledger == nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, usageUploadLimit)).Decode(&body); err != nil || !remote.ValidInstallID(body.Install) || body.Ledger == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid usage ledger"})
 		return
 	}
 	err := a.UsageDevices.Put(usage.DeviceKey(body.Install), device, name, body.Ledger, a.RemoteHost.Paired, time.Now())
 	switch {
-	case errors.Is(err, usage.ErrClaimed):
+	case errors.Is(err, usage.ErrStoreFull):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case err != nil:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("usage: keeping a paired computer's usage: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "the host could not keep this computer's usage"})
 	default:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 
+// hostingUsage reports whether this computer shares its accounts, and so
+// keeps and gives the usage of the computers paired with it.
+func (a *API) hostingUsage() bool { return a.RemoteHost != nil && a.RemoteHost.Enabled() }
+
 // handleUsageLedgers gives a paired computer every computer's ledger: this
-// host's own and the ones paired computers sent.
+// host's own and the ones paired computers sent, the most recent first, as
+// many as fit one answer.
 func (a *API) handleUsageLedgers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := remote.PairedDeviceID(r); !ok || a.UsageDevices == nil || a.Usage == nil {
+	if _, ok := remote.PairedDeviceID(r); !ok || a.UsageDevices == nil || a.Usage == nil || !a.hostingUsage() {
 		http.NotFound(w, r)
 		return
 	}
-	devices := a.UsageDevices.Ledgers()
+	devices := a.UsageDevices.Ledgers(a.RemoteHost.Paired)
+	sort.SliceStable(devices, func(i, j int) bool { return devices[i].UpdatedMs > devices[j].UpdatedMs })
 	if own, at := a.Usage.OwnLedger(); own != nil {
 		key, name, _ := a.UsageIdentity()
 		devices = append([]usage.DeviceLedger{{Key: key, Name: name, Host: true, UpdatedMs: at.UnixMilli(), Ledger: own}}, devices...)
 	} else {
-		go a.Usage.Scan(30)
+		go a.Usage.Rescan()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+	var out bytes.Buffer
+	out.WriteString(`{"devices":[`)
+	written := 0
+	for _, d := range devices {
+		raw, err := json.Marshal(d)
+		if err != nil || out.Len()+len(raw)+3 > usageAnswerLimit {
+			continue
+		}
+		if written > 0 {
+			out.WriteByte(',')
+		}
+		out.Write(raw)
+		written++
+	}
+	out.WriteString("]}\n")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(out.Bytes())
 }
 
 // UsageIdentity is this computer among the ones whose usage is added up.
@@ -113,8 +163,9 @@ func (a *API) UsageLedgers() []usage.DeviceLedger {
 			add(d)
 		}
 	}
-	if a.UsageDevices != nil {
-		for _, d := range a.UsageDevices.Ledgers() {
+	// A computer that no longer shares counts no computers paired with it.
+	if a.UsageDevices != nil && a.hostingUsage() {
+		for _, d := range a.UsageDevices.Ledgers(a.RemoteHost.Paired) {
 			add(d)
 		}
 	}
@@ -129,7 +180,7 @@ func (a *API) syncUsage(ctx context.Context) {
 	}
 	own := a.Usage.Own()
 	if own == nil {
-		a.Usage.Scan(30)
+		a.Usage.Rescan()
 		if own = a.Usage.Own(); own == nil {
 			return
 		}
@@ -143,13 +194,28 @@ func (a *API) syncUsage(ctx context.Context) {
 	a.usageShare.mu.Unlock()
 }
 
-// syncUsageIfOld exchanges usage when the last exchange is older than age.
+// syncUsageIfOld exchanges usage when the last exchange is older than age,
+// or than the wait after the host turned one down.
 func (a *API) syncUsageIfOld(age time.Duration) {
 	a.usageShare.mu.Lock()
-	due := time.Since(a.usageShare.last) >= age
+	due := time.Since(a.usageShare.last) >= max(age, a.usageWaitLocked(0))
 	a.usageShare.mu.Unlock()
 	if due {
 		a.syncUsage(context.Background())
+	}
+}
+
+// usageWaitLocked is how long after the last exchange the next is due:
+// every, after one that went well; soon after one that failed on the way;
+// an hour after one the host turned down or does not know.
+func (a *API) usageWaitLocked(every time.Duration) time.Duration {
+	switch err := a.usageShare.err; {
+	case err == nil:
+		return every
+	case errors.Is(err, remote.ErrNoUsageSharing) || errors.Is(err, remote.ErrUsageRefused):
+		return usageRefusedRetry
+	default:
+		return usageRetry
 	}
 }
 
@@ -158,17 +224,19 @@ func (a *API) syncUsageIfOld(age time.Duration) {
 // the host every few minutes, at once on a new pairing, and again soon after
 // a failed exchange. It returns when ctx ends.
 func (a *API) RunUsageSharing(ctx context.Context) {
-	tick := time.NewTicker(30 * time.Second)
+	tick := time.NewTicker(usageTick)
 	defer tick.Stop()
 	for {
-		paired := a.RemoteClient != nil && a.RemoteClient.Paired()
-		a.usageShare.mu.Lock()
-		wait := usageSyncEvery
-		if a.usageShare.err != nil {
-			wait = usageRetry
+		pairing := ""
+		if a.RemoteClient != nil && a.RemoteClient.Paired() {
+			pairing = a.RemoteClient.PairingID()
 		}
-		due := paired && (!a.usageShare.paired || time.Since(a.usageShare.last) >= wait)
-		a.usageShare.paired = paired
+		a.usageShare.mu.Lock()
+		wait := a.usageWaitLocked(usageSyncEvery)
+		// A computer that paired, or paired again, exchanges at once: the
+		// host counts it only from its new pairing on.
+		due := pairing != "" && (pairing != a.usageShare.pairing || time.Since(a.usageShare.last) >= wait)
+		a.usageShare.pairing = pairing
 		a.usageShare.mu.Unlock()
 		if due {
 			a.Usage.RefreshStale([]int{30}, usageSyncEvery)
@@ -196,6 +264,16 @@ func (a *API) usageSharing() map[string]any {
 	a.usageShare.mu.Lock()
 	if err := a.usageShare.err; err != nil {
 		out["error"] = err.Error()
+		switch {
+		case errors.Is(err, remote.ErrNoUsageSharing):
+			out["reason"] = "old_host"
+		case errors.Is(err, remote.ErrUsageRejected):
+			out["reason"] = "rejected"
+		case errors.Is(err, remote.ErrUsageRefused):
+			out["reason"] = "refused"
+		default:
+			out["reason"] = "unreachable"
+		}
 	}
 	a.usageShare.mu.Unlock()
 	return out
