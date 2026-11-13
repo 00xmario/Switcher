@@ -24,3 +24,7 @@ func connectedUID(local, remote *net.TCPAddr) (uint32, bool) { return 0, false }
 func queryFailure(local, remote *net.TCPAddr) error { return errUnsupported }
 
 func otherEndOpen(conn net.Conn) bool { return false }
+
+func portHeld(addr *net.TCPAddr) bool { return true }
+
+func portHolders(addr *net.TCPAddr, since time.Time) []uint32 { return nil }

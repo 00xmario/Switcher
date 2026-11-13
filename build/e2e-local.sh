@@ -11,17 +11,21 @@
 # that would point it elsewhere are cleared.
 set -eu
 
-# Its real path: on a Mac the temporary folder is reached through the /var
-# symlink, which the Desktop relay's store refuses, as it would any home
-# reached through one.
-work=$(cd "$(mktemp -d)" && pwd -P)
+# Its own folder, by its real path: on a Mac the temporary folder is reached
+# through the /var symlink, which the Desktop relay's store refuses, as it
+# would any home reached through one. Only that folder is ever removed.
+tmp=$(mktemp -d) || exit 1
+[ -n "$tmp" ] && [ -d "$tmp" ] || exit 1
+work=$(cd "$tmp" && pwd -P) || exit 1
 pid=
 cleanup() {
 	[ -z "$pid" ] || kill "$pid" 2>/dev/null || true
 	[ -z "$pid" ] || wait "$pid" 2>/dev/null || true
-	rm -rf "$work"
+	rm -rf "$tmp"
 }
 trap cleanup EXIT
+# An interrupted run cleans up too (dash runs no EXIT trap on a signal).
+trap 'exit 130' INT TERM HUP
 fail() {
 	echo "e2e-local: $*" >&2
 	[ ! -f "$work/home/server.log" ] || sed 's/^/  server: /' "$work/home/server.log" >&2
@@ -31,11 +35,18 @@ fail() {
 # another Switcher's address, not the real CLIs' folders (Claude Code's is
 # this home's own, which on a Mac also names its own Keychain item), not a
 # proxy.
+unset_vars="-u SWITCHER_ALLOW_LOCAL_USERS -u SWITCHER_URL -u CODEX_HOME -u GROK_HOME
+	-u CLAUDE_SECURESTORAGE_CONFIG_DIR -u SWITCHER_PEER_PROBE
+	-u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY"
+# shellcheck disable=SC2086 # unset_vars is a list of flags
 clean() {
-	env -u SWITCHER_ALLOW_LOCAL_USERS -u SWITCHER_URL -u CODEX_HOME -u GROK_HOME \
-		-u CLAUDE_SECURESTORAGE_CONFIG_DIR -u SWITCHER_PEER_PROBE \
-		-u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-		HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" CLAUDE_CONFIG_DIR="$work/home/.claude" "$@"
+	env $unset_vars HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" CLAUDE_CONFIG_DIR="$work/home/.claude" "$@"
+}
+# serve_bg is clean for a program run in the background: it becomes that
+# background process, so stopping it stops the program.
+# shellcheck disable=SC2086
+serve_bg() {
+	exec env $unset_vars HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" CLAUDE_CONFIG_DIR="$work/home/.claude" "$@"
 }
 get() { curl -s --noproxy '*' --max-time 10 "$@"; }
 
@@ -50,7 +61,7 @@ for _ in 1 2 3 4 5; do
 	port=$((20000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 20000))
 	relay=$((port + 1))
 	: >"$work/home/server.log"
-	clean "$work/switcher" -port "$port" -desktop-relay-port "$relay" serve >"$work/home/server.log" 2>&1 &
+	serve_bg "$work/switcher" -port "$port" -desktop-relay-port "$relay" serve >"$work/home/server.log" 2>&1 &
 	pid=$!
 	for _ in $(seq 1 100); do
 		if get -o /dev/null "http://127.0.0.1:$port/api/auth/status"; then

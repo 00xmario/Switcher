@@ -455,9 +455,10 @@ type sameUser struct {
 	otherEndOpen func(net.Conn) bool
 	trusted      func() bool
 	doubt        func()
-	serveUnseen  bool      // see serveUnseen
-	logged       time.Time // the last refusal logged
-	unseenLogged time.Time // the last connection served unseen, logged
+	serveUnseen  bool                // see serveUnseen
+	held         func(net.Conn) bool // stands in for clientHere in tests
+	logged       time.Time           // the last refusal logged
+	unseenLogged time.Time           // the last connection served unseen, logged
 	logMu        sync.Mutex
 
 	start   sync.Once
@@ -567,11 +568,13 @@ func (l *sameUser) admit(conn net.Conn, accepted time.Time) bool {
 		// is no longer open then, one that was only being set up is shown.
 		time.Sleep(recheckWait)
 		uid, kind = l.peer(conn, time.Now())
-		if kind == peerUnseen && l.otherEndOpen(conn) {
-			// Still open, still not shown, from this computer's own address:
-			// a client waiting for its answer whose socket this system does
-			// not show. Served: the check must never turn this user's own
-			// programs away. The self-test is made again.
+		if kind == peerUnseen && l.otherEndOpen(conn) && l.clientHere(conn) {
+			// Still open, still not shown, from this computer's own address,
+			// and its address held by a program, none of another account's
+			// that the system shows: a client waiting for its answer whose
+			// socket this system does not show. Served: the check must never
+			// turn this user's own programs away. The self-test is made
+			// again.
 			l.logUnseen(conn)
 			if l.doubt != nil {
 				l.doubt()
@@ -588,7 +591,32 @@ func (l *sameUser) admit(conn net.Conn, accepted time.Time) bool {
 		return true
 	}
 	l.logRefusal(conn, uid, kind)
+	// A connection refused for not being shown is a reason to make the
+	// self-test again, in case the system stopped showing sockets.
+	if kind == peerUnseen && l.doubt != nil {
+		l.doubt()
+	}
 	return false
+}
+
+// clientHere reports whether the address an unseen connection came from is
+// held by a program, as a live client's is (one that went away without this
+// end being told holds none), and no account but this user's holds it as
+// far as the system shows.
+func (l *sameUser) clientHere(conn net.Conn) bool {
+	if l.held != nil {
+		return l.held(conn)
+	}
+	remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok || !portHeld(remote) {
+		return false
+	}
+	for _, uid := range portHolders(remote, time.Now()) {
+		if uid != l.uid && !(l.root && uid == 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // loopbackPeer reports whether conn comes from a loopback address, as a

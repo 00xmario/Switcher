@@ -66,11 +66,20 @@ var loopbackIndex = sync.OnceValue(func() uint32 {
 // each lookup here is one question to the kernel.
 const checksAtOnce = 32
 
-// kernelLookup asks the kernel at once; since is always satisfied.
+// kernelLookup asks the kernel at once; since is always satisfied. A
+// question the kernel did not answer this time is asked once more.
 func kernelLookup(local, remote *net.TCPAddr, _ time.Time) (socket, bool) {
 	found, err := kernelQuery(local, remote)
+	if errors.Is(err, errTransient) {
+		time.Sleep(10 * time.Millisecond)
+		found, err = kernelQuery(local, remote)
+	}
 	return found, err == nil
 }
+
+// portHolders: not asked on Linux, where a connection the kernel does not
+// show is refused (see serveUnseen).
+func portHolders(addr *net.TCPAddr, since time.Time) []uint32 { return nil }
 
 // queryFailure says why a lookup fails: see selfTest.
 func queryFailure(local, remote *net.TCPAddr) error {
