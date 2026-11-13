@@ -179,13 +179,17 @@ func matchPCB(pcbs []pcb, local, remote *net.TCPAddr) (socket, bool) {
 		}
 	}
 	// One pair of addresses is one connection; a socket winding down on it
-	// beside a new one is passed over for the one in use.
+	// beside a new one is passed over for the one in use. Only sockets
+	// winding down is a connection whose sender has gone.
 	if len(found) > 1 {
 		var live []pcb
 		for _, p := range found {
 			if !p.noFDRef && bsdConnected[p.state] {
 				live = append(live, p)
 			}
+		}
+		if len(live) == 0 {
+			return socket{uid: found[0].uid, live: false, connected: false}, true
 		}
 		found = live
 	}

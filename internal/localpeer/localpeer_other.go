@@ -7,9 +7,13 @@ import (
 	"time"
 )
 
-func peerUID(conn net.Conn, local, remote *net.TCPAddr, since time.Time) (uint32, bool) {
-	return 0, false
+func peerOf(conn net.Conn, local, remote *net.TCPAddr, since time.Time) (uint32, peerKind) {
+	return 0, peerUnseen
 }
+
+// lookupsAvailable says this system can be asked whose a socket is: not
+// here, so nothing is checked.
+const lookupsAvailable = false
 
 const checksAtOnce = 32
 

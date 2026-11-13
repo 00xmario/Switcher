@@ -435,21 +435,26 @@ environment; a terminal-only override needs the CLI command. The first
   service that runs as root and forwards connections for others would let
   them in), on the main port, the Desktop relay's and the sign-in
   callbacks'; the command line and the tray in turn send nothing to a port
-  another account holds. Only a definite answer naming another account
-  turns a connection away: one whose owner the system does not show is
-  served while it is open, so the check never locks you out of your own
-  Switcher, and refused only once its sender has gone (a request nobody is
-  waiting for). `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`)
+  another account holds. Only a definite answer turns a connection away:
+  the system showing it as another account's, or as let go of by its
+  program (a sender that has gone, whose request nobody waits for). One
+  whose socket the system does not show at all is served while it is open,
+  so the check never locks you out of your own Switcher, and Switcher checks
+  again whether the system shows every program's connections. (A client
+  that is both unshown and has already closed its sending side is not
+  served.) `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`)
   lifts the check, for a container that shares the computer's network under
   its own user; `=root` lets only root's programs in as well; any other
-  value leaves it on. At start a separate process of yours connects to
-  Switcher, as every real client is, to check the system's answers: a system
-  that does not show other processes' connections, or answers wrongly about
-  them, turns the check off (tested again every minute). A test that could
-  not be made, as when another account has taken every free port, leaves
-  the check on and is made again a few seconds later. Every check builds and
-  starts the real server and reaches it from curl and the switcher command,
-  on a Mac and on Linux (`build/e2e-local.sh`).
+  value leaves it on. A separate process of yours connects to Switcher, as
+  every real client is, to check the system's answers before any of them
+  turns a connection away: a system that does not show other processes'
+  connections, or shows them wrongly, refuses nothing for what it says
+  (tested again every minute, in the background). A test that could not be
+  made, as when another account has taken every free port, is made again a
+  few seconds later. Every release check builds and starts the real server
+  and reaches it from curl, the switcher command and, on a Mac, Foundation
+  (as the menu bar app does) and Python, on the main port, the Desktop
+  relay's and the sign-in callbacks' (`build/e2e-local.sh`).
 - **Web pages cannot reach it.** Requests must name this computer as their
   host, so another site's name pointed at `127.0.0.1` is refused, and a
   request another site started is refused whatever it asks for. The

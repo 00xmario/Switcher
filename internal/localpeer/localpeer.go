@@ -65,19 +65,36 @@ type socket struct {
 	connected bool
 }
 
+// peerKind is what the system shows of the other end of a connection.
+type peerKind int
+
+const (
+	// peerUnseen: the system did not show it, or could not be read.
+	peerUnseen peerKind = iota
+	// peerFound: a live, connected socket, and whose it is.
+	peerFound
+	// peerGone: there, but its program has let go of it or it is no longer
+	// connected: its sender has gone.
+	peerGone
+)
+
 // PeerUID is the user that owns the other end of conn, a connection between
 // two addresses of this computer. ok is false when it cannot be told: on a
 // system other than Linux and macOS, or when the other end is gone.
-func PeerUID(conn net.Conn) (uid uint32, ok bool) { return peerUIDSince(conn, time.Now()) }
+func PeerUID(conn net.Conn) (uid uint32, ok bool) {
+	uid, kind := peerSince(conn, time.Now())
+	return uid, kind == peerFound
+}
 
-// peerUIDSince is PeerUID for a connection accepted no earlier than since.
-func peerUIDSince(conn net.Conn, since time.Time) (uint32, bool) {
+// peerSince is what the system shows of the other end of conn, a connection
+// accepted no earlier than since.
+func peerSince(conn net.Conn, since time.Time) (uint32, peerKind) {
 	local, _ := conn.LocalAddr().(*net.TCPAddr)
 	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
 	if local == nil || remote == nil {
-		return 0, false
+		return 0, peerUnseen
 	}
-	return peerUID(conn, local, remote, since)
+	return peerOf(conn, local, remote, since)
 }
 
 // serverEndUID is the user the other end of a connection this process made
@@ -103,27 +120,32 @@ func ListenerUID(addr *net.TCPAddr) (uid uint32, ok bool) {
 type support int
 
 const (
-	// untested: not tried yet. The check is on.
+	// untested: not tried yet. Definite answers count.
 	untested support = iota
-	// working: a connection this process made to itself came back as its
-	// own user's. The check is on for good.
+	// working: another process of this user connected, and the system
+	// showed its connection as this user's. Definite answers count.
 	working
 	// unanswered: the test could not be made, or the system did not answer
 	// it this time, as when the computer is out of ports or its socket list
-	// kept changing while read; another account can bring that about. The
-	// check stays on, and the test is made again soon.
+	// kept changing while read; another account can bring that about.
+	// Definite answers still count, and the test is made again soon.
 	unanswered
-	// unsupported: the system takes no questions about sockets, or answered
-	// wrongly about this process's own. Its answers mean nothing, so the
-	// check is off; the test is made again now and then.
+	// unsupported: the system shows no other process's sockets, or showed
+	// them wrongly. Its answers mean nothing: nothing is refused for them.
+	// The test is made again now and then.
 	unsupported
 )
 
-// works remembers, per address family, what the self-test found.
+// works remembers, per address family, what the self-test found. The first
+// test is made when first needed; later ones run in the background while
+// the last answer stands, so no connection ever waits for one.
 var works [2]struct {
 	sync.Mutex
 	state   support
 	checked time.Time
+	testing bool // a test is under way
+	doubted bool // a connection was served unseen: test again
+	done    chan struct{}
 }
 
 const (
@@ -132,15 +154,8 @@ const (
 	selfTestWait  = 2 * time.Second
 )
 
-// sameAddr reports whether two addresses are the same TCP address.
-func sameAddr(a, b net.Addr) bool {
-	x, ok1 := a.(*net.TCPAddr)
-	y, ok2 := b.(*net.TCPAddr)
-	return ok1 && ok2 && x.Port == y.Port && x.IP.Equal(y.IP)
-}
-
 // Works reports whether the check is on for IPv4 loopback connections:
-// everywhere but on a computer known not to say who owns a connection.
+// everywhere but on a computer known not to show whose a connection is.
 func Works() bool { return worksFor(false) }
 
 // worksFor is Works for IPv4 or for IPv6 loopback connections. Each is
@@ -148,25 +163,70 @@ func Works() bool { return worksFor(false) }
 // for that family.
 func worksFor(v6 bool) bool { return supportFor(v6) != unsupported }
 
-func supportFor(v6 bool) support {
-	i := 0
+func family(v6 bool) int {
 	if v6 {
-		i = 1
+		return 1
 	}
-	w := &works[i]
+	return 0
+}
+
+// supportFor is what the self-test found for a family. The first time, it
+// waits for the test (one already under way included); afterwards it
+// answers at once and has a test that is due made in the background.
+func supportFor(v6 bool) support {
+	w := &works[family(v6)]
 	w.Lock()
-	defer w.Unlock()
-	switch age := time.Since(w.checked); {
-	case w.state == untested,
-		w.state == unanswered && age >= selfTestSoon,
-		w.state == unsupported && age >= selfTestAgain:
-		w.state, w.checked = runSelfTest(v6), time.Now()
+	run := runSelfTest
+	if w.state == untested {
+		if !w.testing {
+			w.testing, w.done = true, make(chan struct{})
+			w.Unlock()
+			finishTest(v6, run(v6))
+			w.Lock()
+		} else {
+			done := w.done
+			w.Unlock()
+			<-done
+			w.Lock()
+		}
+		state := w.state
+		w.Unlock()
+		return state
 	}
-	return w.state
+	age := time.Since(w.checked)
+	due := w.state == unanswered && age >= selfTestSoon ||
+		w.state == unsupported && age >= selfTestAgain ||
+		w.doubted && age >= selfTestAgain
+	if due && !w.testing {
+		w.testing, w.doubted, w.done = true, false, make(chan struct{})
+		go func() { finishTest(v6, run(v6)) }()
+	}
+	state := w.state
+	w.Unlock()
+	return state
+}
+
+func finishTest(v6 bool, state support) {
+	w := &works[family(v6)]
+	w.Lock()
+	w.state, w.checked, w.testing = state, time.Now(), false
+	close(w.done)
+	w.Unlock()
+}
+
+// doubt is told of a connection served though the system did not show
+// whose it was: the self-test is made again (at most once a minute), in case
+// the system no longer shows every socket.
+func doubt(v6 bool) {
+	w := &works[family(v6)]
+	w.Lock()
+	w.doubted = true
+	w.Unlock()
+	supportFor(v6)
 }
 
 // runSelfTest and whyNoAnswer are selfTest and queryFailure; tests stand
-// in for them.
+// in for them (runSelfTest is read under the family's lock).
 var (
 	runSelfTest = selfTest
 	whyNoAnswer = queryFailure
@@ -189,8 +249,6 @@ func selfTest(v6 bool) support {
 		return unanswered
 	}
 	defer ln.Close()
-	// Nothing here waits for long: the test is made while connections wait
-	// to be checked.
 	deadline := time.Now().Add(selfTestWait)
 	if tcp, ok := ln.(*net.TCPListener); ok {
 		_ = tcp.SetDeadline(deadline)
@@ -207,17 +265,26 @@ func selfTest(v6 bool) support {
 	}
 	defer stop()
 	defer server.Close()
-	if uid, ok := PeerUID(server); !ok {
+	switch uid, kind := peerSince(server, time.Now()); {
+	case kind == peerFound && uid == me:
+		return working
+	case kind == peerUnseen:
 		return failed(server.RemoteAddr().(*net.TCPAddr), addr)
-	} else if uid != me {
+	default:
+		// Another user's, or let go of, though the probe is alive and
+		// holding it: the system's answers are wrong here.
 		return unsupported
 	}
-	return working
 }
+
+// probeReaders bounds the connections read at once while the self-test
+// waits for its probe's.
+const probeReaders = 32
 
 // connectFromProbe starts this program again as the probe (see probeEnv),
 // and returns this end of its connection: the one that says the probe's
-// token. Any account may connect to the test's port; the others are closed.
+// token. Any account may connect to the test's port: every connection is
+// read side by side, and those that do not say the token are closed.
 func connectFromProbe(ln net.Listener, addr *net.TCPAddr, deadline time.Time) (net.Conn, func(), error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -228,7 +295,9 @@ func connectFromProbe(ln net.Listener, addr *net.TCPAddr, deadline time.Time) (n
 		return nil, nil, err
 	}
 	token := hex.EncodeToString(raw)
-	cmd := exec.Command(exe)
+	// "version": a release without the probe prints its version and exits
+	// rather than start a server.
+	cmd := exec.Command(exe, "version")
 	cmd.Env = append(withoutProbe(os.Environ()), probeEnv+"="+addr.String()+","+token)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -238,23 +307,55 @@ func connectFromProbe(ln net.Listener, addr *net.TCPAddr, deadline time.Time) (n
 		return nil, nil, err
 	}
 	stop := func() { stdin.Close(); _ = cmd.Wait() }
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			stop()
-			return nil, nil, err
+	found := make(chan net.Conn, 1)
+	slots := make(chan struct{}, probeReaders)
+	var readers sync.WaitGroup
+	accepted := make(chan error, 1)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				accepted <- err
+				return
+			}
+			select {
+			case slots <- struct{}{}:
+			default:
+				conn.Close() // too many at once: not the probe's alone
+				continue
+			}
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				defer func() { <-slots }()
+				_ = conn.SetReadDeadline(deadline)
+				line, _ := bufio.NewReader(conn).ReadString('\n')
+				_ = conn.SetReadDeadline(time.Time{})
+				if strings.TrimSpace(line) == token {
+					select {
+					case found <- conn:
+						return
+					default:
+					}
+				}
+				conn.Close()
+			}()
 		}
-		readBy := time.Now().Add(selfTestWait / 4)
-		if deadline.Before(readBy) {
-			readBy = deadline
-		}
-		_ = conn.SetReadDeadline(readBy)
-		line, _ := bufio.NewReader(conn).ReadString('\n')
-		_ = conn.SetReadDeadline(time.Time{})
-		if strings.TrimSpace(line) == token {
+	}()
+	select {
+	case conn := <-found:
+		// The listener closes when the test ends; what it still accepts is
+		// closed by the readers.
+		return conn, stop, nil
+	case err := <-accepted:
+		readers.Wait()
+		select {
+		case conn := <-found:
 			return conn, stop, nil
+		default:
 		}
-		conn.Close()
+		stop()
+		return nil, nil, err
 	}
 }
 
@@ -268,25 +369,9 @@ func withoutProbe(environ []string) []string {
 	return out
 }
 
-// doubt is told of a connection still open whose owner could not be told,
-// on a system the self-test found working: it is made again, at most once a
-// minute, in case the system no longer shows every socket.
-func doubt(v6 bool) {
-	i := 0
-	if v6 {
-		i = 1
-	}
-	w := &works[i]
-	w.Lock()
-	defer w.Unlock()
-	if w.state == working && time.Since(w.checked) >= selfTestAgain {
-		w.state = untested
-	}
-}
-
-// failed is what a lookup of one of the self-test's own sockets failing
-// means: a system without answers, or one that found no socket this
-// process holds, is unsupported; one that did not answer this time is not.
+// failed is what the system not showing one of the self-test's own sockets
+// means: a system without answers, or one that does not show it though it
+// is there, is unsupported; one that did not answer this time is not.
 func failed(local, remote *net.TCPAddr) support {
 	switch err := whyNoAnswer(local, remote); {
 	case errors.Is(err, errUnsupported), errors.Is(err, errNotFound):
@@ -298,53 +383,69 @@ func failed(local, remote *net.TCPAddr) support {
 
 // SameUser wraps a listener on this computer so it takes connections only
 // from the user this process runs as. Root's are refused too: root could
-// read this user's files anyway, but a program that runs as root and
-// passes connections on for others, as some SSH and VPN services do, would
-// let those others in as root. A connection whose owner cannot be told is
-// dropped as well: one whose sender has already gone, which could otherwise
-// carry a request in unseen. Where the computer does not say who owns a
-// connection, or AllowOthersEnv lifts the check, ln is returned as it is.
+// read this user's files anyway, but a program that runs as root and passes
+// connections on for others, as some SSH and VPN services do, would let
+// those others in as root (AllowOthersEnv=root lets root in).
+//
+// Only a definite answer turns a connection away: the system showing it as
+// another account's, or as let go of by its program (a sender that has
+// gone, whose request nobody waits for), on a system the self-test did not
+// find unsupported. A connection whose socket the system does not show is
+// served while its other end is open, and the self-test is made again: the
+// check never turns this user's own programs away. One that is closed from
+// the other end already is not served. Where the computer cannot be asked
+// at all, or AllowOthersEnv lifts the check, ln is returned as it is.
 func SameUser(ln net.Listener) net.Listener {
 	addr, _ := ln.Addr().(*net.TCPAddr)
 	everyone, root := allowed()
-	if everyone || addr == nil {
+	if everyone || addr == nil || !lookupsAvailable {
 		return ln
 	}
-	g := guard(ln, uint32(os.Getuid()), root, func(conn net.Conn) (uint32, bool) { return PeerUID(conn) })
-	g.ownerSince = peerUIDSince
-	g.otherEndOpen = otherEndOpen
-	// Where the system is known not to say whose a connection is, everyone's
-	// is taken; the self-test is tried again now and then.
+	g := guard(ln, uint32(os.Getuid()), root, nil)
 	v6 := addr.IP.To4() == nil
-	g.enforced = func() bool { return worksFor(v6) }
+	g.peer = peerSince
+	g.otherEndOpen = otherEndOpen
+	g.trusted = func() bool { return worksFor(v6) }
 	g.doubt = func() { doubt(v6) }
 	return g
 }
 
+// guard makes the listener wrapper; owner, when set, stands in for the
+// system's answer in tests: ok means found.
 func guard(ln net.Listener, uid uint32, root bool, owner func(net.Conn) (uint32, bool)) *sameUser {
-	return &sameUser{Listener: ln, uid: uid, root: root, owner: owner,
+	g := &sameUser{Listener: ln, uid: uid, root: root,
 		taken: make(chan net.Conn), quit: make(chan struct{}), stopped: make(chan struct{})}
+	if owner != nil {
+		g.peer = func(conn net.Conn, _ time.Time) (uint32, peerKind) {
+			if uid, ok := owner(conn); ok {
+				return uid, peerFound
+			}
+			return 0, peerUnseen
+		}
+	}
+	return g
 }
 
 // Enforced reports whether SameUser refuses other users here.
 func Enforced() bool {
 	everyone, _ := allowed()
-	return !everyone && Works()
+	return !everyone && lookupsAvailable && Works()
 }
 
 type sameUser struct {
 	net.Listener
-	uid   uint32
-	root  bool // root's connections are taken as well
-	owner func(net.Conn) (uint32, bool)
+	uid  uint32
+	root bool // root's connections are taken as well
+	// peer is what the system shows of a connection's other end, accepted
+	// no earlier than the time given.
+	peer func(net.Conn, time.Time) (uint32, peerKind)
 	// otherEndOpen says whether the other end of a connection has not closed
-	// it; doubt is told of one served though its owner could not be told.
+	// it; trusted, whether definite answers count (the self-test did not
+	// find the system unsupported); doubt is told of a connection served
+	// unseen.
 	otherEndOpen func(net.Conn) bool
+	trusted      func() bool
 	doubt        func()
-	// ownerSince, when set, is owner for a connection accepted no earlier
-	// than the time given; enforced, when set, says whether to check at all.
-	ownerSince   func(net.Conn, time.Time) (uint32, bool)
-	enforced     func() bool
 	logged       time.Time // the last refusal logged
 	unseenLogged time.Time // the last connection served unseen, logged
 	logMu        sync.Mutex
@@ -423,38 +524,9 @@ func (l *sameUser) run() {
 		go func() {
 			defer l.checks.Done()
 			defer func() { <-slots }()
-			if l.enforced == nil || l.enforced() {
-				var uid uint32
-				var ok bool
-				if l.ownerSince != nil {
-					uid, ok = l.ownerSince(conn, accepted)
-				} else {
-					uid, ok = l.owner(conn)
-				}
-				switch {
-				case ok && (uid == l.uid || l.root && uid == 0):
-				case ok:
-					// Another account's, as the system says.
-					l.logRefusal(uid, true)
-					conn.Close()
-					return
-				case l.otherEndOpen != nil && l.otherEndOpen(conn):
-					// Still open from the other end: a client waiting for its
-					// answer, whose socket this system did not show. It is
-					// served: a system that does not show every socket must
-					// never turn this user's own programs away. The
-					// self-test is made again.
-					l.logUnseen()
-					if l.doubt != nil {
-						l.doubt()
-					}
-				default:
-					// Gone already: its request would be served with
-					// nobody to tell whose it was.
-					l.logRefusal(0, false)
-					conn.Close()
-					return
-				}
+			if !l.admit(conn, accepted) {
+				conn.Close()
+				return
 			}
 			select {
 			case l.taken <- conn:
@@ -462,6 +534,37 @@ func (l *sameUser) run() {
 				conn.Close()
 			}
 		}()
+	}
+}
+
+// admit decides whether a connection is served.
+func (l *sameUser) admit(conn net.Conn, accepted time.Time) bool {
+	uid, kind := l.peer(conn, accepted)
+	switch {
+	case kind == peerFound && (uid == l.uid || l.root && uid == 0):
+		return true
+	case kind == peerFound || kind == peerGone:
+		// Another account's, or let go of by its program: refused, unless
+		// the self-test found that this system's answers mean nothing.
+		if l.trusted != nil && !l.trusted() {
+			return true
+		}
+		l.logRefusal(uid, kind)
+		return false
+	case l.otherEndOpen != nil && l.otherEndOpen(conn):
+		// Open from the other end, a client waiting for its answer, whose
+		// socket this system did not show: served, and the self-test made
+		// again.
+		l.logUnseen()
+		if l.doubt != nil {
+			l.doubt()
+		}
+		return true
+	default:
+		// Closed from the other end already, and not shown: nobody is
+		// waiting for an answer.
+		l.logRefusal(0, peerUnseen)
+		return false
 	}
 }
 
@@ -479,15 +582,15 @@ func (l *sameUser) logUnseen() {
 
 // logRefusal says, at most once a minute, that a connection was refused,
 // so that someone wondering why a program gets no answer finds out.
-func (l *sameUser) logRefusal(uid uint32, known bool) {
+func (l *sameUser) logRefusal(uid uint32, kind peerKind) {
 	l.logMu.Lock()
 	defer l.logMu.Unlock()
 	if time.Since(l.logged) < time.Minute {
 		return
 	}
 	l.logged = time.Now()
-	who := "a program whose user could not be told"
-	if known {
+	who := "a program that had already gone"
+	if kind == peerFound {
 		who = "another account's program (uid " + strconv.FormatUint(uint64(uid), 10) + ")"
 		if uid == 0 {
 			who = "a program running as root"
@@ -576,21 +679,28 @@ func loopbackHost(ctx context.Context, host string) bool {
 // ownConnection checks a connection this process made to this computer.
 func ownConnection(conn net.Conn) error {
 	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
-	if everyone, _ := allowed(); everyone || remote == nil || !remote.IP.IsLoopback() || !worksFor(remote.IP.To4() == nil) {
+	if everyone, _ := allowed(); everyone || remote == nil || !remote.IP.IsLoopback() || !lookupsAvailable {
 		return nil
 	}
 	// This user's, or root's only where the user lets root in: on macOS a
 	// launchd socket that any user can set up is held by root.
 	_, root := allowed()
 	mine := func(uid uint32) bool { return uid == uint32(os.Getuid()) || root && uid == 0 }
-	// Whose the port is. Only a definite answer naming another account
-	// stops the request: one the system does not give, asked a few times,
-	// never keeps this user from their own Switcher (the device token is
-	// never sent; see internal/deviceproof).
+	// Only a definite answer naming another account stops the request, and
+	// only on a system whose answers the self-test found to mean something
+	// (made then, when first needed): an answer the system does not give,
+	// asked a few times, never keeps this user from their own Switcher (the
+	// device token is never sent; see internal/deviceproof).
+	other := func(uid uint32) error {
+		if !worksFor(remote.IP.To4() == nil) {
+			return nil
+		}
+		return &OtherUserError{Port: remote.Port, UID: uid}
+	}
 	for try := 0; ; try++ {
 		listener, ok := ListenerUID(remote)
 		if ok && !mine(listener) {
-			return &OtherUserError{Port: remote.Port, UID: listener}
+			return other(listener)
 		}
 		if ok || try == 2 {
 			break
@@ -600,7 +710,7 @@ func ownConnection(conn net.Conn) error {
 	// And whose this very connection's other end is. Before the server has
 	// taken it, the kernel shows it under the listener's owner.
 	if taker, ok := serverEndUID(conn); ok && !mine(taker) {
-		return &OtherUserError{Port: remote.Port, UID: taker}
+		return other(taker)
 	}
 	return nil
 }

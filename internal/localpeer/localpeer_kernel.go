@@ -14,6 +14,9 @@ import (
 // there before since.
 var lookup = kernelLookup
 
+// lookupsAvailable says this system can be asked whose a socket is.
+const lookupsAvailable = true
+
 // socketUID is the owner of the socket bound to local and connected to
 // remote. A listener in its place is no answer: the connection is gone. Nor
 // is a socket its program has let go of (it would pass for root's), or one
@@ -36,21 +39,39 @@ func connectedUID(local, remote *net.TCPAddr) (uint32, bool) {
 	return found.uid, true
 }
 
-// peerUID is the owner of the other end of conn. The kernel finds a socket
-// by its pair of addresses, not by which connection it is: once this end's
-// connection is over, the same pair can be another program's, and what it
-// sent before it left can still be read here. So this end is looked at
-// after the question: only while it is still connected was the socket found
-// the other end of this very connection.
+// socketPeer is what the system shows of the socket bound to local and
+// connected to remote: a live, connected one and whose it is; one that is
+// there but its program has let go of, or that is no longer connected, or a
+// listener in its place (the connection is over): gone; or nothing it
+// shows.
+func socketPeer(local, remote *net.TCPAddr, since time.Time) (uint32, peerKind) {
+	found, ok := lookup(local, remote, since)
+	switch {
+	case !ok:
+		return 0, peerUnseen
+	case found.listening:
+		return 0, peerGone
+	case !found.live || !found.connected:
+		return found.uid, peerGone
+	}
+	return found.uid, peerFound
+}
+
+// peerOf is what the system shows of the other end of conn. The kernel finds
+// a socket by its pair of addresses, not by which connection it is: once
+// this end's connection is over, the same pair can be another program's, and
+// what it sent before it left can still be read here. So this end is looked
+// at after the question: only while it is still connected was the socket
+// found the other end of this very connection.
 //
 // since is no later than when the connection was accepted: the socket list
 // read for it must be from after then.
-func peerUID(conn net.Conn, local, remote *net.TCPAddr, since time.Time) (uint32, bool) {
-	uid, ok := socketUID(remote, local, since)
-	if !ok || !stillConnected(conn) {
-		return 0, false
+func peerOf(conn net.Conn, local, remote *net.TCPAddr, since time.Time) (uint32, peerKind) {
+	uid, kind := socketPeer(remote, local, since)
+	if kind == peerFound && !stillConnected(conn) {
+		return uid, peerGone
 	}
-	return uid, true
+	return uid, kind
 }
 
 // listenerUID is the owner of the socket a connection to addr would reach.

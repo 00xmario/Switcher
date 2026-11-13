@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -539,11 +540,20 @@ func setSupport(t *testing.T, state support) {
 	w := &works[0]
 	w.Lock()
 	was, wasChecked := w.state, w.checked
-	w.state, w.checked = state, time.Now()
+	w.state, w.checked, w.doubted = state, time.Now(), false
 	w.Unlock()
 	t.Cleanup(func() {
+		for i := 0; i < 400; i++ { // a background test under way finishes first
+			w.Lock()
+			testing := w.testing
+			w.Unlock()
+			if !testing {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 		w.Lock()
-		w.state, w.checked = was, wasChecked
+		w.state, w.checked, w.doubted = was, wasChecked, false
 		w.Unlock()
 	})
 }
@@ -569,36 +579,106 @@ func TestASelfTestThatCannotBeMadeLeavesTheCheckOn(t *testing.T) {
 		}
 	}
 
-	run := runSelfTest
-	defer func() { runSelfTest = run }()
-	tests := 0
-	runSelfTest = func(bool) support { tests++; return unanswered }
+	var tests atomic.Int32
+	result := unanswered
+	var resultMu sync.Mutex
+	useSelfTest(t, func(bool) support {
+		tests.Add(1)
+		resultMu.Lock()
+		defer resultMu.Unlock()
+		return result
+	})
+	settled := func() {
+		t.Helper()
+		for i := 0; i < 200; i++ {
+			works[0].Lock()
+			testing := works[0].testing
+			works[0].Unlock()
+			if !testing {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("a background self-test never finished")
+	}
+	age := func(d time.Duration) {
+		works[0].Lock()
+		works[0].checked = time.Now().Add(-d)
+		works[0].Unlock()
+	}
 	setSupport(t, unanswered)
-	if !worksFor(false) || tests != 0 {
-		t.Fatalf("an unanswered self-test turned the check off, or was made again at once (%d)", tests)
+	if !worksFor(false) || tests.Load() != 0 {
+		t.Fatalf("an unanswered self-test turned the check off, or was made again at once (%d)", tests.Load())
 	}
-	works[0].Lock()
-	works[0].checked = time.Now().Add(-selfTestSoon)
-	works[0].Unlock()
-	if !worksFor(false) || tests != 1 {
-		t.Fatalf("an unanswered self-test was not made again soon (%d)", tests)
+	// Made again soon, in the background: the answer stands meanwhile.
+	age(selfTestSoon)
+	if !worksFor(false) {
+		t.Fatal("the check went off while a test ran")
 	}
-	runSelfTest = func(bool) support { tests++; return unsupported }
-	works[0].Lock()
-	works[0].checked = time.Now().Add(-selfTestSoon)
-	works[0].Unlock()
+	settled()
+	if tests.Load() != 1 {
+		t.Fatalf("an unanswered self-test was not made again soon (%d)", tests.Load())
+	}
+	resultMu.Lock()
+	result = unsupported
+	resultMu.Unlock()
+	age(selfTestSoon)
+	worksFor(false)
+	settled()
 	if worksFor(false) {
 		t.Fatal("a system without answers kept the check on")
 	}
-	// Once seen working, it stays on.
-	runSelfTest = func(bool) support { tests++; return unanswered }
+	// Once seen working, it stays so, unless a connection was served unseen.
+	resultMu.Lock()
+	result = unanswered
+	resultMu.Unlock()
 	setSupport(t, working)
-	works[0].Lock()
-	works[0].checked = time.Now().Add(-time.Hour)
-	works[0].Unlock()
-	before := tests
-	if !worksFor(false) || tests != before {
+	age(time.Hour)
+	before := tests.Load()
+	worksFor(false)
+	settled()
+	if tests.Load() != before {
 		t.Fatal("a working check was tested again")
+	}
+}
+
+// The first self-test is waited for, also by a caller that comes while it
+// runs; no one waits for a later one.
+func TestOnlyTheFirstSelfTestIsWaitedFor(t *testing.T) {
+	release := make(chan struct{})
+	useSelfTest(t, func(bool) support { <-release; return working })
+	setSupport(t, untested)
+	answers := make(chan support, 2)
+	for i := 0; i < 2; i++ {
+		go func() { answers <- supportFor(false) }()
+	}
+	select {
+	case got := <-answers:
+		t.Fatalf("answered %v before the first test finished", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if got := <-answers; got != working {
+			t.Fatalf("the first test: %v", got)
+		}
+	}
+	// A later test does not hold anyone up.
+	block := make(chan struct{})
+	defer close(block)
+	useSelfTest(t, func(bool) support { <-block; return unsupported })
+	works[0].Lock()
+	works[0].state, works[0].checked, works[0].doubted = working, time.Now().Add(-2*selfTestAgain), true
+	works[0].Unlock()
+	done := make(chan support, 1)
+	go func() { done <- supportFor(false) }()
+	select {
+	case got := <-done:
+		if got != working {
+			t.Fatalf("while a later test runs: %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a later self-test held a caller up")
 	}
 }
 
@@ -654,10 +734,8 @@ func TestOpenConnectionsWhoseOwnerIsUnseenAreServed(t *testing.T) {
 	works[0].Lock()
 	works[0].checked = time.Now().Add(-2 * selfTestAgain)
 	works[0].Unlock()
-	run := runSelfTest
-	defer func() { runSelfTest = run }()
 	tested := make(chan bool, 4)
-	runSelfTest = func(bool) support { tested <- true; return working }
+	useSelfTest(t, func(bool) support { tested <- true; return working })
 	if served, _ := try(); !served {
 		t.Fatal("not served")
 	}
@@ -721,4 +799,98 @@ func TestASelfTestAsksOnlyAboutItsOwnConnection(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Skip("the self-test could not be made here with a stranger connected; it never turned the check off")
+}
+
+// A sender that has gone is refused even while its data keeps this end of
+// the connection open: it queued a request and a few megabytes behind it,
+// so its closing waits behind data this end has not read, and closed before
+// Switcher looked. Its socket is there, let go of: gone, not unseen.
+func TestASenderThatQueuedItsRequestAndLeftIsRefused(t *testing.T) {
+	needsKernel(t)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded := SameUser(ln)
+	defer guarded.Close()
+	client, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := append([]byte("POST /api/accounts/x/activate HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4194304\r\n\r\n"), make([]byte, 4<<20)...)
+	_ = client.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _ = client.Write(request) // fills what the connection holds, then stops
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+	taken := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := guarded.Accept(); err == nil {
+			taken <- conn
+		}
+	}()
+	select {
+	case conn := <-taken:
+		conn.Close()
+		t.Fatal("a sender that had gone was served")
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// What the system shows as another account's, or as let go of, is refused;
+// on a system the self-test found unsupported, nothing is refused for what
+// it says.
+func TestDefiniteAnswersCountOnlyWhereTheSystemIsTrusted(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		kind    peerKind
+		uid     uint32
+		trusted bool
+		served  bool
+	}{
+		{"this user's", peerFound, 1000, true, true},
+		{"another account's", peerFound, 1001, true, false},
+		{"another account's, system unsupported", peerFound, 1001, false, true},
+		{"gone", peerGone, 1000, true, false},
+		{"gone, system unsupported", peerGone, 1000, false, true},
+	} {
+		l := &sameUser{uid: 1000, peer: func(net.Conn, time.Time) (uint32, peerKind) { return c.uid, c.kind },
+			trusted: func() bool { return c.trusted }, otherEndOpen: func(net.Conn) bool { return true }}
+		ln, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.Listener = ln
+		if got := l.admit(nil, time.Now()); got != c.served {
+			t.Errorf("%s: served=%v", c.name, got)
+		}
+		ln.Close()
+	}
+}
+
+// useSelfTest has f stand in for the self-test, swapped under the families'
+// locks as the product reads it; it is put back once no test runs.
+func useSelfTest(t *testing.T, f func(bool) support) {
+	t.Helper()
+	swap := func(to func(bool) support) func(bool) support {
+		works[0].Lock()
+		works[1].Lock()
+		was := runSelfTest
+		runSelfTest = to
+		works[1].Unlock()
+		works[0].Unlock()
+		return was
+	}
+	was := swap(f)
+	t.Cleanup(func() {
+		for i := 0; i < 400; i++ {
+			works[0].Lock()
+			busy := works[0].testing || works[1].testing
+			works[0].Unlock()
+			if !busy {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		swap(was)
+	})
 }

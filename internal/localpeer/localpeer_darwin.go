@@ -24,13 +24,14 @@ func readPCBs() ([]pcb, bool) {
 func readPCBsFor() ([]pcb, error) {
 	var raw []byte
 	var err error
-	// The list can grow between asking for its size and reading it: tried
-	// again, a moment later each time.
-	for try := range 8 {
+	// The list can grow between asking for its size and reading it (past
+	// the room the system leaves): tried again, a moment later each time,
+	// for a few hundred milliseconds.
+	for try := range 20 {
 		if raw, err = unix.SysctlRaw("net.inet.tcp.pcblist_n"); err != unix.ENOMEM {
 			break
 		}
-		time.Sleep(time.Duration(try) * time.Millisecond)
+		time.Sleep(time.Duration(min(2*try, 25)) * time.Millisecond)
 	}
 	switch {
 	case err == unix.ENOMEM:
