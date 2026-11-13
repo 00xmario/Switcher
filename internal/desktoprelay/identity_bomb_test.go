@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http/httptest"
 	goruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,4 +148,42 @@ type zeros struct{}
 func (zeros) Read(p []byte) (int, error) {
 	clear(p)
 	return len(p), nil
+}
+
+// Routing fields far longer than Claude Code's are not decoded or
+// rewritten: decoding text copies it, several times over for bytes that
+// are not text, and a body full of one field would multiply in memory.
+func TestOversizedRoutingFieldsAreNotDecoded(t *testing.T) {
+	huge := strings.Repeat("\xff", 8<<20) // 8 MiB of bytes that are not text
+	body := []byte(`{"model":"m","metadata":{"user_id":"` + huge + `"},"thread":{"type":"continue"}}`)
+	r := httptest.NewRequest("POST", "/v1/messages", nil)
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	view := identity(r, body)
+	rewritten := withAccountUUID(body, "0f8fad5b-d9cb-469f-a165-70867728950e")
+	goruntime.ReadMemStats(&after)
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 3*uint64(len(body)) {
+		t.Fatalf("reading an %d MiB field allocated %d MiB", len(huge)>>20, grew>>20)
+	}
+	if view.Model != "m" || view.Thread != "continue" || view.SessionID != "" {
+		t.Fatalf("the other fields: %+v", view)
+	}
+	if &rewritten[0] != &body[0] || len(rewritten) != len(body) {
+		t.Fatal("a body with an oversized user_id was rewritten")
+	}
+	// A long model name or thread type is no model or thread type.
+	long := identity(r, []byte(`{"model":"`+strings.Repeat("m", maxFieldBytes+1)+`","thread":{"type":"`+strings.Repeat("c", maxFieldBytes+1)+`"}}`))
+	if long.Model != "" || long.Thread != "create" {
+		t.Fatalf("oversized fields were read: model %d bytes, thread %q", len(long.Model), long.Thread)
+	}
+	// Claude Code's own request is read and rewritten as before.
+	own := []byte(`{"model":"claude-fable-5-2","metadata":{"user_id":"{\"session_id\":\"0f8fad5b-d9cb-469f-a165-70867728950e\",\"account_uuid\":\"11111111-2222-3333-4444-555555555555\"}"}}`)
+	view = identity(r, own)
+	if view.Model != "claude-fable-5-2" || view.AccountUUID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("an ordinary request: %+v", view)
+	}
+	if out := withAccountUUID(own, "99999999-2222-3333-4444-555555555555"); !bytes.Contains(out, []byte("99999999-2222")) {
+		t.Fatalf("an ordinary request was not rewritten: %s", out)
+	}
 }

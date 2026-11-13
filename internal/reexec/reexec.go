@@ -133,9 +133,9 @@ func without(environ []string) []string {
 
 // Inherited is the listener the previous image of this process handed over,
 // if it is one listening on addr; otherwise nil. It reads the hand-over
-// once: nothing this process starts sees it. A descriptor that is not what
-// the hand-over says, a listening TCP socket on addr, is not this
-// function's to touch and is left as it is.
+// once: nothing this process starts sees it. A descriptor that is not a
+// socket is not this function's to touch and is left as it is; a socket
+// that turns out not to be the one listening on addr is closed.
 func Inherited(addr string) net.Listener {
 	value := os.Getenv(envName)
 	if value == "" {

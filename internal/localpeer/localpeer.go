@@ -4,8 +4,7 @@
 // Switcher's port on 127.0.0.1 is reachable by every account on the
 // computer, and it serves the accounts without a login of its own, as the
 // CLIs need. On Linux the kernel says who owns each socket, so the server
-// takes connections only from the user it runs as (and from root, who can
-// read that user's files anyway), and the command line and
+// takes connections only from the user it runs as, and the command line and
 // tray make sure the port they talk to is that user's Switcher. Other
 // systems do not say, and there this package answers "unknown".
 package localpeer
@@ -23,8 +22,21 @@ import (
 
 // AllowOthersEnv turns the check off, for a setup where another account's
 // programs are meant to use this Switcher, such as a container that shares
-// the computer's network under its own user.
+// the computer's network under its own user. Set to "root" it lets only
+// root's programs in beside this user's.
 const AllowOthersEnv = "SWITCHER_ALLOW_LOCAL_USERS"
+
+// allowed is what AllowOthersEnv asks for: everyone, or root as well.
+func allowed() (everyone, root bool) {
+	switch value := os.Getenv(AllowOthersEnv); value {
+	case "":
+		return false, false
+	case "root":
+		return false, true
+	default:
+		return true, true
+	}
+}
 
 // PeerUID is the user that owns the other end of conn, a connection between
 // two addresses of this computer. ok is false when it cannot be told: off
@@ -36,6 +48,17 @@ func PeerUID(conn net.Conn) (uid uint32, ok bool) {
 		return 0, false
 	}
 	return peerUID(conn, local, remote)
+}
+
+// serverEndUID is the user the other end of a connection this process made
+// is shown under, taken by its program yet or not.
+func serverEndUID(conn net.Conn) (uint32, bool) {
+	local, _ := conn.LocalAddr().(*net.TCPAddr)
+	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
+	if local == nil || remote == nil {
+		return 0, false
+	}
+	return connectedUID(remote, local)
 }
 
 // ListenerUID is the user that listens on addr on this computer.
@@ -98,44 +121,46 @@ func selfTest(v6 bool) bool {
 }
 
 // SameUser wraps a listener on this computer so it takes connections only
-// from the user this process runs as, and from root, who can read this
-// user's files anyway. A connection whose owner cannot be told is dropped
-// too: one whose sender has already gone, which could otherwise carry a
-// request in unseen. Where the computer does not say who owns a connection,
-// or AllowOthersEnv is set, ln is returned as it is.
+// from the user this process runs as. Root's are refused too: root could
+// read this user's files anyway, but a program that runs as root and
+// passes connections on for others, as some SSH and VPN services do, would
+// let those others in as root. A connection whose owner cannot be told is
+// dropped as well: one whose sender has already gone, which could otherwise
+// carry a request in unseen. Where the computer does not say who owns a
+// connection, or AllowOthersEnv lifts the check, ln is returned as it is.
 func SameUser(ln net.Listener) net.Listener {
 	addr, _ := ln.Addr().(*net.TCPAddr)
-	if os.Getenv(AllowOthersEnv) != "" || addr == nil || !worksFor(addr.IP.To4() == nil) {
+	everyone, root := allowed()
+	if everyone || addr == nil || !worksFor(addr.IP.To4() == nil) {
 		return ln
 	}
-	return &sameUser{Listener: ln, uid: uint32(os.Getuid()), owner: PeerUID}
+	return guard(ln, uint32(os.Getuid()), root, PeerUID)
+}
+
+func guard(ln net.Listener, uid uint32, root bool, owner func(net.Conn) (uint32, bool)) *sameUser {
+	return &sameUser{Listener: ln, uid: uid, root: root, owner: owner,
+		taken: make(chan net.Conn), quit: make(chan struct{}), stopped: make(chan struct{})}
 }
 
 // Enforced reports whether SameUser refuses other users here.
-func Enforced() bool { return os.Getenv(AllowOthersEnv) == "" && Works() }
+func Enforced() bool {
+	everyone, _ := allowed()
+	return !everyone && Works()
+}
 
 type sameUser struct {
 	net.Listener
 	uid   uint32
+	root  bool // root's connections are taken as well
 	owner func(net.Conn) (uint32, bool)
 
-	start  sync.Once
-	taken  chan net.Conn  // connections found to be this user's
-	done   chan struct{}  // closed when the listener is
-	err    error          // why, read after done
-	checks sync.WaitGroup // lookups in flight
-}
-
-// Close closes the listener and waits for the lookups in flight to end.
-func (l *sameUser) Close() error {
-	err := l.Listener.Close()
-	l.start.Do(func() {
-		l.taken, l.done, l.err = make(chan net.Conn), make(chan struct{}), net.ErrClosed
-		close(l.done)
-	})
-	<-l.done
-	l.checks.Wait()
-	return err
+	start   sync.Once
+	closing sync.Once
+	taken   chan net.Conn  // connections found to be this user's
+	quit    chan struct{}  // closed to stop everything
+	stopped chan struct{}  // closed when run has ended
+	err     error          // why run ended, read after stopped
+	checks  sync.WaitGroup // lookups in flight
 }
 
 // checksAtOnce bounds how many connections are being looked up at a time.
@@ -146,19 +171,34 @@ const checksAtOnce = 32
 // time: one slow answer from the kernel then holds up one connection, not
 // everyone waiting behind it.
 func (l *sameUser) Accept() (net.Conn, error) {
-	l.start.Do(func() {
-		l.taken, l.done = make(chan net.Conn), make(chan struct{})
-		go l.run()
-	})
+	l.start.Do(func() { go l.run() })
 	select {
 	case conn := <-l.taken:
 		return conn, nil
-	case <-l.done:
+	case <-l.stopped:
 		return nil, l.err
+	case <-l.quit:
+		return nil, net.ErrClosed
 	}
 }
 
+// Close closes the listener and ends the lookups in flight; what they were
+// about to hand over is closed. It does not wait for anyone to call Accept.
+func (l *sameUser) Close() error {
+	var err error
+	l.closing.Do(func() {
+		close(l.quit)
+		err = l.Listener.Close()
+	})
+	// run ends on the closed listener, or never started.
+	l.start.Do(func() { l.err = net.ErrClosed; close(l.stopped) })
+	<-l.stopped
+	l.checks.Wait()
+	return err
+}
+
 func (l *sameUser) run() {
+	defer close(l.stopped)
 	slots := make(chan struct{}, checksAtOnce)
 	var wait time.Duration
 	for {
@@ -168,26 +208,35 @@ func (l *sameUser) run() {
 			// does not.
 			if temporary, ok := err.(interface{ Temporary() bool }); ok && temporary.Temporary() && !errors.Is(err, net.ErrClosed) {
 				wait = min(max(2*wait, 5*time.Millisecond), time.Second)
-				time.Sleep(wait)
-				continue
+				select {
+				case <-time.After(wait):
+					continue
+				case <-l.quit:
+					err = net.ErrClosed
+				}
 			}
 			l.err = err
-			close(l.done)
 			return
 		}
 		wait = 0
-		slots <- struct{}{}
+		select {
+		case slots <- struct{}{}:
+		case <-l.quit:
+			conn.Close()
+			l.err = net.ErrClosed
+			return
+		}
 		l.checks.Add(1)
 		go func() {
 			defer l.checks.Done()
 			defer func() { <-slots }()
-			if uid, ok := l.owner(conn); !ok || (uid != l.uid && uid != 0) {
+			if uid, ok := l.owner(conn); !ok || (uid != l.uid && !(l.root && uid == 0)) {
 				conn.Close()
 				return
 			}
 			select {
 			case l.taken <- conn:
-			case <-l.done:
+			case <-l.quit:
 				conn.Close()
 			}
 		}()
@@ -233,7 +282,7 @@ type checkedTransport struct {
 }
 
 func (t *checkedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if loopbackHost(r.URL.Hostname()) {
+	if loopbackHost(r.Context(), r.URL.Hostname()) {
 		return t.local.RoundTrip(r)
 	}
 	return t.base.RoundTrip(r)
@@ -246,18 +295,34 @@ func (t *checkedTransport) CloseIdleConnections() {
 	}
 }
 
-func loopbackHost(host string) bool {
+// loopbackHost reports whether host is this computer: "localhost", a
+// loopback address, or a name that leads to one (some systems give the
+// computer's own name the address 127.0.1.1).
+func loopbackHost(ctx context.Context, host string) bool {
 	if host == "localhost" {
 		return true
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return false
+	}
+	for _, addr := range addrs {
+		if addr.IP.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }
 
 // ownConnection checks a connection this process made to this computer.
 func ownConnection(conn net.Conn) error {
 	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
-	if os.Getenv(AllowOthersEnv) != "" || remote == nil || !remote.IP.IsLoopback() || !worksFor(remote.IP.To4() == nil) {
+	if everyone, _ := allowed(); everyone || remote == nil || !remote.IP.IsLoopback() || !worksFor(remote.IP.To4() == nil) {
 		return nil
 	}
 	mine := func(uid uint32) bool { return uid == uint32(os.Getuid()) || uid == 0 }
@@ -267,8 +332,9 @@ func ownConnection(conn net.Conn) error {
 	if !ok || !mine(listener) {
 		return &OtherUserError{Port: remote.Port, UID: listener, Unknown: !ok}
 	}
-	// And whose the program is that took this very connection, once one has.
-	if taker, ok := PeerUID(conn); ok && !mine(taker) {
+	// And whose this very connection's other end is. Before the server has
+	// taken it, the kernel shows it under the listener's owner.
+	if taker, ok := serverEndUID(conn); ok && !mine(taker) {
 		return &OtherUserError{Port: remote.Port, UID: taker}
 	}
 	return nil

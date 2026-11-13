@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"switcher/internal/localpeer"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -211,6 +212,11 @@ func (m *Manager) startLifecycleLocked(ctx context.Context, resume bool) error {
 		m.condition = "listen_error"
 		return fmt.Errorf("%w: could not listen", ErrUnavailable)
 	}
+	// Only this user's programs reach the relay, where the system says
+	// whose a connection is: a relay password another account's program
+	// caught, by sitting on this port while Switcher was down, is then of
+	// no use from that account.
+	l = localpeer.SameUser(l)
 	old := m.state.Enabled
 	m.state.Enabled = true
 	if err = m.saveLocked(); err != nil {

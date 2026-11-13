@@ -426,12 +426,14 @@ environment; a terminal-only override needs the CLI command. The first
   takes its port once, at start, and keeps it, also across its own
   restarts after an update or a change of listeners, when the listening
   socket is handed to the next process. On Linux it also serves only
-  the user it runs as, and root: the kernel says whose each local
-  connection is, and another account's are dropped, as are the sign-in
-  callback's; the command
+  the user it runs as: the kernel says whose each local connection is,
+  and another account's are dropped (root's too, since a service that
+  runs as root and forwards connections for others would let them in), on
+  the main port, the Desktop relay's and the sign-in callbacks'; the command
   line and the tray in turn send nothing to a port another account holds.
   `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a container that shares
-  the computer's network under its own user. macOS does not say whose a
+  the computer's network under its own user; `=root` lets only root's
+  programs in as well. macOS does not say whose a
   local connection is: on a Mac shared with accounts you do not trust, set
   the dashboard password, which closes everything but the CLI proxy paths.
 - **Web pages cannot reach it.** Requests must name this computer as their

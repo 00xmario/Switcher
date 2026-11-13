@@ -472,7 +472,9 @@ func withAccountUUID(body []byte, uuid string) []byte {
 			UserID json.RawMessage `json:"user_id"`
 		} `json:"metadata"`
 	}
-	if json.Unmarshal(body, &top) != nil || len(top.Metadata.UserID) == 0 {
+	// A user_id far longer than Claude Code's is left as it is: rewriting
+	// it would copy it several times over.
+	if json.Unmarshal(body, &top) != nil || len(top.Metadata.UserID) == 0 || len(top.Metadata.UserID) > maxFieldBytes {
 		return body
 	}
 	var inner string

@@ -37,29 +37,29 @@ type identityView struct {
 // in place.
 func identity(r *http.Request, body []byte) identityView { return identityIn(unpacking, r, body) }
 
-// identityIn is identity with the turns a packed body waits for.
+// identityIn is identity with the turns a packed body waits for. The turn
+// is kept until the unpacked body has been read and can be let go of.
 func identityIn(turns chan struct{}, r *http.Request, body []byte) identityView {
 	var v identityView
-	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
-		body = unpack(turns, r, body)
+	if !strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		return identityOf(v, r, body)
 	}
-	return identityOf(v, r, body)
-}
-
-// unpack is a packed body unpacked, or nil for one that is too large or
-// was given up on. It is unpacked only up to the size a request may have: a
-// small packed body can hold gigabytes, and whoever may send a request, a
-// paired Mac included, could otherwise use up this computer's memory. Few
-// are unpacked at a time, too: many small ones at once add up to the same.
-func unpack(turns chan struct{}, r *http.Request, body []byte) []byte {
 	// A request given up on does not wait for a turn, nor take one.
 	select {
 	case turns <- struct{}{}:
 	case <-r.Context().Done():
-		return nil
+		return identityOf(v, r, nil)
 	}
-	// The turn is for the unpacking alone.
 	defer func() { <-turns }()
+	return identityOf(v, r, unpack(body))
+}
+
+// unpack is a packed body unpacked, or nil for one that is too large. It is
+// unpacked only up to the size a request may have: a small packed body can
+// hold gigabytes, and whoever may send a request, a paired Mac included,
+// could otherwise use up this computer's memory. Few are unpacked at a
+// time, too: many small ones at once add up to the same.
+func unpack(body []byte) []byte {
 	z, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
 		return body
@@ -72,21 +72,40 @@ func unpack(turns chan struct{}, r *http.Request, body []byte) []byte {
 	return unpacked
 }
 
+// maxFieldBytes bounds the routing fields read from a request: a model
+// name, a thread type, and Claude Code's metadata.user_id of a couple of
+// hundred bytes. A longer one is not read: decoding text makes copies of
+// it, several times its size for bytes that are not text.
+const maxFieldBytes = 4 << 10
+
+// shortText is a JSON string of at most maxFieldBytes, decoded.
+func shortText(raw json.RawMessage) string {
+	if len(raw) == 0 || len(raw) > maxFieldBytes {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return ""
+	}
+	return text
+}
+
 func identityOf(v identityView, r *http.Request, body []byte) identityView {
+	// The fields stay as they were sent until their length is known.
 	var top struct {
 		Thread *struct {
-			Type string `json:"type"`
+			Type json.RawMessage `json:"type"`
 		} `json:"thread"`
-		Model    string `json:"model"`
+		Model    json.RawMessage `json:"model"`
 		Metadata struct {
-			UserID string `json:"user_id"`
+			UserID json.RawMessage `json:"user_id"`
 		} `json:"metadata"`
 	}
 	json.Unmarshal(body, &top)
-	v.Model = top.Model
+	v.Model = shortText(top.Model)
 	if top.Thread != nil {
 		v.Thread = "create"
-		if top.Thread.Type == "continue" {
+		if shortText(top.Thread.Type) == "continue" {
 			v.Thread = "continue"
 		}
 	}
@@ -96,7 +115,7 @@ func identityOf(v identityView, r *http.Request, body []byte) identityView {
 		AgentID         string `json:"agent_id"`
 		AccountUUID     string `json:"account_uuid"`
 	}
-	json.Unmarshal([]byte(top.Metadata.UserID), &user)
+	json.Unmarshal([]byte(shortText(top.Metadata.UserID)), &user)
 	v.SessionID = strings.ToLower(r.Header.Get("X-Claude-Code-Session-Id"))
 	if v.SessionID == "" {
 		v.SessionID = strings.ToLower(user.SessionID)

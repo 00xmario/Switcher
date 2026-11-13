@@ -328,7 +328,7 @@ func run(port, desktopRelayPort int) {
 	reexec.Keep(bound)
 	bound = localpeer.SameUser(bound)
 	if localpeer.Enforced() {
-		log.Printf("serving this user's programs (and root's) only; other accounts on this computer are refused (%s=1 lifts this)", localpeer.AllowOthersEnv)
+		log.Printf("serving this user's programs only; other accounts on this computer, root included, are refused (%s=1 lifts this, %s=root for root alone)", localpeer.AllowOthersEnv, localpeer.AllowOthersEnv)
 	}
 	st := store.New(config.Dir())
 	st.CleanTemp()

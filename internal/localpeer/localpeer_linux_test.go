@@ -171,7 +171,7 @@ func TestSameUserDropsOtherUsers(t *testing.T) {
 		t.Fatal("the listener was not guarded")
 	}
 	var verdict atomic.Int32 // 0: as the kernel says, 1: another user, 2: unknown
-	guarded := &sameUser{Listener: ln, uid: me(), owner: func(conn net.Conn) (uint32, bool) {
+	guarded := guard(ln, me(), false, func(conn net.Conn) (uint32, bool) {
 		uid, ok := PeerUID(conn)
 		switch verdict.Load() {
 		case 1:
@@ -180,7 +180,7 @@ func TestSameUserDropsOtherUsers(t *testing.T) {
 			return 0, false
 		}
 		return uid, ok
-	}}
+	})
 	accepted := make(chan net.Conn, 4)
 	done := make(chan struct{})
 	go func() {
@@ -235,13 +235,13 @@ func TestRefusingAFloodDoesNotHoldUpThisUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Connections from 127.0.0.2 stand for another user's.
-	guarded := &sameUser{Listener: ln, uid: me(), owner: func(conn net.Conn) (uint32, bool) {
+	guarded := guard(ln, me(), false, func(conn net.Conn) (uint32, bool) {
 		uid, ok := PeerUID(conn)
 		if conn.RemoteAddr().(*net.TCPAddr).IP.Equal(net.IPv4(127, 0, 0, 2)) {
 			return uid + 1, ok
 		}
 		return uid, ok
-	}}
+	})
 	accepted := make(chan net.Conn, 16)
 	var running sync.WaitGroup
 	running.Add(1)
@@ -304,34 +304,102 @@ func TestRefusingAFloodDoesNotHoldUpThisUser(t *testing.T) {
 	}
 }
 
-// Root's own connections are taken: root reads this user's files anyway.
-func TestSameUserTakesRoot(t *testing.T) {
+// Root's connections are refused like any other account's: a program that
+// runs as root and passes connections on for others would let them in. They
+// are taken only where the user asks for that.
+func TestRootIsServedOnlyOnRequest(t *testing.T) {
+	for _, allowRoot := range []bool{false, true} {
+		ln, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		guarded := guard(ln, me()+7, allowRoot, func(net.Conn) (uint32, bool) { return 0, true })
+		client, err := net.Dial("tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		taken := make(chan error, 1)
+		go func() {
+			conn, err := guarded.Accept()
+			if err == nil {
+				conn.Close()
+			}
+			taken <- err
+		}()
+		select {
+		case err := <-taken:
+			if !allowRoot || err != nil {
+				t.Fatalf("allowRoot=%v: root's connection was taken (%v)", allowRoot, err)
+			}
+		case <-time.After(300 * time.Millisecond):
+			if allowRoot {
+				t.Fatal("root's connection was dropped though root is allowed")
+			}
+		}
+		client.Close()
+		guarded.Close()
+	}
+	t.Setenv(AllowOthersEnv, "root")
+	if everyone, root := allowed(); everyone || !root || !Enforced() && Works() {
+		t.Fatalf("%s=root: everyone=%v root=%v", AllowOthersEnv, everyone, root)
+	}
+}
+
+// Closing does not wait for anyone to take what was checked: with every
+// check done and nobody calling Accept, as when a server shuts down, it
+// still returns, and the connections are closed.
+func TestCloseDoesNotWaitForAccept(t *testing.T) {
+	needsKernel(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	guarded := &sameUser{Listener: ln, uid: me() + 7, owner: func(net.Conn) (uint32, bool) { return 0, true }}
-	defer guarded.Close()
-	client, err := net.Dial("tcp4", ln.Addr().String())
+	guarded := guard(ln, me(), false, PeerUID)
+	// One Accept starts the taking; nobody asks again.
+	first, err := net.Dial("tcp4", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
-	taken := make(chan error, 1)
-	go func() {
-		conn, err := guarded.Accept()
-		if err == nil {
-			conn.Close()
-		}
-		taken <- err
-	}()
-	select {
-	case err := <-taken:
+	defer first.Close()
+	if conn, err := guarded.Accept(); err != nil {
+		t.Fatal(err)
+	} else {
+		conn.Close()
+	}
+	var clients []net.Conn
+	for i := 0; i < checksAtOnce+8; i++ {
+		conn, err := net.Dial("tcp4", ln.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("root's connection was dropped")
+		clients = append(clients, conn)
+	}
+	time.Sleep(100 * time.Millisecond) // all checked, all waiting to be taken
+	closed := make(chan struct{})
+	go func() { guarded.Close(); guarded.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waits for someone to call Accept")
+	}
+	if _, err := guarded.Accept(); err == nil {
+		t.Fatal("Accept after Close returned a connection")
+	}
+	for _, conn := range clients {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			t.Fatal("a connection waiting to be taken was left open")
+		}
+		conn.Close()
+	}
+	// Closing a listener nobody ever accepted from is fine too.
+	other, _ := net.Listen("tcp4", "127.0.0.1:0")
+	idle := guard(other, me(), false, PeerUID)
+	if err := idle.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idle.Accept(); err == nil {
+		t.Fatal("Accept on a closed listener returned a connection")
 	}
 }
 

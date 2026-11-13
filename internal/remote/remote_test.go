@@ -619,8 +619,9 @@ func TestADevicesRunningRequestsHoldBoundedMemory(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the first request was not read")
 	}
-	// A second large body does not fit beside the first.
-	if code, body := send("/codex/more", 700<<10); code != http.StatusRequestEntityTooLarge || !strings.Contains(body, "too much") {
+	// A second large body does not fit beside the first: the device is
+	// asked to try again, before any of the body is read.
+	if code, body := send("/codex/more", 700<<10); code != http.StatusTooManyRequests || !strings.Contains(body, "too much") {
 		t.Fatalf("a body beyond the device's bound: %d %s", code, body)
 	}
 	// A small one still does.
@@ -635,10 +636,25 @@ func TestADevicesRunningRequestsHoldBoundedMemory(t *testing.T) {
 	if code, body := send("/codex/again", 700<<10); code != http.StatusOK || body != strconv.Itoa(700<<10) {
 		t.Fatalf("after the first ended: %d %s", code, body)
 	}
-	host.mu.Lock()
+	host.heldMu.Lock()
 	left := len(host.held)
-	host.mu.Unlock()
+	host.heldMu.Unlock()
 	if left != 0 {
 		t.Fatalf("finished requests still hold memory: %v", left)
+	}
+	// A read after a request has ended is refused and counts for nothing.
+	_, charge, done, ok := host.track(context.Background(), host.Status().Devices[0].ID)
+	if !ok || !charge(1000) {
+		t.Fatal("a running request could not send")
+	}
+	done()
+	if charge(1000) {
+		t.Fatal("a read after the request ended was counted")
+	}
+	host.heldMu.Lock()
+	left = len(host.held)
+	host.heldMu.Unlock()
+	if left != 0 {
+		t.Fatalf("bytes read after the end are held for good: %v", left)
 	}
 }

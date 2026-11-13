@@ -156,8 +156,10 @@ type Host struct {
 	runningSeq uint64
 	// held is how many bytes of request bodies each device's running
 	// requests have sent: the handlers keep a body in memory until they
-	// are done with it.
-	held map[string]int64
+	// are done with it. It has a lock of its own: it is counted on every
+	// read of a body.
+	heldMu sync.Mutex
+	held   map[string]int64
 }
 
 // NewHost loads the host state from dir. next serves the routes paired devices
@@ -466,8 +468,23 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
+	// A body that will not fit beside the device's other running requests
+	// is turned away before any of it is read, in the way a client tries
+	// again after: the room comes back as those requests finish.
+	if r.ContentLength > 0 && !h.fits(d.ID, r.ContentLength) {
+		w.Header().Set("Retry-After", "2")
+		writeError(w, http.StatusTooManyRequests, errTooMuch.Error())
+		return
+	}
 	r.Body = &chargedBody{ReadCloser: r.Body, charge: charge}
 	h.next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// fits reports whether n more bytes fit the device's share right now.
+func (h *Host) fits(id string, n int64) bool {
+	h.heldMu.Lock()
+	defer h.heldMu.Unlock()
+	return h.held[id]+n <= perDeviceBytes
 }
 
 // chargedBody counts what is read of a request's body against its device.
@@ -504,15 +521,18 @@ func (h *Host) track(ctx context.Context, id string) (tracked context.Context, c
 		cancel(errTooBusy)
 		return ctx, nil, nil, false
 	}
-	if h.held == nil {
-		h.held = map[string]int64{}
-	}
+	// What the request sent, and whether it is over: a read after its
+	// handler has returned is not counted, since nothing would give it back.
 	var sent int64
+	var over bool
 	charge = func(n int) bool {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.held[id]+int64(n) > perDeviceBytes {
+		h.heldMu.Lock()
+		defer h.heldMu.Unlock()
+		if over || h.held[id]+int64(n) > perDeviceBytes {
 			return false
+		}
+		if h.held == nil {
+			h.held = map[string]int64{}
 		}
 		h.held[id] += int64(n)
 		sent += int64(n)
@@ -536,11 +556,15 @@ func (h *Host) track(ctx context.Context, id string) (tracked context.Context, c
 				delete(h.running, id)
 			}
 		}
-		if h.held[id] -= sent; h.held[id] <= 0 {
-			delete(h.held, id)
-		}
-		sent = 0
 		h.mu.Unlock()
+		h.heldMu.Lock()
+		if over = true; sent > 0 {
+			if h.held[id] -= sent; h.held[id] <= 0 {
+				delete(h.held, id)
+			}
+			sent = 0
+		}
+		h.heldMu.Unlock()
 	}, true
 }
 

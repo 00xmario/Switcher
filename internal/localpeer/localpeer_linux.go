@@ -158,6 +158,16 @@ func socketUID(local, remote *net.TCPAddr) (uint32, bool) {
 	return found.uid, true
 }
 
+// connectedUID is the user a connected socket is shown under, held by a
+// program right now or not.
+func connectedUID(local, remote *net.TCPAddr) (uint32, bool) {
+	found, ok := lookup(local, remote)
+	if !ok || found.listening || !found.connected {
+		return 0, false
+	}
+	return found.uid, true
+}
+
 // peerUID is the owner of the other end of conn. The kernel finds a socket
 // by its pair of addresses, not by which connection it is: once this end's
 // connection is over, the same pair can be another program's, and what it
