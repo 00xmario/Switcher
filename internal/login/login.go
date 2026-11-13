@@ -45,9 +45,15 @@ type pending struct {
 	kind          string
 	pkce          bool // the code exchange proves this attempt, see LoginInfo.PKCE
 	completing    bool
+	finished      bool          // its outcome is recorded; done is closed
+	tries         chan struct{} // turns for unnamed callbacks' exchanges
 	done          chan struct{}
 	started       time.Time
 }
+
+// unnamedTries bounds how many exchanges for one sign-in run at once from
+// callbacks that name no sign-in. More wait their turn.
+const unnamedTries = 4
 
 // result is the terminal outcome of one login flow, kept briefly so the UI
 // can observe it even if it polls after the callback already landed.
@@ -106,10 +112,7 @@ func (m *Manager) StartDevice(ctx context.Context, prov provider.Provider, relog
 			log.Printf("login: device flow for %s completed for %s", prov.ID(), account.Email)
 		}
 		m.mu.Lock()
-		m.gcResultsLocked()
-		m.results[info.State] = result{account: account, err: err, at: time.Now()}
-		delete(m.pending, info.State)
-		close(p.done)
+		m.finishLocked(info.State, p, account, err)
 		m.mu.Unlock()
 	}()
 	return Handle{State: info.State, Kind: info.Kind, VerificationURL: info.VerificationURL, UserCode: info.UserCode}, nil
@@ -147,12 +150,89 @@ func (m *Manager) Complete(ctx context.Context, state, code string) error {
 		log.Printf("login: flow %.8s... completed for %s", state, account.Email)
 	}
 	m.mu.Lock()
-	m.gcResultsLocked()
-	m.results[state] = result{account: account, err: err, at: time.Now()}
-	delete(m.pending, state)
-	close(p.done)
+	m.finishLocked(state, p, account, err)
 	m.mu.Unlock()
 	return err
+}
+
+// finishLocked records a sign-in's outcome, once.
+func (m *Manager) finishLocked(state string, p *pending, account store.Account, err error) {
+	if p.finished {
+		return
+	}
+	p.finished = true
+	m.gcResultsLocked()
+	m.results[state] = result{account: account, err: err, at: time.Now()}
+	if m.pending[state] == p {
+		delete(m.pending, state)
+	}
+	close(p.done)
+}
+
+// ErrNoCode refuses a callback that brings no sign-in code.
+var ErrNoCode = errors.New("the sign-in came back without a code")
+
+// CompleteUnnamed finishes, from a callback that names no sign-in, the only
+// browser sign-in under way whose code exchange proves it (PKCE): OpenAI's
+// redirect names none, and Anthropic's names it only where the browser
+// does not send it. Any web page can send such a callback while a sign-in
+// is under way, so one does not claim the sign-in: a code that fails its
+// exchange fails that callback alone, and the sign-in waits for the real
+// one. Several run side by side, a few at a time. It returns the sign-in's
+// state.
+func (m *Manager) CompleteUnnamed(ctx context.Context, code string) (string, error) {
+	m.mu.Lock()
+	m.gcLocked()
+	state := m.singlePendingLocked()
+	p := m.pending[state]
+	m.mu.Unlock()
+	if p == nil {
+		return "", ErrUnknown
+	}
+	if code == "" {
+		return state, ErrNoCode
+	}
+	select {
+	case p.tries <- struct{}{}:
+	case <-ctx.Done():
+		return state, ctx.Err()
+	case <-p.done:
+		return state, ErrUnknown
+	}
+	defer func() { <-p.tries }()
+	m.mu.Lock()
+	gone := p.finished || p.completing
+	m.mu.Unlock()
+	if gone {
+		return state, ErrUnknown
+	}
+	account, err := p.provider.LoginExchange(ctx, state, code)
+	if err != nil {
+		// This callback's code is not the sign-in's; the sign-in goes on.
+		log.Printf("login: a callback for %s brought a code that did not exchange (state %.8s...): %v", p.provider.ID(), state, err)
+		return state, fmt.Errorf("login exchange: %w", err)
+	}
+	m.mu.Lock()
+	if p.finished || p.completing {
+		m.mu.Unlock()
+		return state, nil
+	}
+	// Claimed now: one success is saved, once.
+	p.completing = true
+	m.mu.Unlock()
+	if m.persist != nil {
+		err = m.persist(&account, p.reloginTarget)
+	}
+	if err != nil {
+		err = fmt.Errorf("login exchange: %w", err)
+		log.Printf("login: flow %.8s... failed: %v", state, err)
+	} else {
+		log.Printf("login: flow %.8s... completed for %s", state, account.Email)
+	}
+	m.mu.Lock()
+	m.finishLocked(state, p, account, err)
+	m.mu.Unlock()
+	return state, err
 }
 
 // Discard drops a sign-in that was started but will not be offered, such as
@@ -161,7 +241,8 @@ func (m *Manager) Complete(ctx context.Context, state, code string) error {
 func (m *Manager) Discard(state string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p, ok := m.pending[state]; ok && !p.completing {
+	if p, ok := m.pending[state]; ok && !p.completing && !p.finished {
+		p.finished = true
 		delete(m.pending, state)
 		close(p.done)
 	}
@@ -200,7 +281,8 @@ func (m *Manager) Outcome(state string, wait time.Duration) (account store.Accou
 func (m *Manager) track(state string, prov provider.Provider, reloginTarget, kind string, pkce bool) *pending {
 	m.mu.Lock()
 	m.gcLocked()
-	p := &pending{provider: prov, reloginTarget: reloginTarget, kind: kind, pkce: pkce, completing: kind == "device", done: make(chan struct{}), started: time.Now()}
+	p := &pending{provider: prov, reloginTarget: reloginTarget, kind: kind, pkce: pkce, completing: kind == "device",
+		tries: make(chan struct{}, unnamedTries), done: make(chan struct{}), started: time.Now()}
 	m.pending[state] = p
 	m.mu.Unlock()
 	return p
@@ -249,6 +331,10 @@ func (m *Manager) gcLocked() {
 	for state, p := range m.pending {
 		if !p.completing && now.Sub(p.started) > pendingTTL {
 			delete(m.pending, state)
+			if !p.finished {
+				p.finished = true
+				close(p.done)
+			}
 		}
 	}
 	m.gcResultsLocked()

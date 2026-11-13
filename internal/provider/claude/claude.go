@@ -115,11 +115,12 @@ func authURLPath() string {
 // LoginExchange swaps the authorization code for tokens. The callback code
 // may carry a "#state" fragment that takes precedence over the query state.
 func (p *Provider) LoginExchange(ctx context.Context, state, code string) (store.Account, error) {
+	// The verifier is kept until an exchange succeeds: a callback with a
+	// wrong code, which any web page can send while a sign-in is under way,
+	// must not leave the real one unable to finish.
 	p.mu.Lock()
+	p.gcVerifiersLocked()
 	entry, ok := p.verifier[state]
-	if ok {
-		delete(p.verifier, state)
-	}
 	p.mu.Unlock()
 	if !ok {
 		return store.Account{}, errors.New("unknown or expired login state")
@@ -158,6 +159,11 @@ func (p *Provider) LoginExchange(ctx context.Context, state, code string) (store
 		return store.Account{}, err
 	}
 	account, err := accountFromToken(tok)
+	if err == nil {
+		p.mu.Lock()
+		delete(p.verifier, state)
+		p.mu.Unlock()
+	}
 	if err == nil && p.Native != nil {
 		if id := p.Native.ExistingID(claudecode.Identity{UUID: tok.Account.UUID, Email: account.Email, OrganizationUUID: tok.Organization.UUID}); id != "" {
 			account.ID = id

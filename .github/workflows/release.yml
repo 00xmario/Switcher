@@ -163,16 +163,34 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          # install.sh checks the DMG against this.
+          # Releases before 1.31 check the DMG against this.
           cd dist
           shasum -a 256 "Switcher_${VERSION}.dmg" | tee "Switcher_${VERSION}.dmg.sha256"
 
-      - name: Publish release
+      # One list of every file's checksum. The release is signed by signing
+      # this list, away from GitHub (build/release-sign.sh); updaters and
+      # install.sh from 1.31 trust nothing else.
+      - name: List checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *; do
+            case "$f" in
+              *.sha256 | SHA256SUMS*) ;;
+              *) shasum -a 256 "$f" ;;
+            esac
+          done > SHA256SUMS
+          cat SHA256SUMS
+
+      # A draft: no updater or installer sees it until it is signed and
+      # published.
+      - name: Publish draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
+            --draft \
             --title "$GITHUB_REF_NAME" \
             --generate-notes

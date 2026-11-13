@@ -37,11 +37,17 @@ const AccountHeader = "X-Switcher-Account"
 // provider's 401 passed through.
 const rejectedHeader = "X-Switcher-Device-Rejected"
 
+// A pairing code is 12 characters of 32, 60 bits: too many to guess in the
+// ten minutes it lives even at network speed, so wrong guesses never end
+// it. A limit on guesses that did end it would let anyone on the network
+// keep pairing from working by sending a few.
 const (
 	codeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
-	codeLength   = 8
+	codeLength   = 12
 	codeTTL      = 10 * time.Minute
-	codeAttempts = 5
+	// sourceFailures bounds wrong guesses per address, which is how much
+	// work one address can make this computer do.
+	sourceFailures = 10
 )
 
 type device struct {
@@ -129,9 +135,9 @@ type Host struct {
 	code          string
 	codeKey       []byte
 	codeExpires   time.Time
-	attempts      int
 	failures      map[string]failure
 	tailnetTries  map[string]failure
+	lookups       chan struct{} // turns to ask the Tailscale app; see tailnetLookups
 	srv           *http.Server
 	listening     atomic.Bool
 	listenErr     string
@@ -331,7 +337,7 @@ func (h *Host) NewPairingCode() (PairingView, error) {
 	if err != nil {
 		return PairingView{}, err
 	}
-	h.code, h.codeKey, h.codeExpires, h.attempts = string(b), key, time.Now().Add(codeTTL), 0
+	h.code, h.codeKey, h.codeExpires = string(b), key, time.Now().Add(codeTTL)
 	return PairingView{Code: formatCode(h.code), ExpiresAt: h.codeExpires}, nil
 }
 
@@ -688,8 +694,8 @@ func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid pairing request")
 		return
 	}
-	// Tailnet connections all arrive from the add-on on loopback; those rely
-	// on the code's own attempt limit instead of a per-source block.
+	// Tailnet connections all arrive from the add-on on loopback; for those
+	// the code's length is the whole defence.
 	source, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if ip := net.ParseIP(source); ip != nil && ip.IsLoopback() {
 		source = ""
@@ -704,19 +710,15 @@ func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
 	}
 	// Both "no code" and "wrong code" give the same answer, so nobody can
 	// probe for a live code; a source that keeps failing is refused.
-	if f.count >= 10 || !h.state.Enabled || h.code == "" || time.Now().After(h.codeExpires) {
+	if f.count >= sourceFailures || !h.state.Enabled || h.code == "" || time.Now().After(h.codeExpires) {
 		h.mu.Unlock()
 		writeError(w, http.StatusForbidden, pairFailed)
 		return
 	}
-	h.attempts++
 	if !hmac.Equal([]byte(req.Proof), []byte(pairingProof(h.codeKey, "client", req.Nonce))) {
 		if source != "" {
 			f.count++
 			h.failures[source] = f
-		}
-		if h.attempts >= codeAttempts {
-			h.code = ""
 		}
 		h.mu.Unlock()
 		writeError(w, http.StatusForbidden, pairFailed)
@@ -828,7 +830,14 @@ func normalizeCode(code string) string {
 	return strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(code))
 }
 
-func formatCode(code string) string { return code[:4] + "-" + code[4:] }
+// formatCode groups a code in fours, as people read it out and type it.
+func formatCode(code string) string {
+	var groups []string
+	for len(code) > 4 {
+		groups, code = append(groups, code[:4]), code[4:]
+	}
+	return strings.Join(append(groups, code), "-")
+}
 
 func randomHex(n int) string {
 	b := make([]byte, n)

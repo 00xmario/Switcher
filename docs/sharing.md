@@ -17,7 +17,12 @@ each other out.
    - Over Tailscale, your own Macs connect without a code: if both Macs are
      signed in to the same Tailscale account, the client is ready right away.
    - Otherwise the host asks for a code: click **Pair a Mac** on the host and
-     enter the code it shows, such as `K7QF-M2XP`, valid for ten minutes.
+     enter the code it shows, such as `K7QF-M2XP-9DRA`, valid for ten minutes.
+     Wrong guesses do not use it up: 12 characters are too many to guess in
+     that time, so nobody on the network can keep you from pairing. A Mac
+     on a release before 1.31 takes such a code only on the command line
+     (`switcher connect <host> --code <code>`); update it first to use the
+     dashboard.
    Away from home, enter the host's Tailscale name or address instead.
 
 macOS may ask once whether Switcher may accept incoming connections on the

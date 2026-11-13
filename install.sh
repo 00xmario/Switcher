@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh | sh
 #
 # It downloads the latest release over HTTPS only and installs nothing that
-# does not match the release's checksum. On a Mac it copies
+# does not match the release's checksums, signed with Switcher's release key
+# (checked with ssh-keygen). On a Mac it copies
 # Switcher.app to /Applications (or ~/Applications without write access) and
 # puts the switcher command on your PATH. On Linux it installs the switcher
 # binary as ~/.local/bin/switcher, starts it at login (a systemd user service,
@@ -41,6 +42,30 @@ check_tag() {
 	case "${1#v}" in
 	*[!0-9.]* | *..* | .* | *.) fail "Unexpected release name: $1" ;;
 	esac
+}
+
+# The keys Switcher's releases are signed with, in ssh-keygen's
+# allowed_signers form: the one releases are signed with, and one kept
+# offline in case that one is lost. See build/release-sign.sh.
+release_signers='switcher-release namespaces="switcher-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO2UJMe8yL/18YTufkesQEr9AjT32/Z8JzvCgtKjvya0 switcher-release-1
+switcher-release namespaces="switcher-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINkxLFXWXQDLvgFD+nK2tMMikz25kdCf3rh1W9F4Cmzp switcher-release-2'
+
+# signed_checksum downloads the release's list of checksums and its
+# signature into $1, checks the signature, and leaves the one line for the
+# file $2 in $1/$2.sha256. Without a good signature nothing is installed:
+# whoever can change a release on GitHub cannot sign one.
+signed_checksum() {
+	command -v ssh-keygen >/dev/null 2>&1 ||
+		fail "Checking the release's signature needs ssh-keygen (OpenSSH); install it and run this again."
+	fetch -o "$1/SHA256SUMS" "$releases/download/$tag/SHA256SUMS" 2>/dev/null ||
+		fail "This release publishes no signed checksums; nothing was installed."
+	fetch -o "$1/SHA256SUMS.sig" "$releases/download/$tag/SHA256SUMS.sig" 2>/dev/null ||
+		fail "This release is not signed; nothing was installed."
+	printf '%s\n' "$release_signers" >"$1/allowed_signers"
+	ssh-keygen -Y verify -f "$1/allowed_signers" -I switcher-release -n switcher-release \
+		-s "$1/SHA256SUMS.sig" <"$1/SHA256SUMS" >/dev/null 2>&1 ||
+		fail "This release is not signed with Switcher's release key; nothing was installed."
+	awk -v asset="$2" '{ name = $2; sub(/^\*/, "", name) } name == asset' "$1/SHA256SUMS" >"$1/$2.sha256"
 }
 
 # checksum_names says whether the checksum file $1 is one line for the file
@@ -123,8 +148,7 @@ install_linux() {
 	trap 'rm -rf "$tmp"' EXIT
 	echo "Downloading Switcher $version..."
 	fetch -o "$tmp/$asset" "$releases/download/$tag/$asset"
-	fetch -o "$tmp/$asset.sha256" "$releases/download/$tag/$asset.sha256" ||
-		fail "This release publishes no checksum for Linux; nothing was installed."
+	signed_checksum "$tmp" "$asset"
 	checksum_names "$tmp/$asset.sha256" "$asset" || fail "The checksum is not for this download; nothing was installed."
 	(cd "$tmp" && sha256sum -c "$asset.sha256" >/dev/null) || fail "The download does not match its checksum; nothing was installed."
 	chmod 0755 "$tmp/$asset"
@@ -183,8 +207,7 @@ main() {
 
 	echo "Downloading Switcher $version..."
 	fetch -o "$tmp/$dmg" "$releases/download/$tag/$dmg"
-	fetch -o "$tmp/$dmg.sha256" "$releases/download/$tag/$dmg.sha256" 2>/dev/null ||
-		fail "Could not download this release's checksum; nothing was installed."
+	signed_checksum "$tmp" "$dmg"
 	checksum_names "$tmp/$dmg.sha256" "$dmg" || fail "The checksum is not for this download; nothing was installed."
 	(cd "$tmp" && shasum -a 256 -c "$dmg.sha256" >/dev/null) || fail "The download does not match its checksum; nothing was installed."
 

@@ -20,11 +20,11 @@ test('an idle Mac can share itself or use another Switcher', async () => {
 });
 
 test('a sharing Mac shows its addresses, pairing code and paired Macs', async () => {
-  const { html } = await render({ host: host({ enabled: true, listening: true, pairing: { code: 'K7QF-M2XP', expires_at: '2026-10-07T12:09:30Z' },
+  const { html } = await render({ host: host({ enabled: true, listening: true, pairing: { code: 'K7QF-M2XP-9DRA', expires_at: '2026-10-07T12:09:30Z' },
     devices: [{ id: 'd1', name: 'MacBook Air', created_at: '2026-10-06T10:00:00Z', last_seen: '2026-10-07T11:55:00Z' }] }), client: { connected: false } });
   assert.match(html, /data-remote-copy="studio\.local"[^>]*>[\s\S]*?<code>studio\.local<\/code>/);
   assert.match(html, /title="Tailscale: click to copy">[\s\S]*?<code>100\.101\.2\.3<\/code>/);
-  assert.match(html, /K7QF-M2XP/);
+  assert.match(html, /K7QF-M2XP-9DRA/);
   assert.match(html, /Valid for 9:30/);
   assert.match(html, /MacBook Air<\/strong><span class="dim">last used 5 min ago/);
   assert.match(html, /data-remote-action="revoke" data-remote-id="d1"/);
@@ -168,8 +168,8 @@ test('a Switcher found over Tailscale connects without a code and asks for one o
   assert.deepEqual(changes, []);
 
   server.state.refuse = false;
-  assert.equal(await remote.connect({ ...studioPeer, needsCode: true }, 'K7QF-M2XP'), true);
-  assert.deepEqual(server.connects()[1], { address: 'switcher-studio.tail1.ts.net', port: 8788, code: 'K7QF-M2XP' });
+  assert.equal(await remote.connect({ ...studioPeer, needsCode: true }, 'K7QF-M2XP-9DRA'), true);
+  assert.deepEqual(server.connects()[1], { address: 'switcher-studio.tail1.ts.net', port: 8788, code: 'K7QF-M2XP-9DRA' });
   assert.deepEqual(changes, [true]);
 });
 
@@ -185,8 +185,8 @@ test('a Switcher found nearby that is in the tailnet too is paired over Tailscal
   assert.deepEqual(server.connects()[0], { address: 'switcher-studio.tail1.ts.net', port: 0 });
   assert.match(remote.html(), /value="Studio\.local"/, 'the code goes to its local address');
   server.state.refuse = false;
-  await remote.connect({ ...nearby, needsCode: true }, 'K7QF-M2XP');
-  assert.deepEqual(server.connects()[1], { address: 'Studio.local', port: 8788, code: 'K7QF-M2XP' });
+  await remote.connect({ ...nearby, needsCode: true }, 'K7QF-M2XP-9DRA');
+  assert.deepEqual(server.connects()[1], { address: 'Studio.local', port: 8788, code: 'K7QF-M2XP-9DRA' });
 });
 
 test('a connected Mac offers its other Switchers and switches only once confirmed', async () => {
@@ -214,8 +214,8 @@ test('a connected Mac offers its other Switchers and switches only once confirme
   assert.deepEqual(server.connects()[0], { address: 'switcher-mini.tail1.ts.net', port: 8788, switch: true });
   assert.match(remote.html(), /data-remote-form[^]*Use switcher-mini \(Tailscale\)/, 'a code is asked for, to switch with');
   server.state.refuse = false;
-  assert.equal(await remote.connect({ ...mini, switching: true, needsCode: true }, 'K7QF-M2XP'), true);
-  assert.deepEqual(server.connects()[1], { address: 'switcher-mini.tail1.ts.net', port: 8788, code: 'K7QF-M2XP', switch: true });
+  assert.equal(await remote.connect({ ...mini, switching: true, needsCode: true }, 'K7QF-M2XP-9DRA'), true);
+  assert.deepEqual(server.connects()[1], { address: 'switcher-mini.tail1.ts.net', port: 8788, code: 'K7QF-M2XP-9DRA', switch: true });
 });
 
 test('a Mac that shared before is offered pairing without a code once, off until it answers', async () => {

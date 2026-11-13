@@ -23,6 +23,7 @@ import (
 	"switcher/internal/login"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
+	"switcher/internal/remote"
 	"switcher/internal/settings"
 	"switcher/internal/store"
 	"switcher/internal/update"
@@ -679,5 +680,53 @@ func TestDotSegmentsDoNotPassForAProviderRoute(t *testing.T) {
 		if strings.Contains(w.Body.String(), "dashboard file") {
 			t.Errorf("%s served a dashboard file without a session (%d)", target, w.Code)
 		}
+	}
+}
+
+// A paired device may use the host's accounts, never delete them: one that
+// was lost or turned against its owner could otherwise wipe them all.
+func TestPairedDevicesCannotRemoveTheHostsAccounts(t *testing.T) {
+	st := store.New(t.TempDir())
+	if err := st.Save(store.Account{ID: "keep-me", Provider: "fake", Email: "you@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := proxy.New(st, map[string]provider.Provider{"fake": &recheckProvider{}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &API{Store: st, Proxy: m}
+	mux := http.NewServeMux()
+	api.Register(mux)
+	host, err := remote.NewHost(t.TempDir(), 0, mux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := remote.NewClient(t.TempDir(), "")
+	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Laptop"); err != nil {
+		t.Fatal(err)
+	}
+	through := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	w := httptest.NewRecorder()
+	through.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/accounts/keep-me", nil))
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "removed on") {
+		t.Fatalf("a paired device removing an account: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := st.Get("keep-me"); err != nil {
+		t.Fatal("the paired device's request removed the account")
+	}
+	// This computer removes its own accounts as before.
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "http://127.0.0.1:8787/api/accounts/keep-me", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("removing an account here: %d %s", w.Code, w.Body.String())
 	}
 }

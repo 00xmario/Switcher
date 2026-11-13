@@ -244,7 +244,7 @@ switcher status                            # accounts, usage, sharing, Claude De
 switcher use work@example.com              # switch; Claude also switches Claude Code
 switcher login claude                      # sign in, also over SSH
 switcher share on && switcher share code   # let your other Macs use this one
-switcher connect studio.local --code K7QF-M2XP
+switcher connect studio.local --code K7QF-M2XP-9DRA
 switcher desktop connect                   # route Claude Desktop through Switcher
 switcher limit work@example.com 10         # keep 10%: switch away at 10% left
 switcher load                              # CPU, memory and GPU of this Mac or the host
@@ -280,6 +280,8 @@ The full matrix, including what is verified per native CLI, is in
 
 - By default Switcher listens on `127.0.0.1` only and needs no account of its
   own. Requests go straight from your Mac to the provider, with your tokens.
+  Only your own programs get in: other accounts on the same computer are
+  refused, on macOS and Linux alike, and web pages cannot reach it.
 - Tokens stay in `~/.switcher/` (mode `0600`), like the CLIs keep theirs.
   Request bodies are forwarded as they are; Switcher never reads prompts.
 - Sharing between Macs uses a pinned certificate, a pairing code proved in
@@ -294,9 +296,11 @@ The full matrix, including what is verified per native CLI, is in
   your user run only `pmset disablesleep 1` and `pmset disablesleep 0`
   (`/etc/sudoers.d/switcher_lid_<user>`). Switcher turns sleep back on when
   keep awake ends and never undoes a sleep setting another app made.
-- Updates come only from this repository's GitHub releases over HTTPS. The
-  download must match its published SHA-256, and the new app's version,
-  signature and server must check out before it replaces the old one.
+- Updates are signed: each release's checksums carry a signature by
+  Switcher's release key, which is kept away from GitHub, and neither the
+  updater nor the install script installs anything without it. The download
+  must match its signed SHA-256, and the new app's version, signature and
+  server must check out before it replaces the old one.
 - An optional dashboard password and an opt-in TLS LAN listener are in
   Settings. The full model is in [details](docs/details.md#security-model).
 

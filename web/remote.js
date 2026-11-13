@@ -158,7 +158,7 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
     const name = target ? escape(target.name) : '';
     return `<form class="remote-connect" data-remote-form>
         <input name="address" placeholder="Address, e.g. marios-mac.local or 100.101.2.3" autocomplete="off" value="${escape(target?.address || '')}" ${busy ? 'disabled' : ''} required>
-        <input name="code" placeholder="Code, e.g. K7QF-M2XP" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" ${busy ? 'disabled' : ''} ${target?.needsCode ? 'required' : ''}>
+        <input name="code" placeholder="Code, e.g. K7QF-M2XP-9DRA" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" ${busy ? 'disabled' : ''} ${target?.needsCode ? 'required' : ''}>
         <button type="submit" class="primary" ${busy ? 'disabled' : ''}>${busy === 'connect' ? 'Connecting…' : target?.switching ? `Use ${name}` : target ? `Connect to ${name}` : 'Connect'}</button>
       </form>
       <p class="set-foot">${target?.needsCode ? `Enter the code shown on ${name} (Settings → Share between Macs → Pair a Mac).` : 'Your own devices on Tailscale connect without a code.'}</p>`;

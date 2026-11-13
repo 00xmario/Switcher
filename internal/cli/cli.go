@@ -202,7 +202,7 @@ Examples:
   switcher login claude                  # works over SSH: see 'switcher help login'
   switcher use work@example.com
   switcher share on && switcher share code
-  switcher connect studio.local --code K7QF-M2XP
+  switcher connect studio.local --code K7QF-M2XP-9DRA
   switcher connect switcher-studio.tail1234.ts.net   # your own Tailscale device: no code
 `)
 }

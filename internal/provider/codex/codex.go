@@ -110,12 +110,12 @@ func (p *Provider) AddByKey(ctx context.Context, key string) (store.Account, err
 // LoginExchange swaps the authorization code for tokens and derives the
 // account identity from the id_token claims.
 func (p *Provider) LoginExchange(ctx context.Context, state, code string) (store.Account, error) {
+	// The verifier is kept until an exchange succeeds: a callback with a
+	// wrong code, which any web page can send while a sign-in is under way,
+	// must not leave the real one unable to finish.
 	p.mu.Lock()
 	p.gcVerifiersLocked()
 	entry, ok := p.verifier[state]
-	if ok {
-		delete(p.verifier, state)
-	}
 	p.mu.Unlock()
 	if !ok {
 		return store.Account{}, errors.New("unknown or expired login state")
@@ -131,7 +131,13 @@ func (p *Provider) LoginExchange(ctx context.Context, state, code string) (store
 	if err != nil {
 		return store.Account{}, err
 	}
-	return accountFromToken(tok)
+	account, err := accountFromToken(tok)
+	if err == nil {
+		p.mu.Lock()
+		delete(p.verifier, state)
+		p.mu.Unlock()
+	}
+	return account, err
 }
 
 // Refresh renews the account's tokens using the stored refresh token.

@@ -93,7 +93,8 @@ func newAppFixture(t *testing.T) *appFixture {
 			if err := os.WriteFile(filepath.Join(dir, asset), f.imageBytes, 0o600); err != nil {
 				return err
 			}
-			return os.WriteFile(filepath.Join(dir, asset+".sha256"), []byte(f.sum), 0o600)
+			writeSignedSums(t, dir, f.sum)
+			return nil
 		},
 		attach: func(ctx context.Context, image, mountpoint string) error {
 			if data, _ := os.ReadFile(image); string(data) != string(f.imageBytes) {
@@ -404,8 +405,10 @@ func TestDownloadReleaseFetchesAssetAndChecksum(t *testing.T) {
 		switch r.URL.Path {
 		case "/" + Repo + "/releases/download/v1.12.0/Switcher_1.12.0.dmg":
 			_, _ = w.Write([]byte("image"))
-		case "/" + Repo + "/releases/download/v1.12.0/Switcher_1.12.0.dmg.sha256":
+		case "/" + Repo + "/releases/download/v1.12.0/" + sumsName:
 			_, _ = w.Write([]byte("sum"))
+		case "/" + Repo + "/releases/download/v1.12.0/" + signatureName:
+			_, _ = w.Write([]byte("sig"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -421,7 +424,7 @@ func TestDownloadReleaseFetchesAssetAndChecksum(t *testing.T) {
 		t.Errorf("progress reports %v, want the image's 5 bytes from 0 to 5", reports)
 	}
 	if readFixture(t, filepath.Join(dir, "Switcher_1.12.0.dmg")) != "image" ||
-		readFixture(t, filepath.Join(dir, "Switcher_1.12.0.dmg.sha256")) != "sum" {
+		readFixture(t, filepath.Join(dir, sumsName)) != "sum" || readFixture(t, filepath.Join(dir, signatureName)) != "sig" {
 		t.Error("downloaded files differ")
 	}
 	if err := downloadRelease(context.Background(), "v1.12.0", "missing", t.TempDir(), 1<<20, nil); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
@@ -541,7 +544,7 @@ func TestReleaseDownloadsDoNotLeaveGitHub(t *testing.T) {
 	}))
 	defer elsewhere.Close()
 	withReleaseServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha256") {
+		if strings.HasSuffix(r.URL.Path, sumsName) || strings.HasSuffix(r.URL.Path, signatureName) {
 			_, _ = w.Write([]byte("sum"))
 			return
 		}
@@ -555,10 +558,10 @@ func TestReleaseDownloadsDoNotLeaveGitHub(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(dir, "Switcher_1.12.0.dmg")); statErr == nil {
 		t.Fatal("a file from another host was saved")
 	}
-	// A checksum file is one short line; a large one is refused.
+	// The list of checksums is small; a large one is refused.
 	withReleaseServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha256") {
-			_, _ = w.Write(bytes.Repeat([]byte("a"), checksumLimit+1))
+		if strings.HasSuffix(r.URL.Path, sumsName) {
+			_, _ = w.Write(bytes.Repeat([]byte("a"), sumsLimit+1))
 			return
 		}
 		_, _ = w.Write([]byte("image"))

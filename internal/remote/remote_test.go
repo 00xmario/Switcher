@@ -120,14 +120,26 @@ func TestPairingRejectsWrongCodesAndRevokedDevices(t *testing.T) {
 	t.Cleanup(host.Close)
 	host.SetEnabled(true)
 	host.NewPairingCode()
+	code := host.Status().Pairing.Code
+	if len(code) != 14 || strings.Count(code, "-") != 2 {
+		t.Fatalf("pairing code %q is not 12 characters in fours", code)
+	}
 	client := NewClient(t.TempDir(), "")
-	for i := 0; i < codeAttempts; i++ {
-		if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, "AAAA-AAAA", "x"); err == nil {
+	// Wrong guesses do not use the code up: anyone could otherwise keep
+	// pairing from working by sending a few.
+	for i := 0; i < 20; i++ {
+		if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, "AAAA-AAAA-AAAA", "x"); err == nil {
 			t.Fatal("wrong code paired")
 		}
 	}
+	if host.Status().Pairing == nil {
+		t.Fatal("wrong guesses ended the code")
+	}
+	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, strings.ToLower(code), "x"); err != nil {
+		t.Fatalf("the right code after wrong guesses: %v", err)
+	}
 	if host.Status().Pairing != nil {
-		t.Fatal("code survived too many attempts")
+		t.Fatal("a code was left after it paired")
 	}
 	_, client = pairedPair(t)
 	_ = client

@@ -425,17 +425,17 @@ environment; a terminal-only override needs the CLI command. The first
   login. This is the same trust model as the CLIs themselves. Switcher
   takes its port once, at start, and keeps it, also across its own
   restarts after an update or a change of listeners, when the listening
-  socket is handed to the next process. On Linux it also serves only
-  the user it runs as: the kernel says whose each local connection is,
-  and another account's are dropped (root's too, since a service that
-  runs as root and forwards connections for others would let them in), on
-  the main port, the Desktop relay's and the sign-in callbacks'; the command
-  line and the tray in turn send nothing to a port another account holds.
-  `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a container that shares
-  the computer's network under its own user; `=root` lets only root's
-  programs in as well. macOS does not say whose a
-  local connection is: on a Mac shared with accounts you do not trust, set
-  the dashboard password, which closes everything but the CLI proxy paths.
+  socket is handed to the next process. It also serves only the user it
+  runs as, on Linux and on macOS: the system says whose each local
+  connection is (Linux's kernel when asked, macOS in the socket list
+  netstat reads), and another account's are dropped (root's too, since a
+  service that runs as root and forwards connections for others would let
+  them in), on the main port, the Desktop relay's and the sign-in
+  callbacks'; the command line and the tray in turn send nothing to a port
+  another account holds. `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a
+  container that shares the computer's network under its own user; `=root`
+  lets only root's programs in as well. Where the system's answer cannot be
+  read as expected, the check turns itself off rather than refuse you.
 - **Web pages cannot reach it.** Requests must name this computer as their
   host, so another site's name pointed at `127.0.0.1` is refused, and a
   request another site started is refused whatever it asks for. The
@@ -481,7 +481,8 @@ environment; a terminal-only override needs the CLI command. The first
   The client checks the host the same way before it sends anything and pins
   the certificate of that same connection. Whenever the Tailscale app on
   either computer is there but cannot say whether it is the other side, the
-  answer is no. Refusals look like a wrong code; attempts are limited per
+  answer is no. Codes are 12 characters (60 bits): wrong guesses never end
+  one, so nobody can use it up. Refusals look like a wrong code; attempts are limited per
   device and per address. Tailscale vouches for devices, not the accounts
   on them: another account, a container, or a device added with an
   untagged auth key (a CI runner, `TS_AUTHKEY`) counts as yours; tag such
@@ -514,11 +515,17 @@ environment; a terminal-only override needs the CLI command. The first
   account only to its own provider.
 - Recovery copies of Claude Code logins (one per switch) are removed after
   30 days.
-- **Updates** come from this project's GitHub releases over HTTPS, with
-  redirects followed only to GitHub's own hosts, and are installed only when
-  newer than what runs and matching the release's checksum. The release
-  pipeline builds only from commits on main, with its actions pinned to
-  commits.
+- **Updates are signed.** A release's files are listed with their
+  checksums in `SHA256SUMS`, and that list is signed with Switcher's release
+  key, whose private half is kept away from GitHub. The updater and
+  `install.sh` install nothing whose list is not signed by that key (or by
+  a second one kept offline in case the first is lost), so whoever can
+  change a release on GitHub, with a stolen token say, still cannot get a
+  build installed. Downloads go over HTTPS, follow redirects only to
+  GitHub's own hosts, and are installed only when newer than what runs. The
+  release pipeline builds only from commits on main, with its actions
+  pinned to commits, and leaves the release a draft, unseen by updaters,
+  until it is signed (`build/release-sign.sh`).
 - The command line prints text from other computers (a host's accounts, a
   paired device's name, a Switcher found on the network) without terminal
   control characters.

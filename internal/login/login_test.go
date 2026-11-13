@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,5 +146,119 @@ func TestStatelessCallbackNeedsPKCE(t *testing.T) {
 		if err != nil || saved != 1 || <-p.exchanged != "attacker-code" {
 			t.Fatalf("stateless PKCE callback: err=%v saved=%d", err, saved)
 		}
+	}
+}
+
+// pkceProvider takes only its one real code; any other fails the exchange,
+// as a code from another sign-in fails PKCE. exchanges can hold each
+// exchange until released.
+type pkceProvider struct {
+	reloginProvider
+	real    string
+	hold    chan struct{}
+	started chan string
+}
+
+func (p *pkceProvider) LoginStart(context.Context) (provider.LoginInfo, error) {
+	return provider.LoginInfo{State: "pkce-state", Kind: "browser", PKCE: true}, nil
+}
+
+func (p *pkceProvider) LoginExchange(ctx context.Context, state, code string) (store.Account, error) {
+	if p.started != nil {
+		p.started <- code
+	}
+	if p.hold != nil {
+		select {
+		case <-p.hold:
+		case <-ctx.Done():
+			return store.Account{}, ctx.Err()
+		}
+	}
+	if state != "pkce-state" || code != p.real {
+		return store.Account{}, errors.New("invalid_grant")
+	}
+	return store.Account{ID: "you", Provider: "fake", Email: "you@example.com"}, nil
+}
+
+// A callback that names no sign-in is no proof it is the provider's: any web
+// page can send one while a sign-in is under way. A wrong code in it fails
+// that callback alone; the real one, after it, still signs in.
+func TestUnnamedCallbacksWithWrongCodesDoNotEndTheSignIn(t *testing.T) {
+	p := &pkceProvider{real: "real-code"}
+	saved := 0
+	m := New(func(*store.Account, string) error { saved++; return nil })
+	handle, err := m.Start(context.Background(), p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"forged", "", "another-forgery"} {
+		state, err := m.CompleteUnnamed(context.Background(), code)
+		if err == nil || state != handle.State {
+			t.Fatalf("a wrong code %q: state %q err %v", code, state, err)
+		}
+		if _, err, finished := m.Outcome(handle.State, 0); finished {
+			t.Fatalf("a wrong code %q ended the sign-in: %v", code, err)
+		}
+	}
+	if _, err := m.CompleteUnnamed(context.Background(), ""); !errors.Is(err, ErrNoCode) {
+		t.Fatalf("no code: %v", err)
+	}
+	state, err := m.CompleteUnnamed(context.Background(), "real-code")
+	if err != nil || state != handle.State || saved != 1 {
+		t.Fatalf("the real callback: state %q err %v saved %d", state, err, saved)
+	}
+	account, err, finished := m.Outcome(handle.State, 0)
+	if !finished || err != nil || account.Email != "you@example.com" {
+		t.Fatalf("outcome: %+v %v %v", account, err, finished)
+	}
+	// Once signed in, later callbacks find nothing to complete.
+	if _, err := m.CompleteUnnamed(context.Background(), "real-code"); !errors.Is(err, ErrUnknown) || saved != 1 {
+		t.Fatalf("a callback after the sign-in: %v, saved %d", err, saved)
+	}
+}
+
+// Forged callbacks running at the same time do not hold the sign-in: the
+// real one runs beside them, or waits its turn, and signs in.
+func TestUnnamedCallbacksRunSideBySide(t *testing.T) {
+	p := &pkceProvider{real: "real-code", hold: make(chan struct{}), started: make(chan string, 16)}
+	saved := 0
+	var mu sync.Mutex
+	m := New(func(*store.Account, string) error { mu.Lock(); saved++; mu.Unlock(); return nil })
+	handle, err := m.Start(context.Background(), p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 16)
+	for i := 0; i < unnamedTries; i++ {
+		go func() { _, err := m.CompleteUnnamed(context.Background(), "forged"); results <- err }()
+	}
+	for i := 0; i < unnamedTries; i++ {
+		<-p.started // every turn is taken by a forgery, held at the provider
+	}
+	real := make(chan error, 1)
+	go func() { _, err := m.CompleteUnnamed(context.Background(), "real-code"); real <- err }()
+	select {
+	case code := <-p.started:
+		t.Fatalf("an exchange ran beyond the turns: %q", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(p.hold) // the forgeries fail, the real one gets its turn
+	for i := 0; i < unnamedTries; i++ {
+		if err := <-results; err == nil {
+			t.Fatal("a forged code signed in")
+		}
+	}
+	select {
+	case err := <-real:
+		if err != nil {
+			t.Fatalf("the real callback: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the real callback never got its turn")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if account, err, finished := m.Outcome(handle.State, 0); !finished || err != nil || account.ID != "you" || saved != 1 {
+		t.Fatalf("outcome: %+v %v %v, saved %d", account, err, finished, saved)
 	}
 }

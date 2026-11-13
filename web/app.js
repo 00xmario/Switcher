@@ -776,7 +776,9 @@ function accountMenuHTML(account) {
       </div>` : ''}
     ${usageLimitMenuHTML(account)}
     ${ADD_METHOD[account.provider] === 'key' || data.remote?.role === 'client' ? '' : `<button type="button" role="menuitem" data-act="relogin" data-provider="${escapeHTML(account.provider)}" data-account-id="${escapeHTML(account.id)}">Relogin</button>`}
-    <button type="button" role="menuitem" data-act="delete" data-account-id="${escapeHTML(account.id)}">Remove</button>`;
+    ${data.remote?.role === 'client'
+      ? `<p class="menu-note">Removed on ${escapeHTML(data.remote.host || 'the host')}, which keeps it</p>`
+      : `<button type="button" role="menuitem" data-act="delete" data-account-id="${escapeHTML(account.id)}">Remove</button>`}`;
 }
 
 // usageLimitMenuHTML offers the share of the weekly or monthly usage an

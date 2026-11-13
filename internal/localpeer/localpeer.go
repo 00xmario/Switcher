@@ -38,6 +38,18 @@ func allowed() (everyone, root bool) {
 	}
 }
 
+// socket is what the kernel says about one socket. live is false for one
+// its program has closed and the kernel is still winding down: such a
+// socket belongs to nobody any more, and the kernel reports it as root's.
+// connected is true once both ends have agreed on the connection, and
+// until it is over: not while it is still being made, and not afterwards.
+type socket struct {
+	uid       uint32
+	listening bool
+	live      bool
+	connected bool
+}
+
 // PeerUID is the user that owns the other end of conn, a connection between
 // two addresses of this computer. ok is false when it cannot be told: off
 // Linux, or when the other end is gone.

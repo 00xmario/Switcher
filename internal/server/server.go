@@ -1452,6 +1452,13 @@ func (a *API) handleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid account id", http.StatusBadRequest)
 		return
 	}
+	// Removing an account deletes its sign-in for good. A paired device may
+	// use the accounts, never delete them: one that was lost or turned
+	// against its owner could otherwise wipe every account on this host.
+	if _, paired := remote.PairedDevice(r); paired {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "accounts are removed on " + remote.MachineName() + ", the computer that keeps them"})
+		return
+	}
 	if err := a.Proxy.DeleteAccount(id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not delete account"})
 		return

@@ -91,13 +91,31 @@ func withLoopbackConn(ctx context.Context, c net.Conn) context.Context {
 	return ctx
 }
 
-const (
-	// tailnetTries bounds code-free pairing attempts per source address and
-	// per Tailscale device within ten minutes; tailnetTriesAll bounds the
-	// Tailscale app lookups they cause in all.
-	tailnetTries    = 10
-	tailnetTriesAll = 120
-)
+// tailnetTries bounds code-free pairing attempts per source address and per
+// Tailscale device within ten minutes.
+const tailnetTries = 10
+
+// tailnetLookups bounds how many questions to the Tailscale app on this
+// computer are under way at once. It is a bound on load, not a budget:
+// others can make a lookup wait its turn, never use the turns up.
+const tailnetLookups = 2
+
+// lookupTurn waits for a turn to ask the Tailscale app, at most until ctx
+// ends, and returns how to give it back.
+func (h *Host) lookupTurn(ctx context.Context) (func(), bool) {
+	h.mu.Lock()
+	if h.lookups == nil {
+		h.lookups = make(chan struct{}, tailnetLookups)
+	}
+	turns := h.lookups
+	h.mu.Unlock()
+	select {
+	case turns <- struct{}{}:
+		return func() { <-turns }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
 
 // allowTailnet reports whether one more code-free pairing attempt stays
 // within the limit of every key, and counts it against all of them only
@@ -121,11 +139,7 @@ func (h *Host) allowTailnet(keys ...string) bool {
 		if now.Sub(f.since) > codeTTL {
 			f = failure{since: now}
 		}
-		limit := tailnetTries
-		if k == "all" {
-			limit = tailnetTriesAll
-		}
-		if f.count >= limit {
+		if f.count >= tailnetTries {
 			return false
 		}
 		f.count++
@@ -176,11 +190,14 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 	// on the user's own devices, so nobody else uses up what they share, and
 	// whenever Tailscale is here but cannot say, the answer is no.
 	if viaAddon {
-		if !h.allowTailnet("all") {
+		done, ok := h.lookupTurn(ctx)
+		if !ok {
 			writeError(w, http.StatusForbidden, pairFailed)
 			return
 		}
-		if app, err := h.system.isAppNode(ctx, id.Peer); err != nil || app {
+		app, err := h.system.isAppNode(ctx, id.Peer)
+		done()
+		if err != nil || app {
 			writeError(w, http.StatusForbidden, pairFailed)
 			return
 		}
@@ -253,10 +270,15 @@ func (h *Host) identify(ctx context.Context, r *http.Request) (id tailnetIdentit
 		if local == nil || h.system == nil || err != nil || !hasAddress(own, local.String()) {
 			return tailnetIdentity{}, false, false
 		}
-		if !h.allowTailnet("src:"+remote.String(), "all") {
+		if !h.allowTailnet("src:" + remote.String()) {
+			return tailnetIdentity{}, false, false
+		}
+		done, ok := h.lookupTurn(ctx)
+		if !ok {
 			return tailnetIdentity{}, false, false
 		}
 		id, err := h.system.identify(ctx, local.String(), r.RemoteAddr)
+		done()
 		if err != nil {
 			return tailnetIdentity{}, false, false
 		}

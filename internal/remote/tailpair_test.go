@@ -618,10 +618,47 @@ func TestPairingFromTheTailscaleAppIsRateLimitedPerSource(t *testing.T) {
 	if whois != tailnetTries {
 		t.Fatalf("asked Tailscale %d times for one source, want %d", whois, tailnetTries)
 	}
-	// A source already refused does not use up what all sources share.
-	if all := host.tailnetTries["all"].count; all != tailnetTries {
-		t.Fatalf("the shared limit counted %d attempts, want %d", all, tailnetTries)
+	// Nothing all sources share is counted, so none can use it up.
+	if _, ok := host.tailnetTries["all"]; ok {
+		t.Fatal("a limit all sources share is counted")
 	}
+}
+
+// Questions to the Tailscale app wait their turn: others can slow them, never
+// use them up.
+func TestTailscaleLookupsTakeTurns(t *testing.T) {
+	host := &Host{}
+	var dones []func()
+	for i := 0; i < tailnetLookups; i++ {
+		done, ok := host.lookupTurn(context.Background())
+		if !ok {
+			t.Fatalf("turn %d was refused", i)
+		}
+		dones = append(dones, done)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, ok := host.lookupTurn(ctx); ok {
+		t.Fatal("more lookups ran at once than allowed")
+	}
+	got := make(chan bool, 1)
+	go func() {
+		done, ok := host.lookupTurn(context.Background())
+		if ok {
+			done()
+		}
+		got <- ok
+	}()
+	dones[0]()
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("a waiting lookup did not get the turn given back")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiting lookup never got a turn")
+	}
+	dones[1]()
 }
 
 // Through the add-on, the Tailscale app on the host's own computer is
@@ -720,11 +757,11 @@ func TestHostAsksTheTailscaleAppAtMostEveryTenSeconds(t *testing.T) {
 	}
 }
 
-// Only the user's own devices spend what all sources share or make the
-// command line run: not another user's device through the add-on, nor a
-// neighbour in Tailscale's address range that did not reach this
-// computer's own Tailscale address.
-func TestOnlyTheUsersOwnDevicesSpendTheSharedLimit(t *testing.T) {
+// Only the user's own devices make the Tailscale app on this computer be
+// asked: not another user's device through the add-on, nor a neighbour in
+// Tailscale's address range that did not reach this computer's own
+// Tailscale address.
+func TestOnlyTheUsersOwnDevicesMakeTheTailscaleAppBeAsked(t *testing.T) {
 	stranger := newFakeAddons()
 	stranger.client.Peer.User = someone
 	host := tailnetHost(t, stranger)
@@ -733,20 +770,24 @@ func TestOnlyTheUsersOwnDevicesSpendTheSharedLimit(t *testing.T) {
 		runs.Add(1)
 		return nil, errNoTailscale
 	}}
-	if status, _ := pairViaAddon(t, host, stranger); status != http.StatusForbidden || host.tailnetTries["all"].count != 0 || runs.Load() != 0 {
-		t.Fatalf("another user: %d, shared %d, %d runs", status, host.tailnetTries["all"].count, runs.Load())
+	if status, _ := pairViaAddon(t, host, stranger); status != http.StatusForbidden || runs.Load() != 0 {
+		t.Fatalf("another user: %d, %d runs", status, runs.Load())
 	}
 	var calls []string
 	app := appHost(t, airWhois, &calls)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, systemRequest("100.70.1.1:5000", "192.168.1.10:8788", nil))
-	if w.Code != http.StatusForbidden || app.tailnetTries["all"].count != 0 || len(calls) != 0 {
-		t.Fatalf("a neighbour: %d, shared %d, asked %v", w.Code, app.tailnetTries["all"].count, calls)
+	if w.Code != http.StatusForbidden || len(calls) != 0 {
+		t.Fatalf("a neighbour: %d, asked %v", w.Code, calls)
 	}
 	own := newFakeAddons()
 	mine := tailnetHost(t, own)
-	if status, _ := pairViaAddon(t, mine, own); status != http.StatusOK || mine.tailnetTries["all"].count != 1 {
-		t.Fatalf("an own device: %d, shared %d", status, mine.tailnetTries["all"].count)
+	if status, _ := pairViaAddon(t, mine, own); status != http.StatusOK {
+		t.Fatalf("an own device: %d", status)
+	}
+	// Every turn was given back.
+	if len(mine.lookups) != 0 || len(app.lookups) != 0 {
+		t.Fatal("a lookup turn was kept")
 	}
 }
 

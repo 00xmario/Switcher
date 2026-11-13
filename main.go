@@ -879,10 +879,14 @@ func callbackHandler(logins *login.Manager) http.HandlerFunc {
 		// Anthropic's returns it in a fragment the browser never sends.
 		// With no state in the URL, a single in-flight login is the one, but
 		// only one whose code PKCE binds to it (Google's echo the state).
+		// Such a callback is no proof it is the provider's: a wrong code in
+		// it fails this page alone, and the sign-in waits for the real one.
+		var err error
 		if state == "" {
-			state = logins.SinglePending()
+			state, err = logins.CompleteUnnamed(r.Context(), code)
+		} else {
+			err = logins.Complete(r.Context(), state, code)
 		}
-		err := logins.Complete(r.Context(), state, code)
 		// `switcher login finish` delivers an address pasted from another
 		// device and reads the outcome as JSON.
 		if strings.Contains(r.Header.Get("Accept"), "application/json") {

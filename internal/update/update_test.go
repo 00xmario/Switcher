@@ -60,7 +60,7 @@ func newInstallFixture(t *testing.T) *installFixture {
 			}
 			sum := sha256.Sum256(data)
 			if checksum := f.checksum(hex.EncodeToString(sum[:]), asset); checksum != nil {
-				return os.WriteFile(filepath.Join(dir, asset+".sha256"), []byte(*checksum), 0o600)
+				writeSignedSums(t, dir, *checksum)
 			}
 			return nil
 		},
@@ -110,6 +110,8 @@ func TestChecksumRequiresExactlyOneValidEntryBeforeExecution(t *testing.T) {
 		{"wrong asset", func(sum, asset string) *string { s := sum + "  other-binary\n"; return &s }},
 		{"extra fields", func(sum, asset string) *string { s := sum + "  " + asset + " extra"; return &s }},
 		{"split entry", func(sum, asset string) *string { s := sum + "\n" + asset; return &s }},
+		// A release's list names every file; a digest alone names none.
+		{"digest only", func(sum, asset string) *string { return &sum }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newInstallFixture(t)
@@ -130,8 +132,11 @@ func TestValidChecksumFormats(t *testing.T) {
 		name string
 		make func(string, string) *string
 	}{
-		{"digest only", func(sum, asset string) *string { return &sum }},
 		{"shasum", func(sum, asset string) *string { s := sum + "  " + asset + "\n"; return &s }},
+		{"among the release's other files", func(sum, asset string) *string {
+			s := strings.Repeat("1", 64) + "  Switcher_0.5.6.dmg\n" + sum + "  " + asset + "\n" + strings.Repeat("2", 64) + "  " + asset + ".sha256\n"
+			return &s
+		}},
 		{"binary marker and uppercase", func(sum, asset string) *string { s := strings.ToUpper(sum) + " *" + asset + "\r\n"; return &s }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +147,54 @@ func TestValidChecksumFormats(t *testing.T) {
 			}
 			assertFixtureFile(t, f.current, "new fixture", 0o755)
 			assertFixtureFile(t, f.current+".previous", "old fixture", 0o711)
+		})
+	}
+}
+
+// Only a list signed by a release key is trusted: unsigned, signed by
+// another key or for another purpose, or changed after signing, nothing
+// downloaded runs or replaces the install.
+func TestOnlySignedReleasesInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, dir, sums string)
+	}{
+		{"unsigned", func(t *testing.T, dir, sums string) {
+			_ = os.WriteFile(filepath.Join(dir, sumsName), []byte(sums), 0o600)
+		}},
+		{"another key", func(t *testing.T, dir, sums string) {
+			_ = os.WriteFile(filepath.Join(dir, sumsName), []byte(sums), 0o600)
+			_ = os.WriteFile(filepath.Join(dir, signatureName), signSums(otherKey, []byte(sums), signatureNamespace), 0o600)
+		}},
+		{"another purpose", func(t *testing.T, dir, sums string) {
+			_ = os.WriteFile(filepath.Join(dir, sumsName), []byte(sums), 0o600)
+			_ = os.WriteFile(filepath.Join(dir, signatureName), signSums(testKey, []byte(sums), "file"), 0o600)
+		}},
+		{"changed after signing", func(t *testing.T, dir, sums string) {
+			writeSignedSums(t, dir, strings.Repeat("0", 64)+"  other\n")
+			_ = os.WriteFile(filepath.Join(dir, sumsName), []byte(sums), 0o600)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInstallFixture(t)
+			download := f.ops.download
+			f.ops.download = func(ctx context.Context, tag, asset, dir string, progress func(done, total int64)) error {
+				f.checksum = func(string, string) *string { return nil }
+				if err := download(ctx, tag, asset, dir, progress); err != nil {
+					return err
+				}
+				sum, _ := sha256sum(filepath.Join(dir, asset))
+				tc.write(t, dir, sum+"  "+asset+"\n")
+				return nil
+			}
+			err := f.checker.installAndRestart(f.ops)
+			if err == nil {
+				t.Fatal("installed")
+			}
+			if f.smokeCalls != 0 || f.execCalls != 0 {
+				t.Errorf("an unsigned download was run: smoke=%d exec=%d", f.smokeCalls, f.execCalls)
+			}
+			assertFixtureFile(t, f.current, "old fixture", 0o711)
 		})
 	}
 }

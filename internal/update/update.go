@@ -513,10 +513,6 @@ func (c *Checker) installAndRestartFor(unattended bool) error {
 
 const userAgent = "Switcher-updater"
 
-// checksumLimit bounds a release's checksum file: one line, a digest and a
-// file name.
-const checksumLimit = 1 << 10
-
 // releaseRedirect lets a release request follow a redirect only where a
 // release can come from: the address it started at, or GitHub's own hosts
 // over HTTPS (release files are served from githubusercontent.com). A
@@ -535,7 +531,8 @@ func releaseRedirect(req *http.Request, via []*http.Request) error {
 	return fmt.Errorf("redirected to %s://%s, which is not where Switcher's releases are", req.URL.Scheme, req.URL.Host)
 }
 
-// downloadRelease fetches a release asset and its .sha256 into dir. Files
+// downloadRelease fetches a release asset, the release's list of checksums
+// and the list's signature into dir. Files
 // are created fresh, so a partial download can never pass for a whole one.
 // progress, when set, follows the asset's bytes as they arrive.
 func downloadRelease(ctx context.Context, tag, asset, dir string, limit int64, progress func(done, total int64)) error {
@@ -543,11 +540,14 @@ func downloadRelease(ctx context.Context, tag, asset, dir string, limit int64, p
 		return fmt.Errorf("refusing to download malformed release tag %q", tag)
 	}
 	client := &http.Client{CheckRedirect: releaseRedirect}
-	for _, name := range []string{asset + ".sha256", asset} {
+	for _, name := range []string{sumsName, signatureName, asset} {
 		url := releaseHost + "/" + Repo + "/releases/download/" + tag + "/" + name
 		var report func(done, total int64)
-		size := int64(checksumLimit)
-		if name == asset {
+		size := int64(sumsLimit)
+		switch name {
+		case signatureName:
+			size = signatureLimit
+		case asset:
 			report, size = progress, limit
 		}
 		if err := downloadFile(ctx, client, url, filepath.Join(dir, name), size, report); err != nil {
@@ -731,22 +731,25 @@ func (c *Checker) installAndRestart(ops installOps) error {
 	return nil
 }
 
+// verifyChecksum checks a downloaded file against the release's signed
+// list of checksums, downloaded beside it: the list must carry a signature
+// by a release key, and name the file once with the file's digest.
 func verifyChecksum(binaryPath, asset string) error {
-	expected, err := os.ReadFile(binaryPath + ".sha256")
+	dir := filepath.Dir(binaryPath)
+	sums, err := os.ReadFile(filepath.Join(dir, sumsName))
 	if err != nil {
-		return fmt.Errorf("download incomplete: read %s.sha256: %w", asset, err)
+		return fmt.Errorf("download incomplete: read %s: %w", sumsName, err)
 	}
-	entry := strings.TrimSpace(string(expected))
-	fields := strings.Fields(entry)
-	if strings.ContainsAny(entry, "\r\n") || len(fields) < 1 || len(fields) > 2 {
-		return fmt.Errorf("invalid checksum for %s: expected exactly one SHA-256 entry", asset)
+	signature, err := os.ReadFile(filepath.Join(dir, signatureName))
+	if err != nil {
+		return fmt.Errorf("%w (%s is missing)", errUnsigned, signatureName)
 	}
-	want, err := hex.DecodeString(fields[0])
-	if err != nil || len(want) != sha256.Size {
-		return fmt.Errorf("invalid SHA-256 digest for %s", asset)
+	if err := verifySums(sums, signature); err != nil {
+		return err
 	}
-	if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") != asset {
-		return fmt.Errorf("checksum names a different asset than %s", asset)
+	want, err := signedDigest(sums, asset)
+	if err != nil {
+		return err
 	}
 	sum, err := sha256sum(binaryPath)
 	if err != nil {
