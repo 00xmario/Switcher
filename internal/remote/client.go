@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -402,7 +403,8 @@ func (c *Client) Connect(ctx context.Context, address string, port int, code, de
 			Error string `json:"error"`
 		}
 		json.NewDecoder(io.LimitReader(resp.Body, 8<<10)).Decode(&e)
-		if e.Error == "" {
+		// Whatever answers at the address wrote this, before any proof.
+		if e.Error = strings.TrimSpace(plainText(e.Error)); e.Error == "" {
 			e.Error = "the host refused the pairing"
 		}
 		return ClientStatus{}, errors.New(e.Error)
@@ -417,8 +419,12 @@ func (c *Client) Connect(ctx context.Context, address string, port int, code, de
 		return ClientStatus{}, errors.New("this is not the Switcher you meant to pair with; check the code and address")
 	}
 	cfg.HostName, cfg.DeviceID, cfg.Token, cfg.PairedAt = plainText(paired.HostName), paired.DeviceID, paired.Token, time.Now().UTC()
+	if !hexToken(paired.Token, 64) || !hexToken(paired.DeviceID, 16) {
+		return ClientStatus{}, errors.New("the host sent an invalid pairing reply")
+	}
+	// Only what reads as a host name or an address is kept to dial later.
 	for _, a := range paired.Addresses {
-		if a != address {
+		if a != address && plainHost(a) && len(cfg.Addresses) < 12 {
 			cfg.Addresses = append(cfg.Addresses, a)
 		}
 	}
@@ -535,7 +541,7 @@ func (c *Client) pairTailnet(ctx context.Context, address string, port int, devi
 	cfg := &clientFile{HostName: plainText(paired.HostName), Addresses: []string{address}, Port: port, Fingerprint: fp,
 		DeviceID: paired.DeviceID, Token: paired.Token, PairedAt: time.Now().UTC()}
 	for _, a := range paired.Addresses {
-		if a != address && a != "" && !strings.ContainsAny(a, " \t\r\n/") && len(cfg.Addresses) < 12 {
+		if a != address && plainHost(a) && len(cfg.Addresses) < 12 {
 			cfg.Addresses = append(cfg.Addresses, a)
 		}
 	}
@@ -1044,6 +1050,15 @@ func (c *Client) Inference(ctx context.Context, account string, r *http.Request,
 		resp.Body.Close()
 		return nil, true, errors.New("the Switcher host no longer accepts this Mac; pair again in Switcher")
 	}
+	// Claude would follow a redirect and send its conversation, and what it
+	// signs in with, wherever the host says.
+	if resp.StatusCode/100 == 3 {
+		resp.Body.Close()
+		return nil, true, errors.New("the Switcher host answered with a redirect, which Switcher does not follow")
+	}
+	for _, name := range []string{"Set-Cookie", "Set-Cookie2", "Location", "Content-Location", "Refresh"} {
+		resp.Header.Del(name)
+	}
 	return resp, true, nil
 }
 
@@ -1119,16 +1134,82 @@ func (c *Client) proxy(w http.ResponseWriter, r *http.Request) {
 				pr.Out.Header.Del(name)
 			}
 		},
-		Transport:     roundTripFunc(c.do),
+		Transport: roundTripFunc(c.do),
+		ModifyResponse: func(resp *http.Response) error {
+			// A host has no reason to redirect. Followed by the dashboard,
+			// the CLI or a provider's own CLI, a redirect would repeat the
+			// request, with this Mac's credentials, wherever the host says:
+			// at this Switcher's own controls, or on another site.
+			if resp.StatusCode/100 == 3 {
+				return errHostRedirect
+			}
+			inertAnswer(resp.Header)
+			return nil
+		},
 		FlushInterval: -1,
 		ErrorLog:      log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
-			if req.Context().Err() == nil {
+			switch {
+			case errors.Is(err, errHostRedirect):
+				writeError(w, http.StatusBadGateway, "the Switcher host "+c.Status().HostName+" answered with a redirect, which Switcher does not follow")
+			case req.Context().Err() == nil:
 				writeError(w, http.StatusBadGateway, "the Switcher host "+c.Status().HostName+" is unreachable")
 			}
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// hexToken reports whether s is n lowercase hexadecimal digits, the form of
+// the ids and tokens a host hands out.
+func hexToken(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// errHostRedirect refuses a redirect from the host.
+var errHostRedirect = errors.New("the Switcher host answered with a redirect")
+
+// inertAnswer makes a host's answer plain data before this Switcher passes
+// it on under its own address, where the dashboard lives. The host is another
+// computer: nothing it sends may run as a page or a script here, set a
+// cookie, or send the browser elsewhere. API clients and the CLIs read the
+// body as before.
+func inertAnswer(h http.Header) {
+	for _, name := range []string{"Set-Cookie", "Set-Cookie2", "Clear-Site-Data", "Refresh", "Location", "Content-Location", "Link", "Service-Worker-Allowed",
+		"Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "Access-Control-Allow-Headers",
+		"Access-Control-Allow-Methods", "Access-Control-Expose-Headers", "Content-Security-Policy-Report-Only"} {
+		h.Del(name)
+	}
+	if kind := h.Get("Content-Type"); kind != "" && !dataType(kind) {
+		h.Set("Content-Type", "application/octet-stream")
+		h.Set("Content-Disposition", "attachment")
+	}
+	// Opened as a page all the same, it is a sandboxed document that loads
+	// and runs nothing; with nosniff no script tag takes it either.
+	h.Set("Content-Security-Policy", "sandbox; default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+	h.Set("X-Content-Type-Options", "nosniff")
+}
+
+// dataType reports whether a content type is one the API and the providers
+// answer with, none of which a browser renders or runs.
+func dataType(contentType string) bool {
+	kind, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	switch kind {
+	case "application/json", "application/x-ndjson", "application/octet-stream", "text/event-stream", "text/plain":
+		return true
+	}
+	return strings.HasPrefix(kind, "application/") && strings.HasSuffix(kind, "+json")
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -1276,6 +1357,10 @@ func (c *Client) WaitHostChange(ctx context.Context, since string) (string, bool
 // dashboard and menu put account and provider ids into markup and request
 // paths, so only ids shaped like the ones Switcher generates are kept.
 func sanitizeHostState(state map[string]any) {
+	// Every text the host sends, such as an account's e-mail, plan or the
+	// reason it is unhealthy, is shown in the dashboard, the menus and the
+	// terminal: none of it carries control characters.
+	plainStrings(state, 0)
 	accounts, _ := state["accounts"].([]any)
 	kept := make([]any, 0, len(accounts))
 	for _, a := range accounts {
@@ -1309,6 +1394,41 @@ func sanitizeHostState(state map[string]any) {
 	}
 	state["active"] = selected
 	delete(state, "claude_code")
+}
+
+// plainStrings removes control characters from every string in a decoded
+// JSON value, in place.
+func plainStrings(v any, depth int) any {
+	if depth > 32 {
+		return nil
+	}
+	switch value := v.(type) {
+	case string:
+		return plainLong(value)
+	case map[string]any:
+		for key, item := range value {
+			if clean := plainLong(key); clean != key {
+				delete(value, key)
+				continue
+			}
+			value[key] = plainStrings(item, depth+1)
+		}
+	case []any:
+		for i, item := range value {
+			value[i] = plainStrings(item, depth+1)
+		}
+	}
+	return v
+}
+
+// plainLong is plainText without its length limit, for text of any length.
+func plainLong(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // sanitizeLimit keeps an account's usage limit only as what a limit can be:
@@ -1387,7 +1507,7 @@ func (c *Client) refreshAddresses() {
 	var merged []string
 	seen := map[string]bool{}
 	for _, a := range append(h.Addresses, c.cfg.Addresses...) {
-		if a != "" && !seen[a] && len(merged) < 12 {
+		if plainHost(a) && !seen[a] && len(merged) < 12 {
 			seen[a] = true
 			merged = append(merged, a)
 		}

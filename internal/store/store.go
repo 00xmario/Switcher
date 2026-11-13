@@ -281,29 +281,44 @@ func readJSON(path string, v any) error {
 	return nil
 }
 
+// writeAtomic puts raw at path whole or not at all, for this user alone
+// from its first byte: a new file under a random name, never one that was
+// already there (whatever it was, and whatever mode it had), takes the
+// place of the old one, and the folder is flushed so the change survives a
+// crash.
 func writeAtomic(path string, raw []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	name := filepath.Base(path)
+	f, err := os.CreateTemp(filepath.Dir(path), name+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if _, err := f.Write(raw); err != nil {
+	tmp := f.Name()
+	fail := func(step string, err error) error {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("%s %s: %w", step, name, err)
+	}
+	if err := f.Chmod(mode); err != nil {
+		return fail("write", err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		return fail("write", err)
 	}
 	// Sync before rename so a crash never leaves a truncated file behind.
 	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("sync %s: %w", filepath.Base(path), err)
+		return fail("sync", err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("close %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("close %s: %w", name, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename %s: %w", filepath.Base(path), err)
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s: %w", name, err)
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
 	}
 	return nil
 }

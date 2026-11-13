@@ -35,6 +35,35 @@ type Found struct {
 	fp        string
 }
 
+// Presentable makes discovered hosts safe to show: anything on the network
+// can advertise a Switcher under any name. Names lose control characters,
+// which would otherwise reach a terminal as escape codes, and a host whose
+// address is not a plain host name or IP address is left out.
+func Presentable(found []Found) []Found {
+	kept := make([]Found, 0, len(found))
+	for _, f := range found {
+		f.Name = strings.TrimSpace(plainText(f.Name))
+		if f.Name == "" || !plainHost(f.Address) || f.Tailnet != "" && !plainHost(f.Tailnet) {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept
+}
+
+// plainHost reports whether s reads as a host name or an IP address.
+func plainHost(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_' || c == ':' || c == '%') {
+			return false
+		}
+	}
+	return true
+}
+
 // advertise registers this host until the returned stop function runs.
 func advertise(name string, port int, fp string) func() {
 	if runtime.GOOS == "linux" {

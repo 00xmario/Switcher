@@ -538,9 +538,15 @@ func (t *Tailnet) Status() TailnetStatus {
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&live) != nil {
 		return s
 	}
-	s.State, s.AuthURL, s.Tailnet, s.Name, s.DNSName, s.IP = live.State, live.AuthURL, live.Tailnet, live.Name, live.DNSName, live.IP
-	s.HTTPS, s.Phone, s.PhoneError = live.HTTPS, live.Phone, live.PhoneError
+	// Names in a tailnet are chosen by its devices, shared-in ones included;
+	// they are shown in the dashboard, the menus and the terminal.
+	s.State, s.AuthURL, s.Tailnet = plainText(live.State), plainText(live.AuthURL), plainText(live.Tailnet)
+	s.Name, s.DNSName, s.IP = plainText(live.Name), plainText(live.DNSName), plainText(live.IP)
+	s.HTTPS, s.Phone, s.PhoneError = live.HTTPS, live.Phone, plainText(live.PhoneError)
 	if live.Peers != nil {
+		for i, p := range live.Peers {
+			live.Peers[i].Name, live.Peers[i].DNSName, live.Peers[i].IP = plainText(p.Name), plainText(p.DNSName), plainText(p.IP)
+		}
 		s.Peers = live.Peers
 	}
 	t.mu.Lock()

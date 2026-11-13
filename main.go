@@ -32,6 +32,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ import (
 	"switcher/internal/config"
 	"switcher/internal/desktoprelay"
 	"switcher/internal/handback"
+	"switcher/internal/localpeer"
 	"switcher/internal/login"
 	"switcher/internal/mgmtapi"
 	"switcher/internal/phone"
@@ -302,12 +304,20 @@ func sessionMetadataRoots(goos, home, configDir, xdgConfig string) sessionmeta.C
 func run(port, desktopRelayPort int) {
 	// A second Switcher on this Mac stops here, before it refreshes accounts,
 	// resumes the Desktop relay or starts the Tailscale add-on.
-	if probe, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
+	// The port is held from here on and served on later: were it let go in
+	// between, another account's program could take it and be sent the
+	// menu bar app's token and the CLIs' requests in Switcher's place.
+	bound, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
 		// A distinct status, so the login service does not keep retrying.
 		log.Printf("Switcher is already running here, or port %d is in use: %v", port, err)
 		os.Exit(autostart.AlreadyRunningExit)
-	} else {
-		probe.Close()
+	}
+	// Only this user's programs are served, where the system says whose a
+	// connection is (Linux).
+	bound = localpeer.SameUser(bound)
+	if localpeer.Enforced() {
+		log.Printf("serving this user's programs only; other accounts on this computer are refused (%s=1 lifts this)", localpeer.AllowOthersEnv)
 	}
 	st := store.New(config.Dir())
 	claudeProvider := claude.New()
@@ -504,12 +514,15 @@ func run(port, desktopRelayPort int) {
 	for _, path := range []string{"/auth/callback", "/callback", "/oauth-callback", "/oauth2callback"} {
 		callbackMux.HandleFunc("GET "+path, callbackHandler(logins))
 	}
-	for _, port := range []int{
-		config.CallbackPort, config.ClaudeCallbackPort,
-		config.AntigravityCallbackPort, config.GeminiCallbackPort,
-	} {
-		go serveCallback(callbackMux, port)
+	callbacks := &callbackListeners{handler: callbackMux, held: map[string]bool{}}
+	for _, port := range callbackPorts {
+		if err := callbacks.ensure(port); err != nil {
+			log.Printf("oauth callback: %v", err)
+		}
 	}
+	// A sign-in in the browser starts only while Switcher itself answers
+	// where the provider sends the browser back to.
+	api.CallbackReady = callbacks.readyFor
 
 	mux := http.NewServeMux()
 	api.Register(mux)
@@ -641,6 +654,7 @@ func run(port, desktopRelayPort int) {
 	gate := &server.AuthGate{Store: settingsStore, DesktopManagementKey: managementKey}
 	loopback := server.Listener{
 		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+		Bound:   bound,
 		Handler: server.ControlRequests(server.LocalOnlyWith(server.LocalOptions{Port: port}, gate.Wrap(hardened))),
 	}
 	listeners := []server.Listener{loopback}
@@ -737,18 +751,110 @@ func hardenedHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// serveCallback starts a localhost OAuth callback listener. A failure to
-// bind (e.g. the port is taken) only disables logins, not the server.
-func serveCallback(mux *http.ServeMux, port int) {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	if err := callbackServer(mux, addr).ListenAndServe(); err != nil {
-		log.Printf("oauth callback listener on %s unavailable: %v", addr, err)
+// callbackPorts are the ports the providers send the browser back to after
+// a sign-in; they are fixed by the OAuth clients' registered addresses.
+var callbackPorts = []int{config.CallbackPort, config.ClaudeCallbackPort, config.AntigravityCallbackPort, config.GeminiCallbackPort}
+
+// callbackListeners holds the sign-in callback ports. The providers send
+// the browser to "localhost", which is 127.0.0.1 and ::1: Switcher listens
+// on both, so no other program, such as another account's on this
+// computer, can sit on the one Switcher left free and be handed the sign-in
+// code in its place.
+type callbackListeners struct {
+	handler http.Handler
+	mu      sync.Mutex
+	held    map[string]bool // address -> Switcher is serving it
+}
+
+// ensure makes Switcher hold a callback port on both loopback addresses,
+// taking now what it does not hold yet: a port that was busy at start, with
+// a CLI's own sign-in say, may be free by now.
+func (c *callbackListeners) ensure(port int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		if c.held[addr] {
+			continue
+		}
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			// A computer without IPv6 has no ::1 for anyone to take.
+			if host == "::1" && !errors.Is(err, syscall.EADDRINUSE) {
+				continue
+			}
+			return fmt.Errorf("another program is using port %d on this computer (%s), which this sign-in comes back to; quit it and try again", port, addr)
+		}
+		c.held[addr] = true
+		// A sign-in is finished by this user's browser or command line.
+		go func() {
+			err := callbackServer(c.handler, addr).Serve(localpeer.SameUser(ln))
+			log.Printf("oauth callback listener on %s stopped: %v", addr, err)
+			c.mu.Lock()
+			delete(c.held, addr)
+			c.mu.Unlock()
+		}()
 	}
+	return nil
+}
+
+// readyFor checks the callback port a sign-in address comes back to.
+func (c *callbackListeners) readyFor(signIn string) error {
+	u, err := url.Parse(signIn)
+	if err != nil {
+		return nil
+	}
+	back, err := url.Parse(u.Query().Get("redirect_uri"))
+	if err != nil || back.Port() == "" {
+		return nil
+	}
+	if host := back.Hostname(); host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return nil
+	}
+	port, err := strconv.Atoi(back.Port())
+	if err != nil || !slices.Contains(callbackPorts, port) {
+		return nil
+	}
+	return c.ensure(port)
 }
 
 func callbackServer(handler http.Handler, addr string) *http.Server {
-	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second}
+	return &http.Server{Addr: addr, Handler: callbackGuard(handler), ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second,
+		MaxHeaderBytes: 64 << 10}
+}
+
+// callbackGuard keeps the sign-in callback to what a provider's redirect and
+// `switcher login finish` look like. The listeners take a sign-in code without
+// any login of their own, so a web page must not reach them in the background:
+// under another name for this computer (DNS rebinding), which would let it
+// read the answer, or as an image, script, frame or fetch, which would use up
+// a sign-in that is under way. A provider's redirect is the browser's own
+// page load; the CLI sends no fetch metadata at all.
+func callbackGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := strings.ToLower(r.Host)
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "[::1]" {
+			http.Error(w, "the sign-in callback only answers this computer", http.StatusForbidden)
+			return
+		}
+		mode, dest := r.Header.Get("Sec-Fetch-Mode"), r.Header.Get("Sec-Fetch-Dest")
+		if (mode != "" && mode != "navigate") || (dest != "" && dest != "document") {
+			http.Error(w, "the sign-in callback only answers a page load", http.StatusForbidden)
+			return
+		}
+		h := w.Header()
+		h.Set("Cache-Control", "no-store")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		// The address holds the sign-in code: it goes nowhere from this page.
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // callbackHandler completes the OAuth flow and answers the browser with a

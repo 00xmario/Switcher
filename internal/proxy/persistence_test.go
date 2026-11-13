@@ -27,10 +27,25 @@ func persistenceFixture(t *testing.T) (*Manager, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(root, "state.json.tmp"), 0700); err != nil {
+	blockStateWrites(t, root)
+	return m, root
+}
+
+// blockStateWrites makes saving state.json fail: nothing can be created in
+// its folder. The accounts folder inside stays writable. The returned
+// function lifts it.
+func blockStateWrites(t *testing.T, root string) func() {
+	t.Helper()
+	if err := os.Chmod(root, 0500); err != nil {
 		t.Fatal(err)
 	}
-	return m, root
+	lift := func() {
+		if err := os.Chmod(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(lift)
+	return lift
 }
 
 func TestFailedPreferenceWriteKeepsPublishedState(t *testing.T) {
@@ -78,18 +93,13 @@ func TestAcknowledgedResetRetainsCreditFenceWhenStateWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked := filepath.Join(root, "state.json.tmp")
-	if err := os.Mkdir(blocked, 0700); err != nil {
-		t.Fatal(err)
-	}
+	lift := blockStateWrites(t, root)
 	outcome, err := m.UseBankedReset(context.Background(), "a", "a-credit")
 	awaitResetWorker(t, m, "a")
 	if outcome != "reset" || err == nil || p.spends() != 1 {
 		t.Fatalf("redemption acknowledgement lost: outcome=%s error=%v spends=%d", outcome, err, p.spends())
 	}
-	if err := os.Remove(blocked); err != nil {
-		t.Fatal(err)
-	}
+	lift()
 	outcome, err = m.UseBankedReset(context.Background(), "a", "a-credit")
 	if outcome != "already_redeemed" || err != nil || p.spends() != 1 {
 		t.Fatalf("pinned retry spent another credit: outcome=%s error=%v spends=%d", outcome, err, p.spends())

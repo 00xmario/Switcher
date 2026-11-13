@@ -149,6 +149,11 @@ type Host struct {
 	ownTailnet func() ([]string, error)
 	// beforeStop runs before the listener closes, under the lock.
 	beforeStop func()
+	// running holds, per paired device, how to end its requests in flight:
+	// removing a device also ends what it already started, such as a long
+	// answer still streaming.
+	running    map[string]map[uint64]context.CancelFunc
+	runningSeq uint64
 }
 
 // NewHost loads the host state from dir. next serves the routes paired devices
@@ -336,6 +341,7 @@ func (h *Host) Revoke(id string) error {
 				h.state.Devices = previous
 				return err
 			}
+			h.endRemovedLocked()
 			return nil
 		}
 	}
@@ -350,7 +356,8 @@ func (h *Host) Status() HostStatus {
 	s := HostStatus{Enabled: h.state.Enabled, TailnetPairing: h.state.tailnetPairing(), TailnetNotice: h.state.TailnetNotice, Listening: h.listening.Load(), Name: h.name, Port: h.port,
 		LAN: lan, Tailscale: tailscale, Devices: []DeviceView{}, Error: h.listenErr}
 	for _, d := range h.state.Devices {
-		s.Devices = append(s.Devices, DeviceView{ID: d.ID, Name: d.Name, CreatedAt: d.CreatedAt, LastSeen: d.LastSeen, Tailscale: d.TailscaleName})
+		// Cleaned again here for pairings an older release saved.
+		s.Devices = append(s.Devices, DeviceView{ID: d.ID, Name: plainText(d.Name), CreatedAt: d.CreatedAt, LastSeen: d.LastSeen, Tailscale: plainText(d.TailscaleName)})
 	}
 	if h.code != "" && time.Now().Before(h.codeExpires) {
 		s.Pairing = &PairingView{Code: formatCode(h.code), ExpiresAt: h.codeExpires}
@@ -443,8 +450,61 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONResponse(w, http.StatusOK, hello{Name: h.name, Addresses: append(lan, tailscale...)})
 		return
 	}
-	ctx := context.WithValue(context.WithValue(r.Context(), deviceKey{}, d.Name), deviceIDKey{}, d.ID)
+	ctx, done, ok := h.track(context.WithValue(context.WithValue(r.Context(), deviceKey{}, d.Name), deviceIDKey{}, d.ID), d.ID)
+	if !ok {
+		w.Header().Set(rejectedHeader, "1")
+		writeError(w, http.StatusUnauthorized, "this device is not paired with this Switcher")
+		return
+	}
+	defer done()
 	h.next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// track ties a request to its device's pairing: its context ends when the
+// device is removed. A device removed since it was authenticated gets no
+// request at all.
+func (h *Host) track(ctx context.Context, id string) (context.Context, func(), bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.state.Enabled || !slices.ContainsFunc(h.state.Devices, func(d device) bool { return d.ID == id }) {
+		cancel()
+		return nil, nil, false
+	}
+	if h.running == nil {
+		h.running = map[string]map[uint64]context.CancelFunc{}
+	}
+	if h.running[id] == nil {
+		h.running[id] = map[uint64]context.CancelFunc{}
+	}
+	h.runningSeq++
+	seq := h.runningSeq
+	h.running[id][seq] = cancel
+	return ctx, func() {
+		cancel()
+		h.mu.Lock()
+		if set := h.running[id]; set != nil {
+			delete(set, seq)
+			if len(set) == 0 {
+				delete(h.running, id)
+			}
+		}
+		h.mu.Unlock()
+	}, true
+}
+
+// endRemovedLocked ends the requests in flight of every device that is no
+// longer paired.
+func (h *Host) endRemovedLocked() {
+	for id, set := range h.running {
+		if slices.ContainsFunc(h.state.Devices, func(d device) bool { return d.ID == id }) {
+			continue
+		}
+		for _, cancel := range set {
+			cancel()
+		}
+		delete(h.running, id)
+	}
 }
 
 func (h *Host) authenticate(token string) (device, bool) {
@@ -590,7 +650,9 @@ func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
 func newDevice(name string) (device, string) {
 	token := randomHex(32)
 	sum := sha256.Sum256([]byte(token))
-	name = strings.TrimSpace(name)
+	// The device chose its name, and the owner reads it in the dashboard,
+	// the menus and the terminal.
+	name = strings.TrimSpace(plainText(name))
 	if name == "" || len(name) > 120 {
 		name = "Paired device"
 	}
@@ -652,6 +714,8 @@ func (h *Host) addDeviceLocked(d device) error {
 		h.state.Devices = previous
 		return err
 	}
+	// A pairing this one replaced is over, with what it had started.
+	h.endRemovedLocked()
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -488,5 +489,81 @@ func TestTheRestartIsAnnouncedBeforeTheAppIsReplaced(t *testing.T) {
 	}
 	if strings.Join(order, ",") != "before,copy,restart,failed" {
 		t.Fatalf("order: %v", order)
+	}
+}
+
+// A release download follows redirects only to where releases are: its own
+// start, or GitHub's hosts over HTTPS. Anything else ends it before a byte
+// is saved.
+func TestReleaseDownloadsDoNotLeaveGitHub(t *testing.T) {
+	request := func(raw string) *http.Request {
+		r, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	start := []*http.Request{request("https://github.com/" + Repo + "/releases/download/v1.31.0/x")}
+	for _, ok := range []string{
+		"https://github.com/other/path",
+		"https://release-assets.githubusercontent.com/github-production-release-asset/1/x?sig=1",
+		"https://objects.githubusercontent.com/x",
+		"https://api.github.com/x",
+	} {
+		if err := releaseRedirect(request(ok), start); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"http://github.com/x",
+		"http://release-assets.githubusercontent.com/x",
+		"https://attacker.example/x",
+		"https://githubusercontent.com.attacker.example/x",
+		"https://attacker-githubusercontent.com/x",
+		"https://github.com.attacker.example/x",
+		"https://user:pass@objects.githubusercontent.com/x",
+		"http://127.0.0.1:8787/api/quit",
+		"http://169.254.169.254/latest/meta-data/",
+		"file:///etc/passwd",
+	} {
+		if err := releaseRedirect(request(bad), start); err == nil {
+			t.Errorf("followed a redirect to %s", bad)
+		}
+	}
+	if err := releaseRedirect(request("https://github.com/x"), []*http.Request{start[0], start[0], start[0], start[0], start[0]}); err == nil {
+		t.Error("followed a sixth redirect")
+	}
+
+	// End to end: a release host that redirects elsewhere installs nothing.
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the download reached another host: %s", r.URL)
+		_, _ = w.Write([]byte("planted"))
+	}))
+	defer elsewhere.Close()
+	withReleaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			_, _ = w.Write([]byte("sum"))
+			return
+		}
+		http.Redirect(w, r, elsewhere.URL+"/planted", http.StatusFound)
+	})
+	dir := t.TempDir()
+	err := downloadRelease(context.Background(), "v1.12.0", "Switcher_1.12.0.dmg", dir, 1<<20, nil)
+	if err == nil || !strings.Contains(err.Error(), "not where Switcher's releases are") {
+		t.Fatalf("redirect elsewhere: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "Switcher_1.12.0.dmg")); statErr == nil {
+		t.Fatal("a file from another host was saved")
+	}
+	// A checksum file is one short line; a large one is refused.
+	withReleaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			_, _ = w.Write(bytes.Repeat([]byte("a"), checksumLimit+1))
+			return
+		}
+		_, _ = w.Write([]byte("image"))
+	})
+	if err := downloadRelease(context.Background(), "v1.12.0", "Switcher_1.12.0.dmg", t.TempDir(), 1<<20, nil); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("oversized checksum: %v", err)
 	}
 }

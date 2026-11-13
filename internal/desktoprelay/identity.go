@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// maxRequestBytes bounds a request the relay reads into memory, packed or
+// unpacked. Anthropic's own limit is half of it.
+const maxRequestBytes = 64 << 20
+
 type identityView struct {
 	SessionID string
 	ParentID  string
@@ -26,9 +30,17 @@ type identityView struct {
 func identity(r *http.Request, body []byte) identityView {
 	var v identityView
 	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		// Unpacked only up to the size a request may have: a small packed
+		// body can hold gigabytes, and whoever may send a request, a paired
+		// Mac included, could otherwise use up this computer's memory. A
+		// larger one is not read, as anything else that cannot be.
 		if z, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
-			body, _ = io.ReadAll(z)
+			unpacked, _ := io.ReadAll(io.LimitReader(z, maxRequestBytes+1))
 			z.Close()
+			if len(unpacked) > maxRequestBytes {
+				unpacked = nil
+			}
+			body = unpacked
 		}
 	}
 	var top struct {

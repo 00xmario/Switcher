@@ -1308,7 +1308,24 @@ func (m *Manager) forward(prov provider.Provider, account store.Account, path st
 	if err := prov.ApplyAuth(req, account); err != nil {
 		return nil, err
 	}
-	return http.DefaultClient.Do(req)
+	client := *http.DefaultClient
+	client.CheckRedirect = providerRedirect
+	return client.Do(req)
+}
+
+// providerRedirect keeps an account's credential with its provider. A
+// redirect is followed only on the provider's own host, over the same
+// scheme; one that leads elsewhere is handed back to the caller as it is,
+// so the credential, which sits in headers the standard client would keep
+// (x-api-key, ChatGPT-Account-Id), never travels to another site.
+func providerRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("too many redirects")
+	}
+	if first := via[0].URL; req.URL.Scheme != first.Scheme || !strings.EqualFold(req.URL.Host, first.Host) {
+		return http.ErrUseLastResponse
+	}
+	return nil
 }
 
 func isClientCredentialHeader(key string) bool {
@@ -1552,7 +1569,11 @@ func (m *Manager) splitPrefix(path string) (providerID, rest string, ok bool) {
 // the path again could turn into one; no provider path has either.
 // Backslashes count as separators too, as some servers treat them that way.
 func climbsOutOfBase(path string) bool {
-	if strings.Contains(path, "%") {
+	// "?" and "#" here were percent-encoded in the request: joined into the
+	// upstream address as they are, they would end its path early, leaving
+	// a ".." before them as the last segment. ";" starts path parameters,
+	// which some servers drop before they resolve "..".
+	if strings.ContainsAny(path, "%?#;") {
 		return true
 	}
 	for _, segment := range strings.FieldsFunc(path, func(c rune) bool { return c == '/' || c == '\\' }) {

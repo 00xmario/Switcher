@@ -129,7 +129,12 @@ var ErrUnsupported = errors.New("unsupported flow for this provider")
 // exchanges, userinfo, onboarding, quota lookups) so a stalled upstream
 // cannot hold a login or usage request open indefinitely. Providers share
 // one client so the timeout policy has a single home.
-var OAuthHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var OAuthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: NoRedirect}
+
+// NoRedirect keeps a sign-in request where it was sent. A token endpoint
+// has no reason to redirect, and a followed 307 or 308 would repeat the
+// request's body, a refresh token or a sign-in code, at the new address.
+func NoRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // LoginInfo describes how the user completes a login.
 type LoginInfo struct {

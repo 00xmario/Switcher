@@ -171,9 +171,18 @@ func TestAppsSampler(t *testing.T) {
 // Network and removable volumes and the folders macOS guards are never
 // looked at; what is found is remembered.
 func TestCachedIsFile(t *testing.T) {
-	for _, path := range []string{"/Volumes/Share/bin/tool", "/net/host/x/tool", "/Users/a/Desktop/tool", "/Users/a/Library/CloudStorage/x/tool"} {
-		if cachedIsFile(path) {
+	for _, path := range []string{"/Volumes/Share/bin/tool", "/net/host/x/tool", "/Users/a/Desktop/tool", "/Users/a/Library/CloudStorage/x/tool",
+		// The same places under other spellings.
+		"/System/Volumes/Data/Volumes/Share/bin/tool", "/System/Volumes/Data/net/host/tool", "/System/Volumes/Other/tool",
+		"/usr/../Volumes/Share/tool", "/usr/bin/../../net/host/tool", "//net/host/tool", "/usr//bin/tool", "/usr/bin/..", "relative/tool", ""} {
+		if lookedAt(path) || cachedIsFile(path) {
 			t.Errorf("%s was looked at", path)
+		}
+	}
+	for _, path := range []string{"/Applications/Safari.app/Contents/MacOS/Safari", "/usr/bin/ssh", "/Users/a/bin/tool",
+		"/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari", "/System/Volumes/Data/Users/a/bin/tool"} {
+		if !lookedAt(path) {
+			t.Errorf("%s was not looked at", path)
 		}
 	}
 	dir := t.TempDir()

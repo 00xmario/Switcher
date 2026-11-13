@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -39,10 +40,23 @@ func (a *authGate) gate(next http.Handler) http.Handler {
 		// also closes access immediately while a topology restart is pending
 		// or has failed, including independently authenticated native routes.
 		if a.lan && (err != nil || !st.AuthEnabled || st.PasswordHash == "" || !st.BindLAN || !st.TLS) {
+			refuseUnread(w)
 			http.Error(w, "LAN access is disabled", http.StatusServiceUnavailable)
 			return
 		}
 		if nativeRoute(r.URL.Path) {
+			// The provider routes spend the accounts' subscriptions and have
+			// no login of their own: on this computer every program may use
+			// them, as it may use the CLIs' own logins. A device on the
+			// network has to show the management key, which the proxy never
+			// forwards. The hub routes check that key themselves.
+			if a.lan && !strings.HasPrefix(r.URL.Path, "/v0/management/") && !a.lanProxyKey(r) {
+				refuseUnread(w)
+				w.Header().Set("Cache-Control", "no-store")
+				w.Header().Set("WWW-Authenticate", `Bearer realm="switcher"`)
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "send Switcher's management key as the API key to use its accounts from another device"})
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -112,6 +126,27 @@ func (a *authGate) gate(next http.Handler) http.Handler {
 	})
 }
 
+// lanProxyKey reports whether a request to a provider route carries the
+// management key where a CLI puts its API key: a bearer token or one of the
+// providers' key headers. The proxy drops all of them before it forwards.
+func (a *authGate) lanProxyKey(r *http.Request) bool {
+	if a.desktopManagementKey == "" {
+		return false
+	}
+	candidates := []string{strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")}
+	for _, name := range []string{"X-Api-Key", "Api-Key", "X-Goog-Api-Key", "X-Management-Key"} {
+		candidates = append(candidates, r.Header.Get(name))
+	}
+	ok := false
+	for _, got := range candidates {
+		// Every candidate is compared, so timing does not say which one matched.
+		if subtle.ConstantTimeCompare([]byte(got), []byte(a.desktopManagementKey)) == 1 {
+			ok = true
+		}
+	}
+	return ok
+}
+
 // exempt lets the standalone login load without shipping the app's HTML or
 // JavaScript. Credential endpoints that require a password or device token
 // retain their per-handler checks. Logout and session deletion go through
@@ -155,13 +190,7 @@ func AuthKind(r *http.Request) string {
 }
 
 func subtleEqual(a, b string) bool {
-	return len(a) == len(b) && (len(a) == 0 || func() bool {
-		var acc byte
-		for i := 0; i < len(a); i++ {
-			acc |= a[i] ^ b[i]
-		}
-		return acc == 0
-	}())
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // AuthGate wraps the mux behind the optional authentication middleware.

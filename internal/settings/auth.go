@@ -103,7 +103,7 @@ func (s *Store) SetPassword(password string) error {
 	if err != nil {
 		return err
 	}
-	s.ResetFailures()
+	s.resetAllFailures()
 	return nil
 }
 
@@ -192,14 +192,27 @@ func (s *Store) DisableAuthWithPassword(password string) error {
 
 const maxFailures = 5
 
-// CheckLockout reports whether login attempts are currently locked out.
-// The check runs before any PBKDF2 work so the KDF cannot be abused as a
-// CPU oracle on an unauthenticated endpoint.
-func (s *Store) CheckLockout() error {
+// Source says where a password attempt came from. Each has its own count of
+// failures: guesses from the network lock the network out, never the owner
+// at this computer, who could otherwise be kept from the dashboard, and from
+// changing or turning off the password, by anyone who can reach the LAN
+// listener. All network addresses share one count, so more addresses do not
+// buy more guesses.
+type Source int
+
+const (
+	Local Source = iota
+	Network
+)
+
+// CheckLockout reports whether password attempts from this source are
+// currently locked out. The check runs before any PBKDF2 work so the KDF
+// cannot be abused as a CPU oracle on an unauthenticated endpoint.
+func (s *Store) CheckLockout(from Source) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fails >= maxFailures && time.Now().Before(s.lockout) {
-		remaining := time.Until(s.lockout).Round(time.Second)
+	if s.fails[from] >= maxFailures && time.Now().Before(s.lockout[from]) {
+		remaining := time.Until(s.lockout[from]).Round(time.Second)
 		return fmt.Errorf("too many failed attempts; try again in %s", remaining)
 	}
 	return nil
@@ -208,36 +221,47 @@ func (s *Store) CheckLockout() error {
 // BeginAttempt admits one password check at a time, after CheckLockout.
 // Concurrent guesses would otherwise all pass the lockout check before the
 // first failure is counted. The caller records the outcome, then calls done.
-func (s *Store) BeginAttempt() (done func(), err error) {
+func (s *Store) BeginAttempt(from Source) (done func(), err error) {
 	s.attemptMu.Lock()
-	if err := s.CheckLockout(); err != nil {
+	if err := s.CheckLockout(from); err != nil {
 		s.attemptMu.Unlock()
 		return nil, err
 	}
 	return s.attemptMu.Unlock, nil
 }
 
-// RecordFailure counts a failed login and escalates the lockout.
-func (s *Store) RecordFailure() {
+// RecordFailure counts a failed password check and escalates the lockout
+// of its source.
+func (s *Store) RecordFailure(from Source) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.fails++
-	backoff := time.Duration(1<<min(s.fails, 6)) * 30 * time.Second
-	s.lockout = time.Now().Add(backoff)
+	s.fails[from]++
+	backoff := time.Duration(1<<min(s.fails[from], 6)) * 30 * time.Second
+	s.lockout[from] = time.Now().Add(backoff)
 }
 
-// resetFailures clears the failure counter after a successful login.
-func (s *Store) ResetFailures() {
+// ResetFailures clears a source's failure count after it gave the password.
+func (s *Store) ResetFailures(from Source) {
 	s.mu.Lock()
-	s.fails = 0
-	s.lockout = time.Time{}
+	s.fails[from] = 0
+	s.lockout[from] = time.Time{}
+	s.mu.Unlock()
+}
+
+// resetAllFailures starts every source afresh, for a new password.
+func (s *Store) resetAllFailures() {
+	s.mu.Lock()
+	s.fails, s.lockout = [2]int{}, [2]time.Time{}
 	s.mu.Unlock()
 }
 
 // ---- sessions ----
 
 type sessionFile struct {
-	Sessions   map[string]int64 `json:"sessions"` // sha256(token) hex -> expiry unix
+	Sessions map[string]int64 `json:"sessions"` // sha256(token) hex -> expiry unix
+	// Born is when each session signed in. One saved without it, by an
+	// older build, counts from when this build first reads it.
+	Born       map[string]int64 `json:"born,omitempty"`
 	Generation string           `json:"credential_generation"`
 }
 
@@ -317,16 +341,37 @@ func (s *Store) ValidateSession(token string) bool {
 	defer s.mu.Unlock()
 	sessions := s.loadSessionsLocked(st)
 	expiry, ok := sessions[key]
-	if !ok || time.Now().After(expiry) {
-		if ok {
-			delete(sessions, key)
-			_ = s.persistSessionsLocked(st, sessions)
-		}
+	if !ok {
 		return false
 	}
-	sessions[key] = time.Now().Add(SessionTTL)
+	now := time.Now()
+	end := s.bornLocked(key, now).Add(SessionMaxAge)
+	if now.After(expiry) || !now.Before(end) {
+		delete(sessions, key)
+		_ = s.persistSessionsLocked(st, sessions)
+		return false
+	}
+	// Renewed by use, but never past its last day.
+	next := now.Add(SessionTTL)
+	if next.After(end) {
+		next = end
+	}
+	sessions[key] = next
 	_ = s.persistSessionsLocked(st, sessions)
 	return true
+}
+
+// bornLocked is when a session signed in. One without a record starts now.
+func (s *Store) bornLocked(key string, now time.Time) time.Time {
+	if s.sessionBorn == nil {
+		s.sessionBorn = map[string]time.Time{}
+	}
+	born, ok := s.sessionBorn[key]
+	if !ok {
+		born = now
+		s.sessionBorn[key] = born
+	}
+	return born
 }
 
 // SessionCount reports how many live sessions exist.
@@ -470,23 +515,35 @@ func (s *Store) loadSessionsLocked(st Settings) map[string]time.Time {
 	}
 	// Drop expired entries on load.
 	now := time.Now()
-	s.sessions = map[string]time.Time{}
+	s.sessions, s.sessionBorn = map[string]time.Time{}, map[string]time.Time{}
 	for key, expiryUnix := range file.Sessions {
 		expiry := time.Unix(expiryUnix, 0)
-		if now.After(expiry) {
+		born := now
+		// A sign-in time from the future is not one.
+		if at, ok := file.Born[key]; ok && !time.Unix(at, 0).After(now) {
+			born = time.Unix(at, 0)
+		}
+		if now.After(expiry) || !now.Before(born.Add(SessionMaxAge)) {
 			continue
 		}
-		s.sessions[key] = expiry
+		s.sessions[key], s.sessionBorn[key] = expiry, born
 	}
 	return s.sessions
 }
 
 func (s *Store) persistSessionsLocked(st Settings, sessions map[string]time.Time) error {
-	out := map[string]int64{}
+	out, born := map[string]int64{}, map[string]int64{}
+	now := time.Now()
+	for key := range s.sessionBorn {
+		if _, ok := sessions[key]; !ok {
+			delete(s.sessionBorn, key)
+		}
+	}
 	for key, expiry := range sessions {
 		out[key] = expiry.Unix()
+		born[key] = s.bornLocked(key, now).Unix()
 	}
-	data, err := json.MarshalIndent(sessionFile{Sessions: out, Generation: credentialGeneration(st)}, "", "  ")
+	data, err := json.MarshalIndent(sessionFile{Sessions: out, Born: born, Generation: credentialGeneration(st)}, "", "  ")
 	if err != nil {
 		return err
 	}

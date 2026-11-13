@@ -51,10 +51,13 @@ type UpdateChecker interface {
 
 // API wraps the JSON API the web UI talks to.
 type API struct {
-	Store        *store.Store
-	Logins       *login.Manager
-	Proxy        *proxy.Manager
-	DesktopRelay *desktoprelay.Manager
+	// CallbackReady reports whether Switcher itself answers where a browser
+	// sign-in, given by its address, comes back to.
+	CallbackReady func(signInURL string) error
+	Store         *store.Store
+	Logins        *login.Manager
+	Proxy         *proxy.Manager
+	DesktopRelay  *desktoprelay.Manager
 	// DesktopSessionMetadata is the same explicit, lazy index supplied to the
 	// relay's trusted conversation resolver. GET only decorates response copies.
 	// Nil disables display lookup; the manager may still verify saved associations
@@ -375,6 +378,7 @@ func LocalOnly(port int, next http.Handler) http.Handler {
 func LocalOnlyWith(opts LocalOptions, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isLocalHost(r.Host, opts.LANHost) {
+			refuseUnread(w)
 			http.Error(w, "switcher only accepts local connections", http.StatusForbidden)
 			return
 		}
@@ -383,11 +387,13 @@ func LocalOnlyWith(opts LocalOptions, next http.Handler) http.Handler {
 		// be unreadable cross-origin, but it would still spend the user's
 		// subscription on an authenticated upstream call, so it is rejected.
 		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+			refuseUnread(w)
 			http.Error(w, "cross-site requests are not allowed", http.StatusForbidden)
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if origin := r.Header.Get("Origin"); origin != "" && !isLocalOrigin(origin, opts) {
+				refuseUnread(w)
 				http.Error(w, "cross-origin requests are not allowed", http.StatusForbidden)
 				return
 			}
@@ -649,8 +655,12 @@ func (a *API) stateView(r *http.Request) (int, any) {
 		"order":    order,
 		"hidden":   hidden,
 	}
+	// This computer's own Claude Code login, with where its files are, is
+	// not a paired device's to see; a paired Switcher shows its own.
 	if native, ok := a.Providers["claude"].(provider.NativeLoginProvider); ok {
-		state["claude_code"] = native.NativeStatus()
+		if _, paired := remote.PairedDevice(r); !paired {
+			state["claude_code"] = native.NativeStatus()
+		}
 	}
 	if event := a.Proxy.LastAutoSwitch(); event != nil {
 		state["auto_switch"] = event
@@ -804,6 +814,15 @@ func isLoopbackRequest(r *http.Request) bool {
 	return loopback && isLocalHost(r.Host, "")
 }
 
+// attemptSource says which count of failed password checks a request is
+// held to: this computer's, or the network's.
+func attemptSource(r *http.Request) settings.Source {
+	if isLoopbackRequest(r) {
+		return settings.Local
+	}
+	return settings.Network
+}
+
 func loopbackOnly(w http.ResponseWriter, r *http.Request) bool {
 	if !isLoopbackRequest(r) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only local requests may change credentials"})
@@ -874,7 +893,7 @@ func (a *API) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	done, err := a.Settings.BeginAttempt()
+	done, err := a.Settings.BeginAttempt(attemptSource(r))
 	if err != nil {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		return
@@ -882,7 +901,7 @@ func (a *API) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	defer done()
 	proof, ok := a.Settings.VerifyPasswordForSession(body.Password)
 	if !ok {
-		a.Settings.RecordFailure()
+		a.Settings.RecordFailure(attemptSource(r))
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wrong password"})
 		return
 	}
@@ -895,7 +914,7 @@ func (a *API) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
-	a.Settings.ResetFailures()
+	a.Settings.ResetFailures(attemptSource(r))
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
@@ -944,7 +963,7 @@ func (a *API) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	done, err := a.Settings.BeginAttempt()
+	done, err := a.Settings.BeginAttempt(attemptSource(r))
 	if err != nil {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		return
@@ -953,7 +972,7 @@ func (a *API) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 	if err := a.Settings.ChangePassword(body.Current, body.Next); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, settings.ErrWrongPassword) {
-			a.Settings.RecordFailure()
+			a.Settings.RecordFailure(attemptSource(r))
 			status = http.StatusUnauthorized
 		} else if errors.Is(err, settings.ErrCredentialsChanged) || errors.Is(err, settings.ErrPasswordAlreadySet) {
 			status = http.StatusConflict
@@ -961,7 +980,7 @@ func (a *API) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	a.Settings.ResetFailures()
+	a.Settings.ResetFailures(attemptSource(r))
 	// Ensure the device token file so the menu bar app can authenticate.
 	_, _ = a.Settings.EnsureDeviceToken()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "csrf": a.Settings.CSRFToken()})
@@ -978,7 +997,7 @@ func (a *API) handleAuthDisable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	done, err := a.Settings.BeginAttempt()
+	done, err := a.Settings.BeginAttempt(attemptSource(r))
 	if err != nil {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		return
@@ -987,7 +1006,7 @@ func (a *API) handleAuthDisable(w http.ResponseWriter, r *http.Request) {
 	if err := a.Settings.DisableAuthWithPassword(body.Password); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, settings.ErrWrongPassword) {
-			a.Settings.RecordFailure()
+			a.Settings.RecordFailure(attemptSource(r))
 			status = http.StatusUnauthorized
 		} else if errors.Is(err, settings.ErrCredentialsChanged) {
 			status = http.StatusConflict
@@ -995,7 +1014,7 @@ func (a *API) handleAuthDisable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	a.Settings.ResetFailures()
+	a.Settings.ResetFailures(attemptSource(r))
 	// The LAN gate already rejects traffic. Re-exec releases the bound LAN
 	// socket and applies the saved local-only listener topology.
 	go func() {
@@ -1161,6 +1180,14 @@ func (a *API) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not start login"})
 		return
+	}
+	// The browser comes back to a port on this computer. If another program
+	// holds it, that program, not Switcher, would be handed the sign-in.
+	if handle.URL != "" && a.CallbackReady != nil {
+		if err := a.CallbackReady(handle.URL); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, handle)
 }
@@ -1486,7 +1513,19 @@ func (a *API) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "updates unavailable"})
 		return
 	}
-	state, err := a.Updater.Check(r.Context())
+	// Another computer's checks reach the release servers only once in a
+	// while, so it cannot use up this one's allowance there.
+	check := a.Updater.Check
+	if _, paired := remote.PairedDevice(r); paired {
+		if throttled, ok := a.Updater.(interface {
+			CheckUnlessRecent(context.Context, time.Duration) (update.State, error)
+		}); ok {
+			check = func(ctx context.Context) (update.State, error) {
+				return throttled.CheckUnlessRecent(ctx, update.OthersCheckEvery)
+			}
+		}
+	}
+	state, err := check(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check for updates", "update": state})
 		return

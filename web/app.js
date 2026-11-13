@@ -2636,7 +2636,7 @@ async function renderSettings() {
         `}
       </div>
       <div class="settings-card">
-        <div class="set-card-head"><h3>Network</h3><p class="settings-sub">The LAN listener uses TLS with a self-signed certificate. Devices on your network can use your subscriptions through it, so only enable it on networks you trust.</p></div>
+        <div class="set-card-head"><h3>Network</h3><p class="settings-sub">The LAN listener uses TLS with a self-signed certificate. The dashboard asks for your password there, and a CLI on another device needs the management key as its API key. Only enable it on networks you trust.</p></div>
         <div class="settings-row">
           <div><strong>Bind LAN</strong><span class="dim">${lanStateText(status)}</span></div>
           <label class="switch-wrap"><input type="checkbox" id="bind-lan" ${status.bind_lan ? 'checked' : ''} ${status.auth_enabled && status.password_set ? '' : 'disabled'}><span class="switch-visual"></span></label>

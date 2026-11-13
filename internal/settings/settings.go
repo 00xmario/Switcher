@@ -21,6 +21,11 @@ const Iterations = 600000
 // SessionTTL is how long a login session stays valid without a renewal.
 const SessionTTL = 7 * 24 * time.Hour
 
+// SessionMaxAge ends a session however often it was renewed, so a copied
+// session token cannot be kept alive for good by using it. The browser's
+// cookie lasts SessionTTL from the sign-in, so it never reaches this.
+const SessionMaxAge = 30 * 24 * time.Hour
+
 // Settings mirrors settings.json. Missing file means all defaults: auth
 // disabled, loopback binding, no TLS.
 type Settings struct {
@@ -55,10 +60,11 @@ type Store struct {
 	hasValid               bool
 	readFailed             bool
 	sessions               map[string]time.Time // sha256(token hex) -> expiry
+	sessionBorn            map[string]time.Time // sha256(token hex) -> sign-in
 	sessionGeneration      string
 	sessionDeletionRetries map[string]sessionDeletionRetry
-	fails                  int
-	lockout                time.Time
+	fails                  [2]int // failed password checks, by Source
+	lockout                [2]time.Time
 }
 
 // New builds a store rooted at the Switcher data directory.

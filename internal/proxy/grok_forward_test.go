@@ -168,3 +168,56 @@ func TestGrokProxySSEFlushAndCancellation(t *testing.T) {
 		t.Fatal("Grok cancellation did not reach upstream")
 	}
 }
+
+// An account's credential stays with its provider: a redirect to another
+// site is handed back to the caller, not followed with the credential.
+func TestProxyDoesNotCarryCredentialsToAnotherSite(t *testing.T) {
+	var elsewhereHits atomic.Int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhereHits.Add(1)
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-XAI-Token-Auth") != "" {
+			t.Errorf("the account's credential reached another site: %v", r.Header)
+		}
+	}))
+	defer elsewhere.Close()
+	m := grokProxyFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/away":
+			http.Redirect(w, r, elsewhere.URL+"/collect", http.StatusTemporaryRedirect)
+		case "/v1/same":
+			http.Redirect(w, r, "/v1/models", http.StatusFound)
+		case "/v1/models":
+			if r.Header.Get("Authorization") != "Bearer chosen-session" {
+				t.Error("a redirect on the provider's own host lost the credential")
+			}
+			io.WriteString(w, `{"ok":true}`)
+		}
+	})
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/grok/v1/away", strings.NewReader(`{}`)))
+	if w.Code != http.StatusTemporaryRedirect || elsewhereHits.Load() != 0 {
+		t.Fatalf("redirect to another site: status %d, %d requests reached it", w.Code, elsewhereHits.Load())
+	}
+	w = httptest.NewRecorder()
+	m.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/grok/v1/same", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("redirect on the provider's own host: %d %s", w.Code, w.Body.String())
+	}
+	// The policy itself, for the cases the fixture's rewriting hides.
+	first, _ := http.NewRequest(http.MethodGet, "https://api.anthropic.com/v1/messages", nil)
+	for target, follow := range map[string]bool{
+		"https://api.anthropic.com/v1/other":       true,
+		"https://API.Anthropic.com/v1/other":       true,
+		"http://api.anthropic.com/v1/other":        false,
+		"https://api.anthropic.com:8443/v1/other":  false,
+		"https://attacker.example/v1/messages":     false,
+		"https://api.anthropic.com.attacker.test/": false,
+		"http://127.0.0.1:8787/api/quit":           false,
+	} {
+		next, _ := http.NewRequest(http.MethodGet, target, nil)
+		err := providerRedirect(next, []*http.Request{first})
+		if follow != (err == nil) {
+			t.Errorf("%s: follow=%v err=%v", target, follow, err)
+		}
+	}
+}

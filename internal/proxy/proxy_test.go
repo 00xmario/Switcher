@@ -283,6 +283,13 @@ func TestProxyRefusesPathsThatClimbOutOfTheProviderBase(t *testing.T) {
 		"/fake/v1/%252e%252e/%252e%252e/me",
 		"/fake/v1/.%252e/me",
 		"/fake/v1/%252E%252E%252fme",
+		// An encoded "?" or "#" ends the upstream path at the ".." before
+		// it; ";" starts parameters some servers drop first.
+		"/fake/..%3F",
+		"/fake/v1/..%3f",
+		"/fake/v1/..%23",
+		"/fake/v1/..%3Bx/me",
+		"/fake/v1/responses%3Fa=1",
 	} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`)))

@@ -23,6 +23,10 @@ type Listener struct {
 	Handler http.Handler
 	TLS     bool
 	Cert    tls.Certificate
+	// Bound is the socket to serve on, when the caller already holds it:
+	// the loopback port is taken once, at start, and never let go, so no
+	// other program can take it in between and receive what is sent there.
+	Bound net.Listener
 }
 
 // ServeAll runs every listener. The first listener (loopback) is fatal on
@@ -52,6 +56,8 @@ func ServeAll(listeners []Listener) error {
 					lanServing.Store(true)
 					err = srv.ServeTLS(ln, "", "")
 				}
+			} else if l.Bound != nil {
+				err = srv.Serve(l.Bound)
 			} else {
 				err = srv.ListenAndServe()
 			}

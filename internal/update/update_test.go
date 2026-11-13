@@ -359,13 +359,13 @@ func TestAnInstallTakesTheNewestRelease(t *testing.T) {
 	c := New("1.15.0")
 	c.latest, c.lastCheck = "v1.16.0", time.Now()
 	c.metadataFetch = func(context.Context) (string, error) { return "v1.20.0", nil }
-	c.refreshForInstall()
+	c.refreshForInstall(false)
 	if got := c.Latest(); got != "v1.20.0" {
 		t.Fatalf("installs %s", got)
 	}
 	// A failed check still installs the newest release known.
 	c.metadataFetch = func(context.Context) (string, error) { return "", errors.New("offline") }
-	c.refreshForInstall()
+	c.refreshForInstall(false)
 	if got := c.Latest(); got != "v1.20.0" {
 		t.Fatalf("after a failed check installs %s", got)
 	}

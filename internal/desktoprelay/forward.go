@@ -50,7 +50,7 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 		relayError(w, http.StatusForbidden, "permission_error", "This Switcher relay profile was revoked", "")
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		panic(http.ErrAbortHandler)
 	}
@@ -235,7 +235,7 @@ func usageRejected(h http.Header, now time.Time) (time.Time, bool) {
 // the given account's credential. path is the Anthropic path, such as
 // /v1/messages.
 func (m *Manager) ServeAccount(w http.ResponseWriter, r *http.Request, path, account string) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		panic(http.ErrAbortHandler)
 	}
@@ -247,7 +247,7 @@ func (m *Manager) ServeAccount(w http.ResponseWriter, r *http.Request, path, acc
 // continued on the account it asked for cannot move, so the paired Mac is
 // asked to resend the full conversation instead.
 func (m *Manager) ServeAccountRouted(w http.ResponseWriter, r *http.Request, path, account string, route func(string) string) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		panic(http.ErrAbortHandler)
 	}

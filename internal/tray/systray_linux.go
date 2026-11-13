@@ -177,6 +177,7 @@ func menuTitle(title string) string {
 
 // Notify shows a desktop notification through the freedesktop service.
 func (u *systrayUI) Notify(title, body string) {
+	title, body = notificationText(title), notificationText(body)
 	call := u.conn.Object("org.freedesktop.Notifications", "/org/freedesktop/Notifications").Call(
 		"org.freedesktop.Notifications.Notify", 0, "Switcher", uint32(0), "", title, body, []string{}, map[string]dbus.Variant{}, int32(-1))
 	if call.Err != nil {

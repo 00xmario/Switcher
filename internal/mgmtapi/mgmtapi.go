@@ -117,6 +117,13 @@ func (a *API) handleAuthFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }
 
+// controlPlaneProviders says whose accounts each allowed host takes: an
+// account's token goes to its own provider and to no other company.
+var controlPlaneProviders = map[string]string{
+	"chatgpt.com":       "codex",
+	"api.anthropic.com": "claude",
+}
+
 // apiCallRequest mirrors CLIProxyAPI's management api-call body. Header
 // values may contain the $TOKEN$ placeholder, which CPA swaps for the
 // account's credentials before dispatching. Data is CPA's string holding
@@ -218,6 +225,21 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	// Checked before the account's credentials are touched: a Claude token
+	// is never sent to OpenAI, nor a ChatGPT token to Anthropic.
+	stored, err := a.Store.Get(req.AuthIndex)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown auth_index"})
+		} else {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "account credentials unavailable"})
+		}
+		return
+	}
+	if want := controlPlaneProviders[strings.ToLower(parsed.Hostname())]; want == "" || stored.Provider != want {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "this account does not belong to that provider"})
+		return
+	}
 	account, err := a.Proxy.PrepareAccount(ctx, req.AuthIndex)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -225,6 +247,10 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "account credentials unavailable"})
 		}
+		return
+	}
+	if account.Provider != stored.Provider {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "this account does not belong to that provider"})
 		return
 	}
 

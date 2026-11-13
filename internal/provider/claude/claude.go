@@ -599,7 +599,7 @@ func accountFromToken(tok oauthToken) (store.Account, error) {
 
 // oauthHTTPClient bounds token and refresh exchanges so a stalled upstream
 // cannot hold the callback request open.
-var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: provider.NoRedirect}
 
 // keychainCreds mirrors the JSON the Claude Code CLI stores in the macOS
 // keychain (service "Claude Code-credentials").
@@ -693,7 +693,9 @@ func (p *Provider) ImportFromKeychain(ctx context.Context) (store.Account, error
 // elsewhere, as Claude Code does on Linux.
 func storedCLICredentials(ctx context.Context) ([]byte, error) {
 	if runtime.GOOS == "darwin" {
-		out, err := exec.CommandContext(ctx, "security", "find-generic-password",
+		// By its full path: a program named "security" earlier in PATH must
+		// not be handed the question for Claude Code's login.
+		out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password",
 			"-s", "Claude Code-credentials", "-w").Output()
 		if err != nil {
 			return nil, fmt.Errorf("no Claude Code CLI credentials in the keychain")

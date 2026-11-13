@@ -1,10 +1,14 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +20,7 @@ import (
 	"time"
 
 	"switcher/internal/claudecode"
+	"switcher/internal/login"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
 	"switcher/internal/settings"
@@ -454,5 +459,186 @@ func TestLogoutReportsPersistentFailureAndAllowsOnlyCSRFProtectedRetry(t *testin
 	}
 	if settings.New(root).ValidateSession(token) {
 		t.Fatal("successful logout retry left a valid persistent session")
+	}
+}
+
+// The provider routes spend the accounts' subscriptions. On the network they
+// take the management key where a CLI sends its API key; on this computer
+// they stay as open as the CLIs' own logins.
+func TestLANProviderRoutesNeedTheManagementKey(t *testing.T) {
+	prefs := settings.New(t.TempDir())
+	if err := prefs.SetPassword("fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := prefs.Update(func(st *settings.Settings) error { st.BindLAN, st.TLS = true, true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	session, err := prefs.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "fixture-management-key"
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("upstream answer")) })
+	gate := &AuthGate{Store: prefs, DesktopManagementKey: key}
+	lan := LocalOnlyWith(LocalOptions{Port: 9123, LANHost: "192.0.2.5"}, gate.WrapLAN(next))
+	request := func(path string, header http.Header) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "https://192.0.2.5:9123"+path, strings.NewReader("{}"))
+		r.RemoteAddr = "192.0.2.6:1234"
+		for name, values := range header {
+			r.Header[name] = values
+		}
+		w := httptest.NewRecorder()
+		lan.ServeHTTP(w, r)
+		return w
+	}
+	for _, path := range []string{"/codex/v1/responses", "/claude/v1/messages", "/grok/v1/chat/completions", "/opencode/x", "/antigravity/x", "/gemini/x", "/copilot/x"} {
+		for name, header := range map[string]http.Header{
+			"no key":        {},
+			"wrong key":     {"Authorization": {"Bearer wrong"}},
+			"empty bearer":  {"Authorization": {"Bearer "}},
+			"key prefix":    {"X-Api-Key": {key[:len(key)-1]}},
+			"session only":  {"Cookie": {sessionCookie + "=" + session}},
+			"own cli login": {"Authorization": {"Bearer sk-ant-oat01-own"}, "Chatgpt-Account-Id": {"own"}},
+		} {
+			if w := request(path, header); w.Code != http.StatusUnauthorized || strings.Contains(w.Body.String(), "upstream answer") {
+				t.Fatalf("%s with %s reached the proxy from the network: %d", path, name, w.Code)
+			}
+		}
+		for _, header := range []http.Header{
+			{"Authorization": {"Bearer " + key}},
+			{"X-Api-Key": {key}},
+			{"Api-Key": {key}},
+			{"X-Goog-Api-Key": {key}},
+			{"X-Management-Key": {key}},
+		} {
+			if w := request(path, header); w.Code != http.StatusOK {
+				t.Fatalf("%s with the management key in %v: %d", path, header, w.Code)
+			}
+		}
+	}
+	// A gate that was given no key lets nothing through.
+	closed := LocalOnlyWith(LocalOptions{Port: 9123, LANHost: "192.0.2.5"}, (&AuthGate{Store: prefs}).WrapLAN(next))
+	r := httptest.NewRequest("POST", "https://192.0.2.5:9123/codex/v1/responses", nil)
+	r.RemoteAddr = "192.0.2.6:1234"
+	r.Header.Set("Authorization", "Bearer ")
+	w := httptest.NewRecorder()
+	closed.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a gate without a key let the network use the proxy: %d", w.Code)
+	}
+	// This computer's own listener keeps the CLIs working without a key.
+	w = httptest.NewRecorder()
+	gate.Wrap(next).ServeHTTP(w, httptest.NewRequest("POST", "http://127.0.0.1:9123/codex/v1/responses", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("the local CLI route now needs a key: %d", w.Code)
+	}
+}
+
+// Wrong passwords from the network must not keep the owner out at this
+// computer, where the password is also changed and turned off.
+func TestNetworkPasswordGuessesDoNotLockOutThisComputer(t *testing.T) {
+	prefs := settings.New(t.TempDir())
+	if err := prefs.SetPassword("fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	(&API{Settings: prefs}).registerAuthRoutes(mux)
+	login := func(remote, host, password string) int {
+		r := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"password":"`+password+`"}`))
+		r.RemoteAddr, r.Host = remote, host
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	for i := 0; i < 5; i++ {
+		if code := login("192.0.2.6:4000", "192.0.2.5:9123", "wrong-guess"); code != http.StatusUnauthorized {
+			t.Fatalf("network guess %d: %d", i, code)
+		}
+	}
+	if code := login("192.0.2.7:4000", "192.0.2.5:9123", "fixture-password"); code != http.StatusTooManyRequests {
+		t.Fatalf("the network kept guessing after its lockout, from another address: %d", code)
+	}
+	// A network client that claims to be this computer is still the network.
+	if code := login("192.0.2.6:4000", "127.0.0.1:9123", "fixture-password"); code != http.StatusTooManyRequests {
+		t.Fatalf("a spoofed Host escaped the network's lockout: %d", code)
+	}
+	if code := login("127.0.0.1:5000", "127.0.0.1:9123", "fixture-password"); code != http.StatusOK {
+		t.Fatalf("network guesses locked out this computer: %d", code)
+	}
+	if code := login("192.0.2.6:4000", "192.0.2.5:9123", "fixture-password"); code != http.StatusTooManyRequests {
+		t.Fatalf("a local sign-in lifted the network's lockout: %d", code)
+	}
+}
+
+// A refused request to a provider route must not hold its connection open by
+// sending its body slowly: those routes have no read deadline of their own.
+func TestRefusedProviderRequestClosesItsConnection(t *testing.T) {
+	prefs := settings.New(t.TempDir())
+	if err := prefs.SetPassword("fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := prefs.Update(func(st *settings.Settings) error { st.BindLAN, st.TLS = true, true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("a refused request reached the proxy") })
+	gate := &AuthGate{Store: prefs, DesktopManagementKey: "fixture-management-key"}
+	srv := httptest.NewServer(ControlRequests(LocalOnlyWith(LocalOptions{Port: 9123, LANHost: "192.0.2.5"}, gate.WrapLAN(next))))
+	defer srv.Close()
+	for name, host := range map[string]string{"no key": "192.0.2.5:9123", "foreign host": "attacker.example"} {
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		// A megabyte announced, a few bytes sent, and then nothing more.
+		fmt.Fprintf(conn, "POST /codex/v1/responses HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: 1048576\r\n\r\n{\"a\":", host)
+		start := time.Now()
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: %d", name, resp.StatusCode)
+		}
+		if !resp.Close {
+			t.Fatalf("%s: the refusal keeps the connection", name)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		// The server hangs up by itself, without the rest of the body.
+		if _, err := conn.Read(make([]byte, 1)); err == nil || time.Since(start) > 3*time.Second {
+			t.Fatalf("%s: connection still open after %s (%v)", name, time.Since(start), err)
+		}
+		conn.Close()
+	}
+}
+
+type browserLoginProvider struct{ *recheckProvider }
+
+func (*browserLoginProvider) LoginStart(context.Context) (provider.LoginInfo, error) {
+	return provider.LoginInfo{Kind: "browser", State: "state-1", URL: "https://auth.example/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"}, nil
+}
+
+// A browser sign-in starts only while Switcher answers where it comes back
+// to; otherwise whoever holds that port would be handed the sign-in code.
+func TestBrowserSignInNeedsItsCallbackPort(t *testing.T) {
+	var asked []string
+	var refuse error
+	api := &API{Providers: map[string]provider.Provider{"fake": &browserLoginProvider{&recheckProvider{}}},
+		Logins:        login.New(nil),
+		CallbackReady: func(signIn string) error { asked = append(asked, signIn); return refuse }}
+	start := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"provider":"fake"}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		api.handleLoginStart(w, r)
+		return w
+	}
+	if w := start(); w.Code != http.StatusOK || len(asked) != 1 || !strings.Contains(asked[0], "redirect_uri") {
+		t.Fatalf("a sign-in with its port held: %d %v", w.Code, asked)
+	}
+	refuse = errors.New("another program is using port 1455")
+	w := start()
+	if w.Code != http.StatusConflict || strings.Contains(w.Body.String(), "auth.example") || !strings.Contains(w.Body.String(), "another program") {
+		t.Fatalf("a sign-in whose port another program holds: %d %s", w.Code, w.Body.String())
 	}
 }

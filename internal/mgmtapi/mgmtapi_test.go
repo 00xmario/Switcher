@@ -67,7 +67,10 @@ func managementFixture(t *testing.T, prov provider.Provider, access string) *API
 			t.Fatal(err)
 		}
 	}
-	m, err := proxy.New(st, map[string]provider.Provider{"codex": prov}, nil)
+	if err := st.Save(store.Account{ID: "c", Provider: "claude", Token: store.Token{AccessToken: access}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := proxy.New(st, map[string]provider.Provider{"codex": prov, "claude": prov}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +100,11 @@ func managementCall(api *API, target string) *httptest.ResponseRecorder {
 }
 
 func managementCallWith(api *API, method, target string, data json.RawMessage) *httptest.ResponseRecorder {
-	body, _ := json.Marshal(apiCallRequest{AuthIndex: "a", Method: method, URL: target, Data: data, Header: map[string]string{"Authorization": "Bearer $TOKEN$", "X-Token": "$TOKEN$"}})
+	return managementCallFor(api, "a", method, target, data)
+}
+
+func managementCallFor(api *API, account, method, target string, data json.RawMessage) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(apiCallRequest{AuthIndex: account, Method: method, URL: target, Data: data, Header: map[string]string{"Authorization": "Bearer $TOKEN$", "X-Token": "$TOKEN$"}})
 	request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(string(body)))
 	request.Header.Set("Authorization", "Bearer fixture-key")
 	response := httptest.NewRecorder()
@@ -219,7 +226,6 @@ func TestAPICallReachesOnlyTheRequestsT3CodeMakes(t *testing.T) {
 		{"GET", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", "", "GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"},
 		{"POST", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", `"{\"credit_id\":\"c\"}"`, `POST https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume {"credit_id":"c"}`},
 		{"POST", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", `{"credit_id":"c"}`, `POST https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume {"credit_id":"c"}`},
-		{"GET", "https://api.anthropic.com/api/oauth/usage", "", "GET https://api.anthropic.com/api/oauth/usage"},
 		{"get", "https://ChatGPT.com/backend-api/wham/usage", "", "GET https://ChatGPT.com/backend-api/wham/usage"},
 	} {
 		reached = nil
@@ -242,6 +248,8 @@ func TestAPICallReachesOnlyTheRequestsT3CodeMakes(t *testing.T) {
 		{"GET", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"},
 		{"DELETE", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"},
 		{"POST", "https://api.anthropic.com/v1/messages"},
+		// Account "a" is a ChatGPT account: its token is not Anthropic's to see.
+		{"GET", "https://api.anthropic.com/api/oauth/usage"},
 		{"GET", "https://api.anthropic.com:8443/api/oauth/usage"},
 		{"GET", "https://example.com/api/oauth/usage"},
 		// "İ" lowercases to "i", but the transport dials its punycode,
@@ -254,6 +262,33 @@ func TestAPICallReachesOnlyTheRequestsT3CodeMakes(t *testing.T) {
 		if response := managementCallWith(api, call.method, call.url, nil); response.Code != 400 || len(reached) != 0 {
 			t.Errorf("%s %s was allowed: status=%d reached=%v", call.method, call.url, response.Code, reached)
 		}
+	}
+}
+
+// An account's token goes to its own provider and to no other company.
+func TestAPICallKeepsATokenWithItsOwnProvider(t *testing.T) {
+	api := managementFixture(t, &managementProvider{}, "fresh")
+	var reached []string
+	mockManagementNetwork(t, func(r *http.Request) (*http.Response, error) {
+		reached = append(reached, r.URL.Host)
+		return managementResponse(200, ""), nil
+	})
+	if response := managementCallFor(api, "c", "GET", "https://api.anthropic.com/api/oauth/usage", nil); response.Code != 200 || len(reached) != 1 || reached[0] != "api.anthropic.com" {
+		t.Fatalf("a Claude account's usage: %d %v", response.Code, reached)
+	}
+	reached = nil
+	for _, call := range [][2]string{
+		{"c", "https://chatgpt.com/backend-api/wham/usage"},
+		{"c", "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"},
+		{"a", "https://api.anthropic.com/api/oauth/usage"},
+		{"b", "https://api.anthropic.com/api/oauth/usage"},
+	} {
+		if response := managementCallFor(api, call[0], "GET", call[1], nil); response.Code != 400 || len(reached) != 0 {
+			t.Errorf("account %s was sent to %s: %d %v", call[0], call[1], response.Code, reached)
+		}
+	}
+	if response := managementCallFor(api, "missing", "GET", "https://chatgpt.com/backend-api/wham/usage", nil); response.Code != 404 {
+		t.Errorf("unknown account: %d", response.Code)
 	}
 }
 

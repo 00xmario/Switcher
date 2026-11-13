@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -707,5 +708,133 @@ func TestCallbackAnswersJSONToTheCommandLine(t *testing.T) {
 	handler(w, httptest.NewRequest("GET", "/callback?code=abc&state=unknown", nil))
 	if !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
 		t.Fatal("browsers should get the HTML page")
+	}
+}
+
+// A web page must not reach the sign-in callback in the background: neither
+// under another name for this computer, nor as an image, frame or fetch.
+func TestCallbackGuardKeepsWebPagesOut(t *testing.T) {
+	var calls atomic.Int32
+	guarded := callbackGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	serve := func(host string, header map[string]string) int {
+		r := httptest.NewRequest("GET", "/auth/callback?code=abc", nil)
+		r.Host = host
+		for name, value := range header {
+			r.Header.Set(name, value)
+		}
+		w := httptest.NewRecorder()
+		guarded.ServeHTTP(w, r)
+		if w.Code == http.StatusOK && (w.Header().Get("Referrer-Policy") != "no-referrer" || w.Header().Get("Cache-Control") != "no-store") {
+			t.Fatalf("an answered callback may leak its code: %v", w.Header())
+		}
+		return w.Code
+	}
+	redirect := map[string]string{"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "cross-site"}
+	for _, host := range []string{"localhost:1455", "127.0.0.1:54545", "[::1]:1455", "LOCALHOST:1455", "localhost"} {
+		if code := serve(host, redirect); code != http.StatusOK {
+			t.Fatalf("a provider's redirect to %s: %d", host, code)
+		}
+		if code := serve(host, nil); code != http.StatusOK {
+			t.Fatalf("switcher login finish to %s: %d", host, code)
+		}
+	}
+	before := calls.Load()
+	for _, host := range []string{"attacker.example:1455", "127.0.0.1.attacker.example:1455", "localhost.attacker.example", "", "192.168.1.9:1455"} {
+		if code := serve(host, redirect); code != http.StatusForbidden {
+			t.Fatalf("host %q reached the callback: %d", host, code)
+		}
+	}
+	for _, header := range []map[string]string{
+		{"Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"},
+		{"Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"},
+		{"Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "script"},
+		{"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"},
+		{"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "frame"},
+		{"Sec-Fetch-Dest": "embed"},
+		{"Sec-Fetch-Mode": "websocket"},
+	} {
+		if code := serve("localhost:1455", header); code != http.StatusForbidden {
+			t.Fatalf("a background request %v reached the callback: %d", header, code)
+		}
+	}
+	if calls.Load() != before {
+		t.Fatal("a refused request still reached the sign-in")
+	}
+}
+
+// A sign-in in the browser comes back to "localhost", which is 127.0.0.1
+// and ::1. Switcher holds both, and refuses to start a sign-in whose port
+// another program holds on either: that program would be handed the code.
+func TestCallbackPortsAreHeldOnBothLoopbackAddresses(t *testing.T) {
+	free := func() int {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		return ln.Addr().(*net.TCPAddr).Port
+	}
+	hasV6 := func() bool {
+		ln, err := net.Listen("tcp", "[::1]:0")
+		if err != nil {
+			return false
+		}
+		ln.Close()
+		return true
+	}()
+	original := callbackPorts
+	defer func() { callbackPorts = original }()
+
+	port := free()
+	callbackPorts = []int{port}
+	served := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "switcher") })
+	c := &callbackListeners{handler: served, held: map[string]bool{}}
+	signIn := fmt.Sprintf("https://auth.example/authorize?client_id=x&redirect_uri=%s", url.QueryEscape(fmt.Sprintf("http://localhost:%d/callback", port)))
+	if err := c.readyFor(signIn); err != nil {
+		t.Fatalf("a free port: %v", err)
+	}
+	hosts := []string{"127.0.0.1"}
+	if hasV6 {
+		hosts = append(hosts, "[::1]")
+	}
+	for _, host := range hosts {
+		resp, err := http.Get(fmt.Sprintf("http://%s:%d/callback", host, port))
+		if err != nil {
+			t.Fatalf("%s: %v", host, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(body) != "switcher" {
+			t.Fatalf("%s answered %q", host, body)
+		}
+	}
+	if err := c.readyFor(signIn); err != nil {
+		t.Fatalf("a port Switcher already holds: %v", err)
+	}
+	// Sign-ins that come back elsewhere, or not to a port, are not held up.
+	for _, other := range []string{"https://auth.example/device", "https://auth.example/authorize?redirect_uri=https%3A%2F%2Fexample.com%2Fcb", "::not a url"} {
+		if err := c.readyFor(other); err != nil {
+			t.Fatalf("%s: %v", other, err)
+		}
+	}
+
+	// Another program on either address of the port stops the sign-in.
+	for _, host := range hosts {
+		port := free()
+		callbackPorts = []int{port}
+		squatter, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := &callbackListeners{handler: served, held: map[string]bool{}}
+		signIn := fmt.Sprintf("https://auth.example/authorize?redirect_uri=%s", url.QueryEscape(fmt.Sprintf("http://localhost:%d/callback", port)))
+		if err := c.readyFor(signIn); err == nil || !strings.Contains(err.Error(), "another program") {
+			t.Fatalf("a sign-in started while another program holds %s:%d: %v", host, port, err)
+		}
+		// Once it is gone, the next sign-in takes the port.
+		squatter.Close()
+		if err := c.readyFor(signIn); err != nil {
+			t.Fatalf("after the other program left %s: %v", host, err)
+		}
 	}
 }

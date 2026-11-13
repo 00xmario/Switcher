@@ -60,16 +60,33 @@ var unlookedPaths = []string{"/Volumes/", "/net/", "/Network/", "/automount/"}
 var unlookedFolders = []string{"/Desktop/", "/Documents/", "/Downloads/", "/Library/Mobile Documents/", "/Library/CloudStorage/"}
 
 // fileCache remembers what was found for a while: the same paths come back
-// with every listing.
+// with every listing. pending holds the paths being looked at right now.
 var fileCache = struct {
 	sync.Mutex
-	found map[string]bool
-	at    time.Time
-}{found: map[string]bool{}}
+	found   map[string]bool
+	pending map[string]bool
+	at      time.Time
+}{found: map[string]bool{}, pending: map[string]bool{}}
 
 const fileCacheFor = time.Minute
 
-func cachedIsFile(path string) bool {
+// statWait is how long a look at one path may take. Any process chooses the
+// path it shows, so the look must not be able to hold up the listing.
+var statWait = 250 * time.Millisecond
+
+// lookedAt reports whether a path is one this computer may look at.
+func lookedAt(path string) bool {
+	// Spelled plainly: no ".." or "//" to step around the lists below.
+	if path == "" || path[0] != '/' || strings.Contains(path, "/../") || strings.Contains(path, "//") || strings.HasSuffix(path, "/..") {
+		return false
+	}
+	// The data volume's other spelling for the same folders.
+	path = strings.TrimPrefix(path, "/System/Volumes/Data")
+	// Apple's own apps live on a volume of their own; other volumes are
+	// network shares and removable disks.
+	if strings.Contains(path, "/Volumes/") && !strings.HasPrefix(path, "/System/Volumes/Preboot/") {
+		return false
+	}
 	for _, p := range unlookedPaths {
 		if strings.HasPrefix(path, p) {
 			return false
@@ -80,18 +97,46 @@ func cachedIsFile(path string) bool {
 			return false
 		}
 	}
+	return true
+}
+
+func cachedIsFile(path string) bool {
+	if !lookedAt(path) {
+		return false
+	}
 	fileCache.Lock()
-	defer fileCache.Unlock()
 	if time.Since(fileCache.at) > fileCacheFor {
 		fileCache.found, fileCache.at = map[string]bool{}, time.Now()
 	}
 	if found, ok := fileCache.found[path]; ok {
+		fileCache.Unlock()
 		return found
 	}
-	info, err := os.Stat(path)
-	found := err == nil && info.Mode().IsRegular()
-	fileCache.found[path] = found
-	return found
+	// One look at a time per path: a path that never answers costs one
+	// waiting goroutine, not one per listing.
+	if fileCache.pending[path] {
+		fileCache.Unlock()
+		return false
+	}
+	fileCache.pending[path] = true
+	fileCache.Unlock()
+
+	done := make(chan bool, 1)
+	go func() {
+		info, err := os.Stat(path)
+		found := err == nil && info.Mode().IsRegular()
+		fileCache.Lock()
+		delete(fileCache.pending, path)
+		fileCache.found[path] = found
+		fileCache.Unlock()
+		done <- found
+	}()
+	select {
+	case found := <-done:
+		return found
+	case <-time.After(statWait):
+		return false
+	}
 }
 
 // ownPath says the path a process was started as is its program's own: an

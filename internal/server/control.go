@@ -39,3 +39,12 @@ func controlRequests(next http.Handler, timeout time.Duration) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// refuseUnread ends a refused request's connection instead of reading the
+// rest of its body. Provider routes have no read deadline, for their long
+// streams, so a refused caller could otherwise send its body one byte at a
+// time and hold the connection open; on the network that needs no login.
+func refuseUnread(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(controlBodyTimeout))
+}

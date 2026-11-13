@@ -394,3 +394,17 @@ func (c *Controller) Click(ctx context.Context, action string) {
 		c.ui.Quit()
 	}
 }
+
+// notificationText makes text plain for a desktop notification, whose body
+// some notification servers read as markup: an account's e-mail or a host's
+// name, which another computer chose, must not turn into a link or a picture
+// there, and carries no control characters.
+func notificationText(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}

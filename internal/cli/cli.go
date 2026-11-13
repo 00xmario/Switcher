@@ -114,6 +114,7 @@ func Run(args []string, opt Options) int {
 	if opt.Getenv == nil {
 		opt.Getenv = os.Getenv
 	}
+	opt.Stdout, opt.Stderr = plain(opt.Stdout), plain(opt.Stderr)
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		if len(args) > 1 {
 			if cmd := find(args[1]); cmd != nil {
@@ -175,7 +176,7 @@ func find(name string) *command {
 }
 
 func printHelp(w io.Writer) {
-	fmt.Fprint(w, `Switcher: one harness, all your AI accounts.
+	fmt.Fprint(w, `Switcher: all your AI subscriptions in one place.
 
 Usage: switcher <command> [arguments] [--json]
 

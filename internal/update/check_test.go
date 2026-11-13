@@ -442,3 +442,41 @@ func TestReleaseMetadataPrefersValidTagAndFallsBackOnMalformedTag(t *testing.T) 
 		})
 	}
 }
+
+// A check asked for from another computer reaches the release servers at
+// most once in a while, also when it keeps failing; this computer's own
+// checks are always fresh.
+func TestOthersChecksAreThrottled(t *testing.T) {
+	c := New("1.0.0")
+	var fetches atomic.Int32
+	fail := true
+	c.metadataFetch = func(context.Context) (string, error) {
+		fetches.Add(1)
+		if fail {
+			return "", errors.New("rate limited")
+		}
+		return "v1.2.0", nil
+	}
+	if _, err := c.CheckUnlessRecent(context.Background(), time.Minute); err == nil {
+		t.Fatal("the first check did not run")
+	}
+	for i := 0; i < 20; i++ {
+		if _, err := c.CheckUnlessRecent(context.Background(), time.Minute); err != nil {
+			t.Fatalf("a throttled check failed: %v", err)
+		}
+		c.refreshForInstall(true)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("%d fetches for 41 requests from another computer", got)
+	}
+	fail = false
+	if state, err := c.Check(context.Background()); err != nil || state.Latest != "v1.2.0" || fetches.Load() != 2 {
+		t.Fatalf("this computer's own check was held back: %+v %v", state, err)
+	}
+	if state, _ := c.CheckUnlessRecent(context.Background(), time.Minute); state.Latest != "v1.2.0" || !state.Available || fetches.Load() != 2 {
+		t.Fatalf("throttled answer: %+v", state)
+	}
+	if _, err := c.CheckUnlessRecent(context.Background(), 0); err != nil || fetches.Load() != 3 {
+		t.Fatal("a check after the wait did not run")
+	}
+}

@@ -186,7 +186,7 @@ func (a *API) handleRemoteDiscover(w http.ResponseWriter, r *http.Request) {
 	for i, f := range found {
 		found[i].Current = a.RemoteClient.IsPairedHost(f.Address) || f.Tailnet != "" && a.RemoteClient.IsPairedHost(f.Tailnet)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hosts": found})
+	writeJSON(w, http.StatusOK, map[string]any{"hosts": remote.Presentable(found)})
 }
 
 func (a *API) handleRemoteConnect(w http.ResponseWriter, r *http.Request) {

@@ -166,7 +166,7 @@ func writeFile(path, content string) error {
 func unitFile(exe string) string {
 	return `# Written by Switcher's Start at login; turn that off in Switcher instead of editing.
 [Unit]
-Description=Switcher: one harness, all your AI accounts
+Description=Switcher: all your AI subscriptions in one place
 Documentation=https://github.com/00xmario/switcher
 After=network-online.target
 Wants=network-online.target

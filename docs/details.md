@@ -422,12 +422,29 @@ environment; a terminal-only override needs the CLI command. The first
 
 - **Default: local only, no authentication.** The server binds `127.0.0.1`
   and nothing leaves the machine, which is why the default install has no
-  login. This is the same trust model as the CLIs themselves.
+  login. This is the same trust model as the CLIs themselves. Switcher
+  takes its port once, at start, and keeps it. On Linux it also serves only
+  the user it runs as: the kernel says whose each local connection is, and
+  another account's are dropped, as are the sign-in callback's; the command
+  line and the tray in turn send nothing to a port another account holds.
+  `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a container that shares
+  the computer's network under its own user. macOS does not say whose a
+  local connection is: on a Mac shared with accounts you do not trust, set
+  the dashboard password, which closes everything but the CLI proxy paths.
+- **Web pages cannot reach it.** Requests must name this computer as their
+  host, so another site's name pointed at `127.0.0.1` is refused, and a
+  request another site started is refused whatever it asks for. The
+  sign-in callbacks answer only a page load addressed to this computer,
+  and Switcher holds each of their ports on both `127.0.0.1` and `::1`: a
+  sign-in does not start while another program holds one, since that
+  program would be handed the sign-in code.
 - **Optional authentication.** The Settings tab can require a password
   (PBKDF2-SHA256, 600k iterations, hashed with a per-user salt; sessions
   are random tokens stored only as SHA-256 hashes with a 7-day sliding
-  expiry, HttpOnly SameSite=Strict cookies, CSRF-protected mutations, and
-  login lockout). A local device token lets the menu bar app authenticate
+  expiry that ends for good 30 days after the sign-in, HttpOnly
+  SameSite=Strict cookies, CSRF-protected mutations, and login lockout,
+  counted apart for this computer and for the network, so guesses from
+  the network never lock you out at the computer itself). A local device token lets the menu bar app authenticate
   without a browser. When enabled, unauthenticated browsers receive only a
   standalone login page; the Accounts page, its assets, and dashboard APIs
   require a valid session. Logout and expired sessions return to that page.
@@ -438,9 +455,12 @@ environment; a terminal-only override needs the CLI command. The first
 - **LAN exposure, opt-in and TLS-only.** Once a password is set, a
   second listener can bind the LAN IP; it is always TLS (self-signed
   ECDSA certificate, regenerated automatically when your IP changes) and
-  the local listener stays plain HTTP so the CLIs need no changes. Know
-  the edges: the CLI proxy paths and the management-key hub stay reachable
-  on the LAN, so only enable this on networks you trust.
+  the local listener stays plain HTTP so the CLIs need no changes. On
+  the LAN the CLI proxy paths and the hub take Switcher's management key
+  (Settings shows it on this computer only): a CLI on another device
+  sends it as its API key, and nothing on the network uses your
+  subscriptions without it. The certificate is self-signed, so only
+  enable this on networks you trust.
   Disabling authentication or invalidating LAN prerequisites denies dashboard
   access immediately, including while a restart is pending or fails.
 - **Sharing between Macs.** The host listener (port 8788, its own pinned
@@ -463,7 +483,11 @@ environment; a terminal-only override needs the CLI command. The first
   devices. **Let my own Tailscale devices connect without a code** decides:
   on for a host that starts sharing now, off with a one-time offer for one
   that shared before. Paired Macs get revocable tokens, stored only as
-  hashes on the host; account tokens never leave the host. See
+  hashes on the host; account tokens never leave the host. Removing a
+  paired Mac also ends what it had running. A paired Mac in turn treats its
+  host as another computer: what the host answers is passed on as data
+  only, never as a page, a script, a cookie or a redirect, and every name
+  and message from it is shown without control characters. See
   [sharing](sharing.md#without-a-code-over-tailscale).
 - **Phone access, opt-in and tailnet-only.** The Tailscale add-on serves a
   small phone page over HTTPS with Tailscale's certificate. It admits only
@@ -477,6 +501,20 @@ environment; a terminal-only override needs the CLI command. The first
   are refused for credential routes.
 - Tokens are stored unencrypted under `~/.switcher/` with `0600`
   permissions, same trust model as the CLIs themselves.
+- An account's credential goes to its own provider only: the proxy follows
+  a redirect on the provider's own host and hands any other back, sign-in
+  and refresh requests follow none, and the hub's usage calls take an
+  account only to its own provider.
+- Recovery copies of Claude Code logins (one per switch) are removed after
+  30 days.
+- **Updates** come from this project's GitHub releases over HTTPS, with
+  redirects followed only to GitHub's own hosts, and are installed only when
+  newer than what runs and matching the release's checksum. The release
+  pipeline builds only from commits on main, with its actions pinned to
+  commits.
+- The command line prints text from other computers (a host's accounts, a
+  paired device's name, a Switcher found on the network) without terminal
+  control characters.
 - Request bodies are forwarded verbatim; Switcher never inspects prompts.
 
 Forgot your password? Delete `~/.switcher/settings.json` and restart

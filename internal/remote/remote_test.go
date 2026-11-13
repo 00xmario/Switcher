@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // hostMux stands in for the host's server: it echoes what reached it.
@@ -290,5 +291,226 @@ func TestClientDropsHostIDsThatSwitcherNeverGenerates(t *testing.T) {
 	}
 	if len(state.Active) != 1 || state.Active["claude"] != "claude-1a2b" {
 		t.Fatalf("active: %v", state.Active)
+	}
+}
+
+// A host is another computer. Whatever it answers reaches the browser under
+// this Switcher's own address, so it must stay data: no page, no script, no
+// cookie, no way out.
+func TestHostAnswersCannotRunOnThisSwitchersDashboard(t *testing.T) {
+	hostile := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Add("Set-Cookie", "switcher_session=stolen; Path=/")
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Refresh", "0; url=https://attacker.example/")
+		h.Set("Content-Security-Policy", "script-src *")
+		switch r.URL.Path {
+		case "/api/providers/page":
+			h.Set("Content-Type", "text/html; charset=utf-8")
+			io.WriteString(w, `<script src="/api/providers/code.js"></script>`)
+		case "/api/providers/code.js":
+			h.Set("Content-Type", "text/javascript")
+			io.WriteString(w, `fetch('/api/state')`)
+		case "/api/providers/svg":
+			h.Set("Content-Type", "image/svg+xml")
+			io.WriteString(w, `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>`)
+		case "/api/providers/odd":
+			h.Set("Content-Type", "text/html;;;")
+			io.WriteString(w, "<b>x</b>")
+		case "/api/providers/away":
+			h.Set("Location", "https://attacker.example/")
+			w.WriteHeader(http.StatusFound)
+		case "/api/providers/away2":
+			h.Set("Location", "//attacker.example/")
+			w.WriteHeader(http.StatusFound)
+		case "/api/providers/stay":
+			h.Set("Location", "/api/quit")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case "/codex/redirect", "/remote/anthropic/v1/redirect":
+			h.Set("Location", "https://attacker.example/v1/messages")
+			w.WriteHeader(http.StatusPermanentRedirect)
+		case "/codex/v1/responses":
+			h.Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "data: {}\n\n")
+		case "/api/accounts/a/refresh":
+			h.Set("Content-Type", "application/json")
+			io.WriteString(w, `{"status":"ok"}`)
+		case "/v0/management/x":
+			h.Set("Content-Type", "application/problem+json")
+			io.WriteString(w, `{}`)
+		}
+	})
+	_, client := pairedWith(t, hostile)
+	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	serve := func(path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Authorization", "Bearer client-key")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		h := w.Header()
+		for _, name := range []string{"Set-Cookie", "Access-Control-Allow-Origin", "Refresh"} {
+			if h.Get(name) != "" {
+				t.Errorf("%s: the host's %s reached the browser", path, name)
+			}
+		}
+		if w.Code == http.StatusBadGateway {
+			// This Switcher's own refusal, as JSON.
+			if !strings.HasPrefix(h.Get("Content-Type"), "application/json") {
+				t.Errorf("%s: refusal is %q", path, h.Get("Content-Type"))
+			}
+			return w
+		}
+		if csp := h.Values("Content-Security-Policy"); len(csp) != 1 || !strings.HasPrefix(csp[0], "sandbox;") {
+			t.Errorf("%s: answer is not a sandboxed document: %v", path, csp)
+		}
+		if h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: answer may be sniffed", path)
+		}
+		return w
+	}
+	for _, path := range []string{"/api/providers/page", "/api/providers/code.js", "/api/providers/svg", "/api/providers/odd"} {
+		w := serve(path)
+		if got := w.Header().Get("Content-Type"); got != "application/octet-stream" || w.Header().Get("Content-Disposition") != "attachment" {
+			t.Errorf("%s would render or run as %q", path, got)
+		}
+	}
+	for path, want := range map[string]string{"/codex/v1/responses": "text/event-stream", "/api/accounts/a/refresh": "application/json", "/v0/management/x": "application/problem+json"} {
+		w := serve(path)
+		if got := w.Header().Get("Content-Type"); got != want || w.Header().Get("Content-Disposition") != "" {
+			t.Errorf("%s: data answer changed to %q", path, got)
+		}
+	}
+	if w := serve("/codex/v1/responses"); w.Body.String() != "data: {}\n\n" {
+		t.Errorf("stream body changed: %q", w.Body.String())
+	}
+	// No redirect is passed on: followed, it would repeat the request with
+	// this Mac's credentials at this Switcher's own controls or elsewhere.
+	for _, path := range []string{"/api/providers/away", "/api/providers/away2", "/api/providers/stay", "/codex/redirect"} {
+		w := serve(path)
+		if w.Code != http.StatusBadGateway || w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), "redirect") {
+			t.Errorf("%s: a host's redirect was passed on: %d %q", path, w.Code, w.Header().Get("Location"))
+		}
+	}
+	r := httptest.NewRequest("POST", "/v1/redirect", strings.NewReader(`{}`))
+	if resp, ok, err := client.Inference(context.Background(), "", r, []byte(`{}`)); !ok || err == nil || resp != nil {
+		t.Errorf("Claude was handed the host's redirect: %v %v", ok, err)
+	}
+	r = httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{}`))
+	resp, ok, err := client.Inference(context.Background(), "", r, []byte(`{}`))
+	if !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("Set-Cookie") != "" {
+		t.Error("the host's cookie reached Claude")
+	}
+}
+
+// Names and messages other computers choose reach this user's screens and
+// terminal without control characters.
+func TestNetworkSuppliedTextIsPlain(t *testing.T) {
+	esc := "\x1b]0;owned\a\x1b[2K"
+	// A Switcher advertised on the network, as avahi-browse reports it.
+	out := []byte("=;eth0;IPv4;Studio\\027]0\\059owned\\007;_switcher._tcp;local;studio.local;192.168.1.5;8788;\"v=1\" \"fp=0123456789abcdef\"\n" +
+		"=;eth0;IPv4;Bad\\032Address;_switcher._tcp;local;evil\\027[2J.local;192.168.1.6;8788;\"v=1\"\n")
+	found := Presentable(parseAvahi(out, ""))
+	if len(found) != 1 || strings.ContainsAny(found[0].Name, "\x1b\a") || !strings.HasPrefix(found[0].Name, "Studio") {
+		t.Fatalf("discovered hosts: %+v", found)
+	}
+	for _, f := range Presentable([]Found{{Name: esc, Address: "a.local"}, {Name: "ok", Address: "a b"}, {Name: "ok", Address: "a.local", Tailnet: "x\x1b"}, {Name: " Mac‮ ", Address: "fe80::1%en0"}}) {
+		if f.Name != "]0;owned[2K" && f.Name != "Mac" {
+			t.Fatalf("kept %+v", f)
+		}
+	}
+	// The name a paired device chooses.
+	if d, _ := newDevice("Laptop" + esc + "\u009b31m"); d.Name != "Laptop]0;owned[2K31m" {
+		t.Fatalf("device name: %q", d.Name)
+	}
+	if d, _ := newDevice("\x1b\x07\x00"); d.Name != "Paired device" {
+		t.Fatalf("empty device name: %q", d.Name)
+	}
+	// Everything a host says about its accounts.
+	state := map[string]any{
+		"accounts": []any{map[string]any{"id": "a", "provider": "claude", "email": "you@example.com" + esc, "plan": "max\r\x1b[31m",
+			"health": map[string]any{"message": "re" + esc + "login", "bad\x1bkey": "x"},
+			"usage":  map[string]any{"windows": []any{map[string]any{"label": "Weekly‮\x1b[1m", "used_percent": 12.5}}}}},
+		"active": map[string]any{"claude": "a"},
+		"note":   strings.Repeat("long ", 200) + "\x1b",
+	}
+	sanitizeHostState(state)
+	encoded, _ := json.Marshal(state)
+	for _, bad := range []string{"\\u001b", "\\u0007", "\\r", "‮", "bad"} {
+		if strings.Contains(string(encoded), bad) {
+			t.Fatalf("%q survived in the host's state: %s", bad, encoded)
+		}
+	}
+	account := state["accounts"].([]any)[0].(map[string]any)
+	if account["email"] != "you@example.com]0;owned[2K" || account["usage"].(map[string]any)["windows"].([]any)[0].(map[string]any)["used_percent"] != 12.5 {
+		t.Fatalf("account after cleaning: %v", account)
+	}
+	if len(state["note"].(string)) != 1000 {
+		t.Fatalf("long text was cut: %d", len(state["note"].(string)))
+	}
+}
+
+// Whatever answers at an address writes the pairing error, before any proof.
+func TestPairingErrorFromAnUnknownHostIsPlain(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Connected\x1b[2K\x1b]52;c;aGk=\a to Studio"})
+	}))
+	defer srv.Close()
+	host, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	n, _ := strconv.Atoi(port)
+	_, err := NewClient(t.TempDir(), "").Connect(context.Background(), host, n, "ABCD-EFGH", "Laptop")
+	if err == nil || strings.ContainsAny(err.Error(), "\x1b\a") || !strings.Contains(err.Error(), "to Studio") {
+		t.Fatalf("pairing error: %q", err)
+	}
+}
+
+// Removing a device ends what it already started, such as an answer still
+// streaming, not only its next request.
+func TestRemovingADeviceEndsItsRequestsInFlight(t *testing.T) {
+	started, ended := make(chan struct{}, 1), make(chan struct{}, 1)
+	host, client := pairedWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/codex/stream" {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		started <- struct{}{}
+		<-r.Context().Done()
+		ended <- struct{}{}
+	}))
+	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/codex/stream", strings.NewReader("{}")))
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream never started")
+	}
+	if err := host.Revoke(host.Status().Devices[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a removed device's stream kept running")
+	}
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the removed device's request never returned")
+	}
+	host.mu.Lock()
+	left := len(host.running)
+	host.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("requests of removed devices are still tracked: %d", left)
 	}
 }

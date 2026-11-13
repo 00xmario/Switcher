@@ -67,7 +67,13 @@ func EnsureTLSCert(root string, lanIP string, port int) (tls.Certificate, error)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// The key is this user's alone from its first byte: a private folder and
+	// a file that is never there half-written or under a wider mode, even when
+	// an older, wider one is replaced.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return tls.Certificate{}, err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return tls.Certificate{}, err
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -76,10 +82,10 @@ func EnsureTLSCert(root string, lanIP string, port int) (tls.Certificate, error)
 		return tls.Certificate{}, err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+	if err := writePrivate(keyPath, keyPEM); err != nil {
 		return tls.Certificate{}, err
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := writePrivate(certPath, certPEM); err != nil {
 		return tls.Certificate{}, err
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
@@ -87,6 +93,29 @@ func EnsureTLSCert(root string, lanIP string, port int) (tls.Certificate, error)
 		return tls.Certificate{}, err
 	}
 	return pair, nil
+}
+
+// writePrivate puts content at path for this user alone, whole or not at all:
+// a new 0600 file beside it takes its place.
+func writePrivate(path string, content []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err = tmp.Chmod(0o600); err == nil {
+		_, err = tmp.Write(content)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // lanAddress returns the primary non-loopback IPv4 address, or "" when the

@@ -8,9 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"syscall"
 	"time"
+
+	"switcher/internal/localpeer"
 )
 
 // client talks to the local Switcher server's API.
@@ -22,7 +25,10 @@ type client struct {
 }
 
 func newClient(base string, token func() string) *client {
-	return &client{base: base, token: token, http: &http.Client{Timeout: 60 * time.Second}}
+	// Switcher's API never redirects. A redirect, as from a paired host's
+	// answer passed on, would repeat the request, token included, elsewhere.
+	return &client{base: base, token: token, http: &http.Client{Timeout: 60 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 // apiError is an error answer from the server. NeedsCode says a host
@@ -58,6 +64,10 @@ func (cl *client) callWith(method, path string, body, out any, header http.Heade
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Nothing goes to another account's program that took Switcher's port.
+	if err := localpeer.OwnServer(req.URL.Hostname(), portOf(req.URL)); err != nil {
+		return err
 	}
 	// The device token unlocks this Mac's dashboard; it never goes elsewhere.
 	if cl.token != nil && loopback(req.URL.Hostname()) {
@@ -115,6 +125,17 @@ func answerError(status int, raw []byte) error {
 		msg = http.StatusText(status)
 	}
 	return &apiError{Status: status, Message: msg, NeedsCode: needsCode}
+}
+
+// portOf is the port a request goes to.
+func portOf(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
 }
 
 func loopback(host string) bool {

@@ -569,7 +569,7 @@ func (s *systemTailscale) peers(ctx context.Context) []TailnetPeer {
 		if p == nil || !strings.HasPrefix(strings.ToLower(p.HostName), "switcher-") {
 			continue
 		}
-		entry := TailnetPeer{Name: p.HostName, DNSName: strings.ToLower(strings.TrimSuffix(p.DNSName, ".")), Online: p.Online}
+		entry := TailnetPeer{Name: plainText(p.HostName), DNSName: strings.ToLower(strings.TrimSuffix(p.DNSName, ".")), Online: p.Online}
 		for _, ip := range p.TailscaleIPs {
 			if a, ok := parseAddr(ip); ok && a.Is4() {
 				entry.IP = a.String()

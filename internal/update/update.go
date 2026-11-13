@@ -65,6 +65,7 @@ type Checker struct {
 	mu              sync.Mutex
 	latest          string
 	lastCheck       time.Time // last successful metadata check
+	lastAttempt     time.Time // last metadata check, whatever came of it
 	inFlight        *metadataCall
 	metadataFetch   func(context.Context) (string, error) // fixture hook, set before use
 	metadataTimeout time.Duration                         // fixture timeout, capped at 20s
@@ -126,6 +127,26 @@ func (c *Checker) Check(ctx context.Context) (State, error) {
 		}
 		return call.state, call.err
 	}
+}
+
+// OthersCheckEvery is how often a check asked for from another computer
+// reaches the release servers.
+const OthersCheckEvery = time.Minute
+
+// CheckUnlessRecent is Check for a request from another computer, such as a
+// paired Mac: it answers from the last check when one ended within every,
+// whatever came of it. Asking in a loop then cannot use up this computer's
+// allowance at the release servers, which would keep it from learning of
+// updates.
+func (c *Checker) CheckUnlessRecent(ctx context.Context, every time.Duration) (State, error) {
+	c.mu.Lock()
+	if c.inFlight == nil && !c.lastAttempt.IsZero() && time.Since(c.lastAttempt) < every {
+		state := c.stateLocked()
+		c.mu.Unlock()
+		return state, nil
+	}
+	c.mu.Unlock()
+	return c.Check(ctx)
 }
 
 func (c *Checker) stateLocked() State {
@@ -222,6 +243,7 @@ func (c *Checker) runCheck(call *metadataCall, fetch func(context.Context) (stri
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lastAttempt = time.Now()
 	if err == nil {
 		c.latest = tag
 		c.lastCheck = time.Now()
@@ -267,7 +289,7 @@ var (
 )
 
 func fetchMetadata(ctx context.Context) (string, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: releaseRedirect}
 	return fetchReleaseMetadata(ctx, func(ctx context.Context) ([]byte, error) {
 		return latestReleaseTag(ctx, client)
 	}, client)
@@ -408,12 +430,16 @@ func part(parts []string, i int) int {
 // refreshForInstall checks for the newest release right before an install,
 // so releases out since the last check are skipped over, not installed one
 // at a time. A failed check installs the newest release known so far.
-func (c *Checker) refreshForInstall() {
+func (c *Checker) refreshForInstall(unattended bool) {
 	if c.restarting() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), metadataCheckTimeout)
 	defer cancel()
+	if unattended {
+		_, _ = c.CheckUnlessRecent(ctx, OthersCheckEvery)
+		return
+	}
 	_, _ = c.Check(ctx)
 }
 
@@ -449,7 +475,7 @@ func (c *Checker) InstallAndRestartUnattended() error { return c.installAndResta
 var ErrNeedsAdministrator = errors.New("Switcher.app is in a folder only an administrator can change; update it on this computer")
 
 func (c *Checker) installAndRestartFor(unattended bool) error {
-	c.refreshForInstall()
+	c.refreshForInstall(unattended)
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve running binary: %w", err)
@@ -483,6 +509,28 @@ func (c *Checker) installAndRestartFor(unattended bool) error {
 
 const userAgent = "Switcher-updater"
 
+// checksumLimit bounds a release's checksum file: one line, a digest and a
+// file name.
+const checksumLimit = 1 << 10
+
+// releaseRedirect lets a release request follow a redirect only where a
+// release can come from: the address it started at, or GitHub's own hosts
+// over HTTPS (release files are served from githubusercontent.com). A
+// redirect to plain HTTP or to any other host ends the download.
+func releaseRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("too many redirects")
+	}
+	if start := via[0].URL; req.URL.Scheme == start.Scheme && req.URL.Host == start.Host {
+		return nil
+	}
+	host := strings.ToLower(req.URL.Hostname())
+	if req.URL.Scheme == "https" && req.URL.User == nil && (host == "github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".githubusercontent.com")) {
+		return nil
+	}
+	return fmt.Errorf("redirected to %s://%s, which is not where Switcher's releases are", req.URL.Scheme, req.URL.Host)
+}
+
 // downloadRelease fetches a release asset and its .sha256 into dir. Files
 // are created fresh, so a partial download can never pass for a whole one.
 // progress, when set, follows the asset's bytes as they arrive.
@@ -490,14 +538,15 @@ func downloadRelease(ctx context.Context, tag, asset, dir string, limit int64, p
 	if !validTag.MatchString(tag) {
 		return fmt.Errorf("refusing to download malformed release tag %q", tag)
 	}
-	client := &http.Client{}
+	client := &http.Client{CheckRedirect: releaseRedirect}
 	for _, name := range []string{asset + ".sha256", asset} {
 		url := releaseHost + "/" + Repo + "/releases/download/" + tag + "/" + name
 		var report func(done, total int64)
+		size := int64(checksumLimit)
 		if name == asset {
-			report = progress
+			report, size = progress, limit
 		}
-		if err := downloadFile(ctx, client, url, filepath.Join(dir, name), limit, report); err != nil {
+		if err := downloadFile(ctx, client, url, filepath.Join(dir, name), size, report); err != nil {
 			return fmt.Errorf("download release: %s: %w", name, err)
 		}
 	}

@@ -186,7 +186,7 @@ func (h *Host) pairTailnet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d, token := newDevice(req.Name)
-	d.TailscaleNode, d.TailscaleName = id.Peer.ID, id.Peer.Name
+	d.TailscaleNode, d.TailscaleName = id.Peer.ID, plainText(id.Peer.Name)
 	if installShape.MatchString(req.Install) {
 		d.TailscaleInstall = req.Install
 	}

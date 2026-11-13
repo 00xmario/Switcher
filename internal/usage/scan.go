@@ -271,22 +271,22 @@ func scanFile(src Source, path string, info os.FileInfo, cache *ScanCache, sink 
 		}
 	}
 
-	// Stream lines with ReadBytes so arbitrarily long lines work. Only
+	// Stream lines of any length, keeping at most maxLineBytes of one in
+	// memory: the rest of a longer line is read past, not held. Only
 	// newline-terminated lines advance the resume offset: an unterminated
 	// tail is parsed and delivered but never cached, so a half-written
 	// record is not double counted.
 	consumed := resumeFrom
 	reader := bufio.NewReaderSize(f, 256*1024)
 	for {
-		lineBytes, readErr := reader.ReadBytes('\n')
-		if len(lineBytes) > 0 {
-			complete := lineBytes[len(lineBytes)-1] == '\n'
+		lineBytes, size, complete, readErr := readLine(reader, maxLineBytes)
+		if size > 0 {
 			if complete {
-				consumed += int64(len(lineBytes))
+				consumed += size
 			}
-			if len(lineBytes) <= maxLineBytes {
+			if lineBytes != nil {
 				checkpoint := st
-				handle(bytes.TrimSuffix(lineBytes, []byte("\n")), complete)
+				handle(lineBytes, complete)
 				if !complete {
 					// The tail will be parsed again, so its dedupe/model state
 					// must not advance the persisted newline checkpoint.
@@ -358,4 +358,39 @@ func mustHash(hexStr string) [32]byte {
 	var out [32]byte
 	copy(out[:], raw)
 	return out
+}
+
+// readLine reads one line, without its newline. size is how many bytes the
+// line took in the file, newline included, and complete says it ended with
+// one. A line longer than max comes back nil: it is read to its end and
+// counted, but never held in memory, so a file with one endless line cannot
+// use the computer's memory up.
+func readLine(reader *bufio.Reader, max int) (line []byte, size int64, complete bool, err error) {
+	var kept []byte
+	tooLong := false
+	for {
+		part, readErr := reader.ReadSlice('\n')
+		size += int64(len(part))
+		if n := len(part); n > 0 && part[n-1] == '\n' {
+			complete = true
+			part = part[:n-1]
+		}
+		if !tooLong {
+			if len(kept)+len(part) > max {
+				tooLong, kept = true, nil
+			} else {
+				kept = append(kept, part...)
+			}
+		}
+		if readErr == bufio.ErrBufferFull {
+			continue
+		}
+		if tooLong || size == 0 {
+			return nil, size, complete, readErr
+		}
+		if kept == nil {
+			kept = []byte{}
+		}
+		return kept, size, complete, readErr
+	}
 }

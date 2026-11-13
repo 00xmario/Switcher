@@ -23,6 +23,8 @@ func (p *Provider) ConfigureNative(st *store.Store, dataRoot string) error {
 		state, err := st.LoadState()
 		return err == nil && state.NativeClaudeCommit == receipt, err
 	})
+	// Old recovery copies of logins go; see claudecode.RecoveryKept.
+	go p.Native.PruneRecovery(claudecode.RecoveryKept)
 	return nil
 }
 func (p *Provider) nativeProfile(ctx context.Context, token string) (claudecode.Identity, error) {
