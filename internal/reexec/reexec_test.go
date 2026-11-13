@@ -147,7 +147,12 @@ func TestInheritedTakesOnlyTheRightSocket(t *testing.T) {
 	if _, err := other.WriteString("still mine"); err != nil {
 		t.Fatalf("a stale hand-over closed another file of this process: %v", err)
 	}
-	t.Setenv(envName, fmt.Sprintf("%d,%d,%s", pid, mustDup(t, fd), addr))
+	right := mustDup(t, fd)
+	t.Setenv(envName, fmt.Sprintf("%d,%d,%s", pid, right, addr))
+	if !listening(right) {
+		_, acceptErr := unix.GetsockoptInt(right, unix.SOL_SOCKET, unix.SO_ACCEPTCONN)
+		t.Fatalf("the listening socket does not read as listening (SO_ACCEPTCONN: %v)", acceptErr)
+	}
 	got := Inherited(addr)
 	if got == nil || got.Addr().String() != addr {
 		t.Fatal("the right socket was not taken")

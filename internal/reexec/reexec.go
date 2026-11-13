@@ -182,9 +182,7 @@ func Inherited(addr string) net.Listener {
 		return nil
 	}
 	defer file.Close()
-	// Linux answers 1 for a listening socket, macOS the option's flag bit.
-	listening, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ACCEPTCONN)
-	if err != nil || listening == 0 || parts[2] != addr {
+	if !listening(fd) || parts[2] != addr {
 		return nil
 	}
 	ln, err := net.FileListener(file)
