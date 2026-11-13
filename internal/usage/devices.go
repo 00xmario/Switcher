@@ -62,7 +62,10 @@ type DeviceStore struct {
 	devices map[string]*storedLedger
 	version uint64                 // raised by every change, for what is made from the ledgers
 	timers  map[string]*time.Timer // pending writes of changed ledgers
-	closing bool                   // flushed for good: every ledger is written at once
+	// closingUntil: flushed as the process ends; until then every ledger is
+	// written at once. It passes, for a process that went on after all, as
+	// when replacing itself failed.
+	closingUntil time.Time
 }
 
 type storedLedger struct {
@@ -147,7 +150,7 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 		// dated by a clock that ran ahead).
 		stored.Ledger, stored.savedMs, stored.dirty, stored.failed = old.Ledger, old.savedMs, old.dirty, old.failed
 		s.devices[key] = stored
-		if s.closing || nowMs-old.savedMs >= unchangedSave.Milliseconds() || old.savedMs > nowMs || old.dirty && (old.failed || s.timers[key] == nil) {
+		if s.closingLocked() || nowMs-old.savedMs >= unchangedSave.Milliseconds() || old.savedMs > nowMs || old.dirty && (old.failed || s.timers[key] == nil) {
 			return s.writeLocked(key)
 		}
 		return nil
@@ -169,7 +172,7 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 	// until then the latest is kept here. A last write dated ahead of now,
 	// by a clock that ran ahead, holds nothing up.
 	wait := time.Duration(stored.savedMs+writeEvery.Milliseconds()-nowMs) * time.Millisecond
-	if known && !s.closing && wait > 0 && stored.savedMs <= nowMs {
+	if known && !s.closingLocked() && wait > 0 && stored.savedMs <= nowMs {
 		stored.dirty = true
 		s.retryLocked(key, min(wait, writeEvery))
 		return nil
@@ -177,10 +180,14 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 	return s.writeLocked(key)
 }
 
+func (s *DeviceStore) closingLocked() bool { return time.Now().Before(s.closingUntil) }
+
 // retryLocked has a ledger kept in memory only written after wait.
 func (s *DeviceStore) retryLocked(key string, wait time.Duration) {
 	if s.timers[key] == nil {
-		s.timers[key] = time.AfterFunc(wait, func() { s.flushKey(key) })
+		var t *time.Timer
+		t = time.AfterFunc(wait, func() { s.flushKey(key, t) })
+		s.timers[key] = t
 	}
 }
 
@@ -205,9 +212,14 @@ func (s *DeviceStore) writeLocked(key string) error {
 	return nil
 }
 
-func (s *DeviceStore) flushKey(key string) {
+// flushKey is a timer's write of one ledger; a timer that is no longer the
+// key's (stopped, or replaced while it waited for the lock) does nothing.
+func (s *DeviceStore) flushKey(key string, t *time.Timer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.timers[key] != t {
+		return
+	}
 	delete(s.timers, key)
 	if d := s.devices[key]; d != nil && d.dirty {
 		if err := s.writeLocked(key); err != nil {
@@ -221,7 +233,7 @@ func (s *DeviceStore) flushKey(key string) {
 func (s *DeviceStore) Flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.closing = true
+	s.closingUntil = time.Now().Add(time.Minute)
 	for key, d := range s.devices {
 		if d.dirty {
 			if err := s.writeLocked(key); err != nil {

@@ -75,10 +75,20 @@ type usageUploaders struct {
 }
 
 type usageUploader struct {
-	busy  bool
-	tried time.Time
-	kept  time.Time
+	busy    bool
+	tried   time.Time
+	kept    time.Time
+	refused time.Time // what it sent was turned down for what it was
 }
+
+// How an upload ended.
+type uploadOutcome int
+
+const (
+	uploadKept    uploadOutcome = iota
+	uploadRefused               // not a ledger the host keeps: no sooner again than a kept one
+	uploadFailed                // the host could not keep it: tried again shortly
+)
 
 // Why an upload is not taken now.
 type uploadRefusal int
@@ -103,7 +113,7 @@ func (u *usageUploaders) begin(device string, now time.Time) uploadRefusal {
 		return uploadBusy
 	case now.Sub(s.kept) < usageUploadEvery:
 		return uploadRecent
-	case now.Sub(s.tried) < usageTryEvery:
+	case now.Sub(s.refused) < usageUploadEvery, now.Sub(s.tried) < usageTryEvery:
 		return uploadBusy
 	}
 	s.busy, s.tried = true, now
@@ -111,14 +121,17 @@ func (u *usageUploaders) begin(device string, now time.Time) uploadRefusal {
 	return uploadTaken
 }
 
-// end finishes an upload; kept says the host kept what it brought.
-func (u *usageUploaders) end(device string, kept bool, now time.Time) {
+// end finishes an upload as it went.
+func (u *usageUploaders) end(device string, outcome uploadOutcome, now time.Time) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	s := u.state[device]
 	s.busy = false
-	if kept {
+	switch outcome {
+	case uploadKept:
 		s.kept = now
+	case uploadRefused:
+		s.refused = now
 	}
 	u.state[device] = s
 }
@@ -128,7 +141,7 @@ func (u *usageUploaders) prune(now time.Time) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for device, s := range u.state {
-		if !s.busy && now.Sub(s.tried) >= usageTryEvery && now.Sub(s.kept) >= usageUploadEvery {
+		if !s.busy && now.Sub(s.tried) >= usageTryEvery && now.Sub(s.kept) >= usageUploadEvery && now.Sub(s.refused) >= usageUploadEvery {
 			delete(u.state, device)
 		}
 	}
@@ -155,11 +168,12 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "this computer's usage is being sent already; try again in a moment"})
 		return
 	}
-	kept := false
-	defer func() { a.usageUploaders.end(device, kept, time.Now()) }()
+	outcome := uploadFailed
+	defer func() { a.usageUploaders.end(device, outcome, time.Now()) }()
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(usageIOWait))
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, usageUploadLimit))
 	if err != nil {
+		outcome = uploadRefused
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid usage ledger"})
 		return
 	}
@@ -174,6 +188,7 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 		Ledger *usage.Ledger `json:"ledger"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil || !remote.ValidInstallID(body.ID) || body.Ledger == nil {
+		outcome = uploadRefused
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid usage ledger"})
 		return
 	}
@@ -181,12 +196,16 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 	err = a.UsageDevices.Put(usage.DeviceKey(body.ID), device, name, body.Ledger, a.RemoteHost.Paired, time.Now())
 	switch {
 	case errors.Is(err, usage.ErrStoreFull) || errors.Is(err, usage.ErrLedgerTooLarge):
+		outcome = uploadRefused
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, usage.ErrInvalidLedger):
+		outcome = uploadRefused
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid usage ledger"})
 	case err != nil:
 		log.Printf("usage: keeping a paired computer's usage: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "the host could not keep this computer's usage"})
 	default:
-		kept = true
+		outcome = uploadKept
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
@@ -213,6 +232,7 @@ type usageAnswer struct {
 }
 
 type answerPart struct {
+	ledger    *usage.Ledger // the ledger it is the encoding of: a new one is encoded again
 	updatedMs int64
 	name      string
 	size      int
@@ -289,12 +309,12 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 	for _, d := range devices {
 		byKey[d.Key] = d
 		p, ok := u.parts[d.Key]
-		if !ok || p.updatedMs != d.UpdatedMs || p.name != d.Name {
+		if !ok || p.ledger != d.Ledger || p.updatedMs != d.UpdatedMs || p.name != d.Name {
 			raw, err := json.Marshal(d)
 			if err != nil {
 				continue
 			}
-			p = answerPart{updatedMs: d.UpdatedMs, name: d.Name, size: len(raw)}
+			p = answerPart{ledger: d.Ledger, updatedMs: d.UpdatedMs, name: d.Name, size: len(raw)}
 			if held+len(raw) <= usageAnswerLimit {
 				p.raw = raw
 			}
@@ -316,9 +336,10 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 	var out bytes.Buffer
 	out.WriteString(`{"devices":[`)
 	written := 0
-	// Where each part sits in the answer: kept as slices of it, not as
-	// copies beside it.
-	at0 := map[string]int{}
+	// Where each part sits in the answer, and how long it is: kept as
+	// slices of it, not as copies beside it.
+	type span struct{ offset, size int }
+	at0 := map[string]span{}
 	add := func(raw []byte) int {
 		if written > 0 {
 			out.WriteByte(',')
@@ -337,8 +358,6 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 	for _, k := range keys {
 		p := parts[k]
 		if p.size+1 > room {
-			p.raw = nil
-			parts[k] = p
 			continue
 		}
 		raw := p.raw
@@ -347,15 +366,21 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 			if raw, err = json.Marshal(byKey[k]); err != nil {
 				continue
 			}
+			// Measured as it is now: the room and the slice go by this.
+			if p.size = len(raw); p.size+1 > room {
+				parts[k] = p
+				continue
+			}
+			parts[k] = p
 		}
-		at0[k] = add(raw)
-		room -= p.size + 1
+		at0[k] = span{add(raw), len(raw)}
+		room -= len(raw) + 1
 	}
 	out.WriteString("]}\n")
 	body := out.Bytes()
 	for k, p := range parts {
-		if offset, in := at0[k]; in {
-			p.raw = body[offset : offset+p.size : offset+p.size]
+		if at, in := at0[k]; in {
+			p.raw, p.size = body[at.offset:at.offset+at.size:at.offset+at.size], at.size
 		} else {
 			p.raw = nil
 		}

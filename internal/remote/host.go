@@ -174,7 +174,7 @@ type Host struct {
 // NewHost loads the host state from dir. next serves the routes paired devices
 // may use; it must apply no further authentication.
 func NewHost(dir string, port int, next http.Handler) (*Host, error) {
-	cert, fp, created, err := hostCertificate(dir)
+	cert, fp, save, err := hostCertificate(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -183,11 +183,14 @@ func NewHost(dir string, port int, next http.Handler) (*Host, error) {
 	if err := readJSON(h.path(), &h.state); err != nil && !errors.Is(err, io.EOF) && !isNotExist(err) {
 		return nil, err
 	}
+	// Decided from the devices as they were, before any go below.
+	h.state.settleTailnetPairing()
 	// A certificate other than the one the paired devices know (made anew,
 	// or put there by hand) is one none of them can reach: their pairings
-	// go, and each pairs anew.
+	// go, and each pairs anew. That is written before a new certificate is:
+	// a stop in between leaves no pairing with a certificate it cannot use.
 	switch {
-	case created || h.state.Fingerprint != "" && h.state.Fingerprint != fp:
+	case save != nil || h.state.Fingerprint != "" && h.state.Fingerprint != fp:
 		if len(h.state.Devices) > 0 {
 			log.Printf("sharing: this computer's certificate is a new one; its %d paired devices must pair again", len(h.state.Devices))
 			h.state.Devices = nil
@@ -196,14 +199,16 @@ func NewHost(dir string, port int, next http.Handler) (*Host, error) {
 		if err := writeJSON(h.path(), h.state); err != nil {
 			return nil, err
 		}
+		if save != nil {
+			if err := save(); err != nil {
+				return nil, err
+			}
+		}
 	case h.state.Fingerprint == "":
 		// A host file from before the fingerprint was kept.
 		h.state.Fingerprint = fp
 		_ = writeJSON(h.path(), h.state)
 	}
-	// Kept with the next change to the file; until then every start
-	// decides the same.
-	h.state.settleTailnetPairing()
 	return h, nil
 }
 

@@ -431,7 +431,7 @@ func TestAHostThatSharedBeforeUpgradesWithPairingWithoutACodeOff(t *testing.T) {
 	// know, and its state.
 	before := func(f map[string]any) string {
 		dir := t.TempDir()
-		if _, _, _, err := hostCertificate(dir); err != nil {
+		if _, _, save, err := hostCertificate(dir); err != nil || save() != nil {
 			t.Fatal(err)
 		}
 		if err := writeJSON(filepath.Join(dir, "host.json"), f); err != nil {

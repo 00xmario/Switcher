@@ -96,6 +96,10 @@ func (s *SessionSpan) UnmarshalJSON(data []byte) error {
 
 var errInvalidLedger = errors.New("invalid usage ledger")
 
+// ErrInvalidLedger refuses a ledger that is not one, or under a key that is
+// not one.
+var ErrInvalidLedger = errInvalidLedger
+
 // UnmarshalJSON reads a ledger one entry at a time and refuses one longer
 // than a ledger may be, so a ledger from another computer takes no more
 // memory than an honest one.

@@ -913,7 +913,7 @@ func TestTheCertificateIsReplacedOnlyWhenItIsGone(t *testing.T) {
 	}
 
 	swapped, other := paired(t), t.TempDir()
-	if _, _, _, err := hostCertificate(other); err != nil {
+	if _, _, save, err := hostCertificate(other); err != nil || save() != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"host-cert.pem", "host-key.pem"} {
@@ -924,5 +924,25 @@ func TestTheCertificateIsReplacedOnlyWhenItIsGone(t *testing.T) {
 	}
 	if n, err := devices(swapped); err != nil || n != 0 {
 		t.Fatalf("another certificate put in place: %d pairings kept, %v", n, err)
+	}
+}
+
+// A host that shared before keeps pairing without a code off, and its offer,
+// when a new certificate ends its pairings: it is decided from the devices
+// as they were.
+func TestANewCertificateKeepsTheTailnetChoice(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeJSON(filepath.Join(dir, "host.json"), map[string]any{"enabled": false, "devices": []map[string]any{{"id": "d1", "name": "Mini", "token_sha256": "x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHost(dir, 0, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := h.Status(); len(s.Devices) != 0 || s.TailnetPairing || !s.TailnetNotice {
+		t.Fatalf("after a new certificate: %d devices, tailnet pairing %v, notice %v", len(s.Devices), s.TailnetPairing, s.TailnetNotice)
+	}
+	if again, err := NewHost(dir, 0, http.NotFoundHandler()); err != nil || again.Status().TailnetPairing || !again.Status().TailnetNotice {
+		t.Fatalf("after a restart: %v %+v", err, again.Status())
 	}
 }

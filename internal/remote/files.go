@@ -82,14 +82,16 @@ func writePrivate(path string, b []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// hostCertificate loads or creates the host's long-lived certificate. Clients
-// pin its fingerprint, so it is never regenerated for a changed address.
-// created says it was made now.
-func hostCertificate(dir string) (tls.Certificate, string, bool, error) {
+// hostCertificate loads the host's long-lived certificate, or makes one.
+// Clients pin its fingerprint, so it is never regenerated for a changed
+// address. A new one comes with save, which writes it: the caller first
+// writes what goes with a new certificate (the pairings it ends), then calls
+// save.
+func hostCertificate(dir string) (tls.Certificate, string, func() error, error) {
 	certPath, keyPath := filepath.Join(dir, "host-cert.pem"), filepath.Join(dir, "host-key.pem")
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err == nil {
-		return cert, fingerprint(cert.Certificate[0]), false, nil
+		return cert, fingerprint(cert.Certificate[0]), nil, nil
 	}
 	// Made anew only where there is none, or what is there was read and is
 	// no certificate and key: one that cannot be read right now (its
@@ -99,29 +101,44 @@ func hostCertificate(dir string) (tls.Certificate, string, bool, error) {
 	keyPEM, keyErr := os.ReadFile(keyPath)
 	missing := errors.Is(certErr, fs.ErrNotExist) || errors.Is(keyErr, fs.ErrNotExist)
 	if !missing && (certErr != nil || keyErr != nil) {
-		return tls.Certificate{}, "", false, fmt.Errorf("could not read this computer's sharing certificate: %w", errors.Join(certErr, keyErr))
+		return tls.Certificate{}, "", nil, fmt.Errorf("could not read this computer's sharing certificate: %w", errors.Join(certErr, keyErr))
 	}
 	if !missing {
-		if _, err := tls.X509KeyPair(certPEM, keyPEM); err == nil {
+		if _, pairErr := tls.X509KeyPair(certPEM, keyPEM); pairErr == nil {
 			// Readable and whole now: read again, no reason to replace it.
-			if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-				return cert, fingerprint(cert.Certificate[0]), false, nil
+			cert, loadErr := tls.LoadX509KeyPair(certPath, keyPath)
+			if loadErr != nil {
+				return tls.Certificate{}, "", nil, fmt.Errorf("could not read this computer's sharing certificate: %w", loadErr)
 			}
-			return tls.Certificate{}, "", false, fmt.Errorf("could not read this computer's sharing certificate: %w", err)
+			return cert, fingerprint(cert.Certificate[0]), nil, nil
 		}
 	}
-	cert, fp, err := createCertificate(dir, certPath, keyPath)
-	return cert, fp, err == nil, err
+	cert, fp, newKey, newCert, err := createCertificate()
+	if err != nil {
+		return tls.Certificate{}, "", nil, err
+	}
+	save := func() error {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		// Each file whole or not at all.
+		if err := writePrivate(keyPath, newKey); err != nil {
+			return err
+		}
+		return writePrivate(certPath, newCert)
+	}
+	return cert, fp, save, nil
 }
 
-func createCertificate(dir, certPath, keyPath string) (tls.Certificate, string, error) {
+// createCertificate makes a certificate and key, as PEM, not yet written.
+func createCertificate() (tls.Certificate, string, []byte, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", nil, nil, err
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", nil, nil, err
 	}
 	template := x509.Certificate{
 		SerialNumber: serial, Subject: pkix.Name{CommonName: "Switcher host"},
@@ -131,27 +148,19 @@ func createCertificate(dir, certPath, keyPath string) (tls.Certificate, string, 
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", nil, nil, err
 	}
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", nil, nil, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return tls.Certificate{}, "", err
-	}
-	// Each file whole or not at all.
-	if err := writePrivate(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
-		return tls.Certificate{}, "", err
-	}
-	if err := writePrivate(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})); err != nil {
-		return tls.Certificate{}, "", err
-	}
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", nil, nil, err
 	}
-	return cert, fingerprint(der), nil
+	return cert, fingerprint(der), keyPEM, certPEM, nil
 }
 
 func fingerprint(der []byte) string {

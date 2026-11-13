@@ -548,3 +548,26 @@ func TestFailedAndMisdatedWritesAreRetried(t *testing.T) {
 		t.Fatalf("after the last flush: %v, on disk %d", err, onDisk())
 	}
 }
+
+// A timer that fires after its key was removed and kept again leaves the
+// key's new timer alone: no write is left to a timer nobody can stop.
+func TestAStaleTimerLeavesTheNewOneAlone(t *testing.T) {
+	store := OpenDeviceStore(t.TempDir())
+	key := DeviceKey("a")
+	store.mu.Lock()
+	store.devices[key] = &storedLedger{Key: key, Ledger: &Ledger{}, dirty: true}
+	store.retryLocked(key, time.Hour)
+	stale := store.timers[key]
+	store.removeLocked(key)
+	store.devices[key] = &storedLedger{Key: key, Ledger: &Ledger{}, dirty: true}
+	store.retryLocked(key, time.Hour)
+	current := store.timers[key]
+	store.mu.Unlock()
+	defer current.Stop()
+	store.flushKey(key, stale)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.timers[key] != current || current == stale {
+		t.Fatal("a stale timer took the key's current timer away")
+	}
+}

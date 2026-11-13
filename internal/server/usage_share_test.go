@@ -328,15 +328,27 @@ func TestUsageUploadsArePerPairing(t *testing.T) {
 		t.Fatal("one pairing's upload held another's up")
 	}
 	// Not kept: tried again shortly, never answered "recent".
-	u.end("b", false, now)
+	u.end("b", uploadFailed, now)
 	if got := u.begin("b", now.Add(time.Second)); got != uploadBusy {
 		t.Fatalf("a failed upload tried again at once: %v", got)
 	}
 	if got := u.begin("b", now.Add(usageTryEvery)); got != uploadTaken {
 		t.Fatalf("a failed upload could not be tried again: %v", got)
 	}
+	// Refused for what it was: no sooner again than a kept one, and never
+	// "recent".
+	if u.begin("c", now) != uploadTaken {
+		t.Fatal("a third pairing could not send")
+	}
+	u.end("c", uploadRefused, now)
+	if got := u.begin("c", now.Add(usageTryEvery+time.Second)); got != uploadBusy {
+		t.Fatalf("a refused upload tried again within the minute: %v", got)
+	}
+	if got := u.begin("c", now.Add(usageUploadEvery)); got != uploadTaken {
+		t.Fatalf("a refused upload could not be tried again after the wait: %v", got)
+	}
 	// Kept: "recent" for the minute, then taken again.
-	u.end("a", true, now)
+	u.end("a", uploadKept, now)
 	if got := u.begin("a", now.Add(time.Second)); got != uploadRecent {
 		t.Fatalf("a kept upload sent again at once: %v", got)
 	}
@@ -477,5 +489,129 @@ func TestAnAnswerIsNotMadeForWhoeverLeft(t *testing.T) {
 	defer cancel()
 	if _, err := a.usageLedgersAnswer(ctx); err == nil {
 		t.Fatal("an answer was made after the request left")
+	}
+}
+
+// A ledger replaced under the same key, in the same millisecond, by a
+// computer that pairs twice with one name, is encoded again and measured as
+// it is: every answer stays whole JSON and nothing panics. (Found by a review;
+// only a hostile pair of pairings could bring it about.)
+func TestAnAnswerMeasuresWhatItHolds(t *testing.T) {
+	hostAPI, _ := usageComputer(t, "k12", 100)
+	hostAPI.UsageDevices = usage.OpenDeviceStore(filepath.Join(t.TempDir(), "usage-devices"))
+	hostAPI.RemoteClient = remote.NewClient(t.TempDir(), "")
+	host, err := remote.NewHost(t.TempDir(), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	hostAPI.RemoteHost = host
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	pair := func(name string) string {
+		code, err := host.NewPairingCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := remote.NewClient(t.TempDir(), "").Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, name); err != nil {
+			t.Fatal(err)
+		}
+		ds := host.Status().Devices
+		return ds[len(ds)-1].ID
+	}
+	devA, devB, devS, devZ := pair("X"), pair("X"), pair("S"), pair("Z")
+	base := time.Now().Add(-time.Hour)
+	q := base.Unix() / 900
+	ledger := func(n int) *usage.Ledger {
+		entries := ""
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				entries += ","
+			}
+			entries += fmt.Sprintf(`[%d,"claude","m",[%d,0,0,0,0],0,0,1,0]`, q-int64(i), 1000+i)
+		}
+		var l usage.Ledger
+		if err := json.Unmarshal([]byte(`{"entries":[`+entries+`],"sessions":[],"scanned_at_ms":0}`), &l); err != nil {
+			t.Fatal(err)
+		}
+		return &l
+	}
+	ctx := context.Background()
+	hostAPI.usageAnswer.init()
+	body0, err := hostAPI.usageLedgersAnswer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyK := usage.DeviceKey("0123456789abcdef0123456789abcdef")
+	keyS := usage.DeviceKey("fedcba9876543210fedcba9876543210")
+	keyZ := usage.DeviceKey("00000000000000001111111111111111")
+	T := time.Now()
+	// S: small ledger, sorted before K.
+	if err := hostAPI.UsageDevices.Put(keyS, devS, "S", ledger(1), host.Paired, T); err != nil {
+		t.Fatal(err)
+	}
+	// K from A: a larger ledger (20 entries).
+	if err := hostAPI.UsageDevices.Put(keyK, devA, "X", ledger(20), host.Paired, T); err != nil {
+		t.Fatal(err)
+	}
+	devices, _ := hostAPI.UsageDevices.LedgersAt(host.Paired)
+	size := map[string]int{}
+	for _, d := range devices {
+		raw, _ := json.Marshal(d)
+		size[d.Key] = len(raw)
+	}
+	// The answer fits the host's own part and K, but not S as well.
+	old := usageAnswerLimit
+	usageAnswerLimit = len(body0) + size[keyK] + 1
+	t.Cleanup(func() { usageAnswerLimit = old })
+	body1, err := hostAPI.usageLedgersAnswer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(body1) {
+		t.Fatalf("answer 1 is not JSON:\n%s", body1)
+	}
+	// The same key from pairing B, same millisecond, same name, a smaller
+	// ledger (2 entries).
+	if err := hostAPI.UsageDevices.Put(keyK, devB, "X", ledger(2), host.Paired, T); err != nil {
+		t.Fatal(err)
+	}
+	// S's pairing goes: room for K now.
+	if err := host.Revoke(devS); err != nil {
+		t.Fatal(err)
+	}
+	var body2 []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("answer 2 panicked: %v", r)
+			}
+		}()
+		body2, err = hostAPI.usageLedgersAnswer(ctx)
+	}()
+	if body2 == nil {
+		return
+	}
+	if !json.Valid(body2) {
+		t.Fatalf("answer 2 is not JSON:\n%s", body2)
+	}
+	// Any other change: K's part is reused from the cache.
+	if err := hostAPI.UsageDevices.Put(keyZ, devZ, "Z", ledger(1), host.Paired, T.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	usageAnswerLimit = old
+	var body3 []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("answer 3 panicked: %v", r)
+			}
+		}()
+		body3, err = hostAPI.usageLedgersAnswer(ctx)
+	}()
+	if body3 == nil || !json.Valid(body3) {
+		t.Fatalf("answer 3 is not JSON:\n%s", body3)
 	}
 }
