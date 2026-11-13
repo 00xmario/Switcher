@@ -15,6 +15,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
+	"io/fs"
 	"math/big"
 	"net"
 	"os"
@@ -84,8 +87,28 @@ func writePrivate(path string, b []byte) error {
 // created says it was made now.
 func hostCertificate(dir string) (tls.Certificate, string, bool, error) {
 	certPath, keyPath := filepath.Join(dir, "host-cert.pem"), filepath.Join(dir, "host-key.pem")
-	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err == nil {
 		return cert, fingerprint(cert.Certificate[0]), false, nil
+	}
+	// Made anew only where there is none, or what is there was read and is
+	// no certificate and key: one that cannot be read right now (its
+	// permissions, the disk) is left as it is, since a new one ends every
+	// pairing.
+	certPEM, certErr := os.ReadFile(certPath)
+	keyPEM, keyErr := os.ReadFile(keyPath)
+	missing := errors.Is(certErr, fs.ErrNotExist) || errors.Is(keyErr, fs.ErrNotExist)
+	if !missing && (certErr != nil || keyErr != nil) {
+		return tls.Certificate{}, "", false, fmt.Errorf("could not read this computer's sharing certificate: %w", errors.Join(certErr, keyErr))
+	}
+	if !missing {
+		if _, err := tls.X509KeyPair(certPEM, keyPEM); err == nil {
+			// Readable and whole now: read again, no reason to replace it.
+			if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+				return cert, fingerprint(cert.Certificate[0]), false, nil
+			}
+			return tls.Certificate{}, "", false, fmt.Errorf("could not read this computer's sharing certificate: %w", err)
+		}
 	}
 	cert, fp, err := createCertificate(dir, certPath, keyPath)
 	return cert, fp, err == nil, err
@@ -117,10 +140,11 @@ func createCertificate(dir, certPath, keyPath string) (tls.Certificate, string, 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	// Each file whole or not at all.
+	if err := writePrivate(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+	if err := writePrivate(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})); err != nil {
 		return tls.Certificate{}, "", err
 	}
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)

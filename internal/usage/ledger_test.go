@@ -491,3 +491,60 @@ func TestChangedLedgersAreWrittenNowAndThen(t *testing.T) {
 		t.Fatal("the time of the scan counts as a change")
 	}
 }
+
+// A ledger whose write failed stays to be written, and a clock that ran ahead
+// holds no write up.
+func TestFailedAndMisdatedWritesAreRetried(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes everywhere")
+	}
+	dir := filepath.Join(t.TempDir(), "usage-devices")
+	store := OpenDeviceStore(dir)
+	now := time.Now()
+	paired := func(string) bool { return true }
+	key := DeviceKey("a")
+	ledger := func(tokens int64) *Ledger {
+		return &Ledger{Entries: []LedgerEntry{entryAt(now, "claude", "m", tokens, 1)}}
+	}
+	onDisk := func() int64 {
+		var stored struct {
+			Ledger *Ledger `json:"ledger"`
+		}
+		raw, _ := os.ReadFile(filepath.Join(dir, key+".json"))
+		if json.Unmarshal(raw, &stored) != nil || stored.Ledger == nil || len(stored.Ledger.Entries) == 0 {
+			return -1
+		}
+		return stored.Ledger.Entries[0].Totals.Output
+	}
+	if err := store.Put(key, "dev", "x", ledger(1), paired, now); err != nil {
+		t.Fatal(err)
+	}
+	// The disk refuses: the host says so, keeps the ledger, and writes it
+	// once it can, though the same usage is sent again meanwhile.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.devices[key].savedMs = now.Add(-writeEvery).UnixMilli()
+	store.mu.Unlock()
+	if err := store.Put(key, "dev", "x", ledger(2), paired, now); err == nil {
+		t.Fatal("a failed write was reported as kept")
+	}
+	_ = os.Chmod(dir, 0o700)
+	if err := store.Put(key, "dev", "x", ledger(2), paired, now.Add(time.Minute)); err != nil || onDisk() != 2 {
+		t.Fatalf("the same usage again: %v, on disk %d", err, onDisk())
+	}
+	// A last write dated ahead, by a clock that ran ahead: the next change
+	// is written at once.
+	store.mu.Lock()
+	store.devices[key].savedMs = now.Add(12 * time.Hour).UnixMilli()
+	store.mu.Unlock()
+	if err := store.Put(key, "dev", "x", ledger(3), paired, now.Add(2*time.Minute)); err != nil || onDisk() != 3 {
+		t.Fatalf("after a clock ran ahead: %v, on disk %d", err, onDisk())
+	}
+	// Once flushed for good, every ledger is written at once.
+	store.Flush()
+	if err := store.Put(key, "dev", "x", ledger(4), paired, now.Add(3*time.Minute)); err != nil || onDisk() != 4 {
+		t.Fatalf("after the last flush: %v, on disk %d", err, onDisk())
+	}
+}

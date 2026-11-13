@@ -315,23 +315,33 @@ func TestPairingAgainExchangesAtOnce(t *testing.T) {
 	}
 }
 
-// A pairing sends its usage one upload at a time, and not again within the
-// minute.
+// A pairing sends its usage one upload at a time; after the host kept one,
+// not again within the minute, and that is told apart from an upload under
+// way or tried a moment ago without being kept.
 func TestUsageUploadsArePerPairing(t *testing.T) {
 	var u usageUploaders
 	now := time.Now()
-	if !u.begin("a", now) || u.begin("a", now) {
+	if u.begin("a", now) != uploadTaken || u.begin("a", now) != uploadBusy {
 		t.Fatal("one pairing sent twice at once")
 	}
-	if !u.begin("b", now) {
+	if u.begin("b", now) != uploadTaken {
 		t.Fatal("one pairing's upload held another's up")
 	}
-	u.end("a")
-	if u.begin("a", now.Add(10*time.Second)) {
-		t.Fatal("a pairing sent again at once")
+	// Not kept: tried again shortly, never answered "recent".
+	u.end("b", false, now)
+	if got := u.begin("b", now.Add(time.Second)); got != uploadBusy {
+		t.Fatalf("a failed upload tried again at once: %v", got)
 	}
-	if !u.begin("a", now.Add(usageUploadEvery)) {
-		t.Fatal("a pairing could not send again after the wait")
+	if got := u.begin("b", now.Add(usageTryEvery)); got != uploadTaken {
+		t.Fatalf("a failed upload could not be tried again: %v", got)
+	}
+	// Kept: "recent" for the minute, then taken again.
+	u.end("a", true, now)
+	if got := u.begin("a", now.Add(time.Second)); got != uploadRecent {
+		t.Fatalf("a kept upload sent again at once: %v", got)
+	}
+	if got := u.begin("a", now.Add(usageUploadEvery)); got != uploadTaken {
+		t.Fatalf("a pairing could not send again after the wait: %v", got)
 	}
 }
 

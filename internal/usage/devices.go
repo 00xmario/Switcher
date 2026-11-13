@@ -62,6 +62,7 @@ type DeviceStore struct {
 	devices map[string]*storedLedger
 	version uint64                 // raised by every change, for what is made from the ledgers
 	timers  map[string]*time.Timer // pending writes of changed ledgers
+	closing bool                   // flushed for good: every ledger is written at once
 }
 
 type storedLedger struct {
@@ -74,6 +75,7 @@ type storedLedger struct {
 	sum     [32]byte // of the ledger's usage, to tell an unchanged one
 	savedMs int64    // when the file was last written
 	dirty   bool     // changed since it was written
+	failed  bool     // its last write failed
 }
 
 // ErrLedgerTooLarge refuses a ledger larger than a host keeps.
@@ -138,12 +140,14 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 	}
 	stored := &storedLedger{Key: key, Device: device, Name: plainName(name, maxLedgerName), UpdatedMs: now.UnixMilli(), Ledger: ledger, sum: ledgerSum(ledger)}
 	s.version++
+	nowMs := now.UnixMilli()
 	if known && old.Device == device && old.Name == stored.Name && old.sum == stored.sum {
 		// The same usage: only the time it was sent changes, written now and
-		// then.
-		stored.Ledger, stored.savedMs, stored.dirty = old.Ledger, old.savedMs, old.dirty
+		// then (and at once when the last write is not on disk, or was
+		// dated by a clock that ran ahead).
+		stored.Ledger, stored.savedMs, stored.dirty, stored.failed = old.Ledger, old.savedMs, old.dirty, old.failed
 		s.devices[key] = stored
-		if now.UnixMilli()-old.savedMs >= unchangedSave.Milliseconds() {
+		if s.closing || nowMs-old.savedMs >= unchangedSave.Milliseconds() || old.savedMs > nowMs || old.dirty && (old.failed || s.timers[key] == nil) {
 			return s.writeLocked(key)
 		}
 		return nil
@@ -162,15 +166,22 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 	}
 	s.devices[key] = stored
 	// Written at once, or when writeEvery has passed since the last write;
-	// until then the latest is kept here.
-	if wait := time.Duration(stored.savedMs+writeEvery.Milliseconds()-now.UnixMilli()) * time.Millisecond; known && wait > 0 {
+	// until then the latest is kept here. A last write dated ahead of now,
+	// by a clock that ran ahead, holds nothing up.
+	wait := time.Duration(stored.savedMs+writeEvery.Milliseconds()-nowMs) * time.Millisecond
+	if known && !s.closing && wait > 0 && stored.savedMs <= nowMs {
 		stored.dirty = true
-		if s.timers[key] == nil {
-			s.timers[key] = time.AfterFunc(wait, func() { s.flushKey(key) })
-		}
+		s.retryLocked(key, min(wait, writeEvery))
 		return nil
 	}
 	return s.writeLocked(key)
+}
+
+// retryLocked has a ledger kept in memory only written after wait.
+func (s *DeviceStore) retryLocked(key string, wait time.Duration) {
+	if s.timers[key] == nil {
+		s.timers[key] = time.AfterFunc(wait, func() { s.flushKey(key) })
+	}
 }
 
 // writeLocked writes a kept ledger to its file.
@@ -180,13 +191,17 @@ func (s *DeviceStore) writeLocked(key string) error {
 		return nil
 	}
 	raw, err := json.Marshal(d)
+	if err == nil {
+		err = writePrivateFile(filepath.Join(s.dir, key+".json"), raw)
+	}
 	if err != nil {
+		// Kept in memory, and tried again: by a timer, Flush or the next
+		// ledger sent.
+		d.dirty, d.failed = true, true
+		s.retryLocked(key, writeEvery)
 		return err
 	}
-	if err := writePrivateFile(filepath.Join(s.dir, key+".json"), raw); err != nil {
-		return err
-	}
-	d.savedMs, d.dirty = d.UpdatedMs, false
+	d.savedMs, d.dirty, d.failed = d.UpdatedMs, false, false
 	return nil
 }
 
@@ -201,10 +216,12 @@ func (s *DeviceStore) flushKey(key string) {
 	}
 }
 
-// Flush writes every ledger kept in memory only, as when Switcher stops.
+// Flush writes every ledger kept in memory only, as when Switcher stops;
+// a ledger kept after it is written at once.
 func (s *DeviceStore) Flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closing = true
 	for key, d := range s.devices {
 		if d.dirty {
 			if err := s.writeLocked(key); err != nil {
@@ -219,6 +236,14 @@ func (s *DeviceStore) Version() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.version
+}
+
+// LedgersAt is Ledgers with the version they are of, read together.
+func (s *DeviceStore) LedgersAt(paired func(device string) bool) ([]DeviceLedger, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.ledgersLocked(paired)
+	return out, s.version
 }
 
 // ledgerSum tells one ledger's usage from another's: its entries and
@@ -246,6 +271,10 @@ func (s *DeviceStore) removeLocked(key string) {
 func (s *DeviceStore) Ledgers(paired func(device string) bool) []DeviceLedger {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.ledgersLocked(paired)
+}
+
+func (s *DeviceStore) ledgersLocked(paired func(device string) bool) []DeviceLedger {
 	out := make([]DeviceLedger, 0, len(s.devices))
 	for k, d := range s.devices {
 		if !paired(d.Device) {

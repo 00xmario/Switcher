@@ -851,3 +851,78 @@ func TestANewCertificateEndsThePairings(t *testing.T) {
 		t.Fatalf("%d pairings kept past a new certificate", n)
 	}
 }
+
+// A certificate that cannot be read right now is left as it is, pairings and
+// all; one that was read and is broken, or another put in its place, ends
+// the pairings no device can reach any more.
+func TestTheCertificateIsReplacedOnlyWhenItIsGone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	paired := func(t *testing.T) string {
+		dir := t.TempDir()
+		h, err := NewHost(dir, 0, http.NotFoundHandler())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Quiet = true
+		if err := h.SetEnabled(true); err != nil {
+			t.Fatal(err)
+		}
+		code, err := h.NewPairingCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewClient(t.TempDir(), "").Connect(context.Background(), "127.0.0.1", h.Status().Port, code.Code, "Laptop"); err != nil {
+			t.Fatal(err)
+		}
+		h.Close()
+		return dir
+	}
+	devices := func(dir string) (int, error) {
+		h, err := NewHost(dir, 0, http.NotFoundHandler())
+		if err != nil {
+			return 0, err
+		}
+		return len(h.Status().Devices), nil
+	}
+
+	unreadable := paired(t)
+	cert := filepath.Join(unreadable, "host-cert.pem")
+	before, _ := os.ReadFile(cert)
+	if err := os.Chmod(cert, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devices(unreadable); err == nil {
+		t.Fatal("a certificate that could not be read was replaced")
+	}
+	_ = os.Chmod(cert, 0o600)
+	if after, _ := os.ReadFile(cert); string(after) != string(before) {
+		t.Fatal("the certificate was overwritten")
+	}
+	if n, err := devices(unreadable); err != nil || n != 1 {
+		t.Fatalf("readable again: %d pairings, %v", n, err)
+	}
+
+	broken := paired(t)
+	if err := os.WriteFile(filepath.Join(broken, "host-cert.pem"), []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := devices(broken); err != nil || n != 0 {
+		t.Fatalf("a broken certificate: %d pairings kept, %v", n, err)
+	}
+
+	swapped, other := paired(t), t.TempDir()
+	if _, _, _, err := hostCertificate(other); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"host-cert.pem", "host-key.pem"} {
+		raw, _ := os.ReadFile(filepath.Join(other, name))
+		if err := os.WriteFile(filepath.Join(swapped, name), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := devices(swapped); err != nil || n != 0 {
+		t.Fatalf("another certificate put in place: %d pairings kept, %v", n, err)
+	}
+}

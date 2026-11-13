@@ -76,6 +76,8 @@ type hostFile struct {
 	// TailnetNotice offers it once.
 	TailnetPairing *bool `json:"tailnet_pairing,omitempty"`
 	TailnetNotice  bool  `json:"tailnet_notice,omitempty"`
+	// Fingerprint is the certificate the paired devices know.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // settleTailnetPairing decides pairing without a code for a host file from
@@ -181,14 +183,23 @@ func NewHost(dir string, port int, next http.Handler) (*Host, error) {
 	if err := readJSON(h.path(), &h.state); err != nil && !errors.Is(err, io.EOF) && !isNotExist(err) {
 		return nil, err
 	}
-	// A new certificate is one no paired device knows: none of them can
-	// reach this host again, so their pairings go, and each pairs anew.
-	if created && len(h.state.Devices) > 0 {
-		log.Printf("sharing: this computer's certificate was made anew; its %d paired devices must pair again", len(h.state.Devices))
-		h.state.Devices = nil
+	// A certificate other than the one the paired devices know (made anew,
+	// or put there by hand) is one none of them can reach: their pairings
+	// go, and each pairs anew.
+	switch {
+	case created || h.state.Fingerprint != "" && h.state.Fingerprint != fp:
+		if len(h.state.Devices) > 0 {
+			log.Printf("sharing: this computer's certificate is a new one; its %d paired devices must pair again", len(h.state.Devices))
+			h.state.Devices = nil
+		}
+		h.state.Fingerprint = fp
 		if err := writeJSON(h.path(), h.state); err != nil {
 			return nil, err
 		}
+	case h.state.Fingerprint == "":
+		// A host file from before the fingerprint was kept.
+		h.state.Fingerprint = fp
+		_ = writeJSON(h.path(), h.state)
 	}
 	// Kept with the next change to the file; until then every start
 	// decides the same.

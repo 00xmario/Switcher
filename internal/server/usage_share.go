@@ -57,38 +57,70 @@ var usageUploads = make(chan struct{}, 2)
 var usageTick = 30 * time.Second
 
 const (
-	// usageUploadEvery is how soon a pairing may send its usage again: it
-	// sends every few minutes, and at most once a minute when asked.
+	// usageUploadEvery is how soon a pairing's usage is taken again after
+	// the host kept it: it sends every few minutes, and at most once a
+	// minute when asked. usageTryEvery is how soon it may try again after
+	// an upload the host did not keep.
 	usageUploadEvery = 50 * time.Second
+	usageTryEvery    = 10 * time.Second
 	// usageIOWait bounds reading an upload and writing an answer.
 	usageIOWait = 30 * time.Second
 )
 
-// usageUploaders remembers, per pairing, whether it is sending and when it
-// last began to.
+// usageUploaders remembers, per pairing, whether it is sending, when it last
+// tried and when the host last kept what it sent.
 type usageUploaders struct {
 	mu    sync.Mutex
 	state map[string]usageUploader
 }
 
 type usageUploader struct {
-	busy bool
-	last time.Time
+	busy  bool
+	tried time.Time
+	kept  time.Time
 }
 
-// begin lets a pairing send, one upload at a time and not too often.
-func (u *usageUploaders) begin(device string, now time.Time) bool {
+// Why an upload is not taken now.
+type uploadRefusal int
+
+const (
+	uploadTaken  uploadRefusal = iota
+	uploadRecent               // the host kept this pairing's usage a moment ago
+	uploadBusy                 // one is under way, or one was tried a moment ago
+)
+
+// begin lets a pairing send: one upload at a time, not again soon after one
+// was tried, and not again within usageUploadEvery of one the host kept.
+func (u *usageUploaders) begin(device string, now time.Time) uploadRefusal {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.state == nil {
 		u.state = map[string]usageUploader{}
 	}
 	s := u.state[device]
-	if s.busy || now.Sub(s.last) < usageUploadEvery {
-		return false
+	switch {
+	case s.busy:
+		return uploadBusy
+	case now.Sub(s.kept) < usageUploadEvery:
+		return uploadRecent
+	case now.Sub(s.tried) < usageTryEvery:
+		return uploadBusy
 	}
-	u.state[device] = usageUploader{busy: true, last: now}
-	return true
+	s.busy, s.tried = true, now
+	u.state[device] = s
+	return uploadTaken
+}
+
+// end finishes an upload; kept says the host kept what it brought.
+func (u *usageUploaders) end(device string, kept bool, now time.Time) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	s := u.state[device]
+	s.busy = false
+	if kept {
+		s.kept = now
+	}
+	u.state[device] = s
 }
 
 // prune forgets pairings that are not sending and may send again.
@@ -96,18 +128,10 @@ func (u *usageUploaders) prune(now time.Time) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for device, s := range u.state {
-		if !s.busy && now.Sub(s.last) >= usageUploadEvery {
+		if !s.busy && now.Sub(s.tried) >= usageTryEvery && now.Sub(s.kept) >= usageUploadEvery {
 			delete(u.state, device)
 		}
 	}
-}
-
-func (u *usageUploaders) end(device string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	s := u.state[device]
-	s.busy = false
-	u.state[device] = s
 }
 
 // handleUsageDevice keeps the ledger a paired computer sends: its own only.
@@ -118,15 +142,21 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !a.usageUploaders.begin(device, time.Now()) {
-		// Told apart from a host too busy to take it: this computer's usage
-		// is current enough.
+	switch a.usageUploaders.begin(device, time.Now()) {
+	case uploadRecent:
+		// Told apart from a host too busy to take it: what the host kept
+		// of this computer's usage is current enough.
 		w.Header().Set(remote.UsageRecentHeader, "recent")
 		w.Header().Set("Retry-After", "60")
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "this computer sent its usage a moment ago; it sends it again shortly"})
 		return
+	case uploadBusy:
+		w.Header().Set("Retry-After", "10")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "this computer's usage is being sent already; try again in a moment"})
+		return
 	}
-	defer a.usageUploaders.end(device)
+	kept := false
+	defer func() { a.usageUploaders.end(device, kept, time.Now()) }()
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(usageIOWait))
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, usageUploadLimit))
 	if err != nil {
@@ -156,6 +186,7 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 		log.Printf("usage: keeping a paired computer's usage: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "the host could not keep this computer's usage"})
 	default:
+		kept = true
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
@@ -230,8 +261,7 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 	defer func() { <-u.lock }()
 	// Read while the answer is held: an answer is never made from what is
 	// older than the one before it.
-	devices := a.UsageDevices.Ledgers(a.RemoteHost.Paired)
-	version := a.UsageDevices.Version()
+	devices, version := a.UsageDevices.LedgersAt(a.RemoteHost.Paired)
 	own, at := a.Usage.OwnLedger()
 	key, name, _ := a.UsageIdentity()
 	ownSame := u.own == own && u.ownAt.Equal(at) && u.key == key && u.name == name
@@ -286,16 +316,22 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 	var out bytes.Buffer
 	out.WriteString(`{"devices":[`)
 	written := 0
-	add := func(raw []byte) {
+	// Where each part sits in the answer: kept as slices of it, not as
+	// copies beside it.
+	at0 := map[string]int{}
+	add := func(raw []byte) int {
 		if written > 0 {
 			out.WriteByte(',')
 		}
+		offset := out.Len()
 		out.Write(raw)
 		written++
+		return offset
 	}
 	room := usageAnswerLimit - len(`{"devices":[]}`+"\n")
+	ownAt0 := -1
 	if u.ownPart != nil && len(u.ownPart) <= room {
-		add(u.ownPart)
+		ownAt0 = add(u.ownPart)
 		room -= len(u.ownPart) + 1
 	}
 	for _, k := range keys {
@@ -305,19 +341,32 @@ func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
 			parts[k] = p
 			continue
 		}
-		if p.raw == nil {
-			raw, err := json.Marshal(byKey[k])
-			if err != nil {
+		raw := p.raw
+		if raw == nil {
+			var err error
+			if raw, err = json.Marshal(byKey[k]); err != nil {
 				continue
 			}
-			p.raw = raw
-			parts[k] = p
 		}
-		add(p.raw)
+		at0[k] = add(raw)
 		room -= p.size + 1
 	}
 	out.WriteString("]}\n")
-	u.version, u.own, u.ownAt, u.key, u.name, u.parts, u.body = version, own, at, key, name, parts, out.Bytes()
+	body := out.Bytes()
+	for k, p := range parts {
+		if offset, in := at0[k]; in {
+			p.raw = body[offset : offset+p.size : offset+p.size]
+		} else {
+			p.raw = nil
+		}
+		parts[k] = p
+	}
+	if ownAt0 >= 0 {
+		u.ownPart = body[ownAt0 : ownAt0+len(u.ownPart) : ownAt0+len(u.ownPart)]
+	} else if u.ownPart != nil {
+		u.ownPart = append([]byte(nil), u.ownPart...) // not a slice of the answer before
+	}
+	u.version, u.own, u.ownAt, u.key, u.name, u.parts, u.body = version, own, at, key, name, parts, body
 	return u.body, nil
 }
 
