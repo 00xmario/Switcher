@@ -1767,6 +1767,7 @@ const usagePage = document.getElementById('usage-page');
 const usageHeadline = document.getElementById('usage-headline');
 const usageSub = document.getElementById('usage-sub');
 const usageProviders = document.getElementById('usage-providers');
+const usageDevices = document.getElementById('usage-devices');
 const usageTotals = document.getElementById('usage-totals');
 const usageChartBox = document.getElementById('usage-chart');
 const usageChartTitle = document.getElementById('usage-chart-title');
@@ -1823,7 +1824,9 @@ async function loadUsage() {
   if (authState.locked) return;
   const clearSummary = () => {
     usageState.summary = null;
+    usageState.sharing = null;
     usageProviders.innerHTML = '';
+    if (usageDevices) { usageDevices.innerHTML = ''; usageDevices.hidden = true; }
     usageTotals.innerHTML = '';
     usageChartBox.innerHTML = '';
     usageBreakdownTable.innerHTML = '';
@@ -1853,6 +1856,7 @@ async function loadUsage() {
           if (generation !== usageState.generation || authState.locked) continue;
           if (body.summary) {
             usageState.summary = body.summary;
+            usageState.sharing = body.sharing || null;
             usageState.summaryDays = days;
             renderUsage();
           } else if (body.scanning) {
@@ -1944,8 +1948,12 @@ function renderUsage() {
     ? fmtMoney(s.total_cost_usd)
     : fmtTokens(s.total_tokens);
   const sub = [`${s.sessions} sessions`];
+  if (s.devices?.length > 1) sub.push(`across ${s.devices.length} computers`);
+  const note = usageSharingNote(usageState.sharing);
+  if (note) sub.push(note);
   if (s.unpriced_share > 0.001) sub.push(`API estimate excludes ${fmtPct(s.unpriced_share)} unpriced records`);
   usageSub.textContent = sub.join(' · ');
+  renderUsageDevices(s, isCost);
 
   usageProviders.innerHTML = '';
   for (const p of s.providers) {
@@ -1985,6 +1993,58 @@ function renderUsage() {
   usageChartTitle.textContent = isCost ? 'Daily cost' : 'Daily processed tokens';
   renderChart(s, isCost);
   renderBreakdown(s, isCost);
+}
+
+// usageSharingNote says, on a computer that uses a host, when the host's
+// part of the combined usage is not current.
+function usageSharingNote(sharing) {
+  if (!sharing) return '';
+  const host = sharing.host || 'the host';
+  const age = sharing.updated_ms ? Date.now() - sharing.updated_ms : Infinity;
+  if (!sharing.updated_ms) return sharing.error ? `${host}'s usage could not be read yet` : `reading ${host}'s usage`;
+  if (age < 30 * 60 * 1000) return '';
+  return `${host}'s usage as of ${relativeAge(age)} ago`;
+}
+
+function relativeAge(ms) {
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h`;
+  return `${Math.round(hours / 24)} days`;
+}
+
+// renderUsageDevices shows each computer's share when more than one counts:
+// a host and the computers that use it.
+function renderUsageDevices(s, isCost) {
+  if (!usageDevices) return;
+  const devices = s.devices || [];
+  usageDevices.hidden = devices.length < 2;
+  usageDevices.innerHTML = '';
+  if (devices.length < 2) return;
+  const total = isCost ? s.total_cost_usd : s.total_tokens;
+  const title = document.createElement('p');
+  title.className = 'usage-devices-title';
+  title.textContent = 'By computer';
+  usageDevices.appendChild(title);
+  for (const d of devices) {
+    const value = isCost ? d.cost_usd : d.tokens;
+    const share = total > 0 ? value / total : 0;
+    const tags = [d.this ? 'this computer' : '', d.host ? 'host' : ''].filter(Boolean);
+    const age = d.updated_ms ? Date.now() - d.updated_ms : 0;
+    const meta = [`${fmtPct(share)} of ${isCost ? 'cost' : 'tokens'}`, isCost ? `${fmtTokens(d.tokens)} tokens` : fmtMoney(d.cost_usd)];
+    if (!d.this && age > 60 * 60 * 1000) meta.push(`as of ${relativeAge(age)} ago`);
+    const row = document.createElement('div');
+    row.className = 'usage-provider usage-device';
+    row.innerHTML = `
+      <div class="usage-provider-main">
+        ${escapeHTML(d.name || 'A computer')}
+        ${tags.map(t => `<span class="usage-device-tag">${escapeHTML(t)}</span>`).join('')}
+      </div>
+      <div class="usage-provider-value">${isCost ? fmtMoney(d.cost_usd) : fmtTokens(d.tokens)}</div>
+      <p class="usage-provider-meta">${escapeHTML(meta.join(' · '))}</p>`;
+    usageDevices.appendChild(row);
+  }
 }
 
 /* ---------- daily chart ---------- */

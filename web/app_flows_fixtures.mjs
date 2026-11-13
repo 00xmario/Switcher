@@ -57,7 +57,7 @@ function usageFixture() {
     api: request,
     fetch: path => request(path).then(body => ({ ok: true, json: async () => body })),
     renderUsage: () => rendered.push(context.usageState.summary.fixtureDays),
-    usageHeadline: {}, usageSub: {}, usageProviders: {}, usageTotals: {}, usageChartBox: {}, usageBreakdownTable: {},
+    usageHeadline: {}, usageSub: {}, usageProviders: {}, usageDevices: null, usageTotals: {}, usageChartBox: {}, usageBreakdownTable: {},
     usagePage: { hidden: false }, document: { hidden: false }, authState: { locked: false },
     toast() {}, clearTimeout() {}, setTimeout: callback => { timers.push(callback); return timers.length; },
   });

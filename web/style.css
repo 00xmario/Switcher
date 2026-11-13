@@ -824,6 +824,9 @@ html[data-theme="dark"] .menu-logo.monochrome img { filter: invert(1); }
 .usage-sub { color: var(--dim); font-size: 14px; margin: 8px 0 0; }
 
 .usage-providers { margin-top: 30px; display: grid; gap: 18px; }
+.usage-devices { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); display: grid; gap: 14px; }
+.usage-devices-title { margin: 0; color: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.usage-device-tag { color: var(--dim); font-weight: 400; font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; line-height: 18px; }
 .usage-provider { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline; }
 .usage-provider-main { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; }
 .usage-provider-main .dot { width: 9px; height: 9px; }

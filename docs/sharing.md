@@ -138,6 +138,16 @@ is at the other end when pairing without a code.
   Settings → Command line & tools shows each and **Install on both**, and
   `switcher skill install` on the client installs it on both (`--on here` or
   `--on host` for one). The host needs Switcher 1.27.0 or later for this.
+- Costs and tokens are added up across every computer: the Usage tab on the
+  host and on each client shows the same total, everyone's usage together,
+  with each computer's share under **By computer**. Each client sends the
+  host its own usage (from its CLIs' logs) every few minutes, at once when it
+  pairs, and when you refresh the page; the host keeps it, so a computer
+  that is away still counts, and gives every client everyone's. A client
+  shows the host's last numbers while the host is away. A computer's usage
+  stays counted after it is removed; pairing it again replaces its numbers
+  rather than adding them twice. The host and the client both need 1.31 or
+  later.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the
@@ -145,7 +155,7 @@ is at the other end when pairing without a code.
   account (or the account picked for a conversation). Claude Code on the client
   still needs to be logged in to some account to start.
 
-The client's own settings, CLI setup and usage history stay local. While
+The client's own settings and CLI setup stay local. While
 connected, the client does not refresh or poll its own accounts. **Disconnect**
 returns the client to its own accounts.
 

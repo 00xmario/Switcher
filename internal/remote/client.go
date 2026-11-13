@@ -85,6 +85,7 @@ type Client struct {
 	hostInstalling atomic.Bool
 	// skill is the host's skill as last read, for the settings page.
 	skill skillCache
+	usage usageCache
 }
 
 // UseTailnet reaches tailnet addresses through the Tailscale add-on.
@@ -644,6 +645,7 @@ func (c *Client) adopt(cfg *clientFile, address string) (ClientStatus, error) {
 	onChange := c.onChange
 	c.mu.Unlock()
 	c.forgetSkill() // the earlier host's
+	c.forgetUsage()
 	if previous != nil {
 		go leave(previous, viaTailnet)
 	}
@@ -705,6 +707,7 @@ func (c *Client) Disconnect() error {
 	onChange := c.onChange
 	c.mu.Unlock()
 	c.forgetSkill()
+	c.forgetUsage()
 	if previous != nil {
 		go leave(previous, viaTailnet)
 	}

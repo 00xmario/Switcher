@@ -54,10 +54,15 @@ type API struct {
 	// CallbackReady reports whether Switcher itself answers where a browser
 	// sign-in, given by its address, comes back to.
 	CallbackReady func(signInURL string) error
-	Store         *store.Store
-	Logins        *login.Manager
-	Proxy         *proxy.Manager
-	DesktopRelay  *desktoprelay.Manager
+	// UsageDevices keeps, on a host, the usage its paired computers send;
+	// MachineName names this computer in the combined usage.
+	UsageDevices *usage.DeviceStore
+	MachineName  string
+	usageShare   usageShare
+	Store        *store.Store
+	Logins       *login.Manager
+	Proxy        *proxy.Manager
+	DesktopRelay *desktoprelay.Manager
 	// DesktopSessionMetadata is the same explicit, lazy index supplied to the
 	// relay's trusted conversation resolver. GET only decorates response copies.
 	// Nil disables display lookup; the manager may still verify saved associations
@@ -149,6 +154,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/usage/refresh", a.changing(a.handleRefreshAll))
 	mux.HandleFunc("GET /api/tokens", a.handleUsage)
 	mux.HandleFunc("POST /api/tokens/refresh", a.handleUsageRefresh)
+	mux.HandleFunc("PUT /api/tokens/device", a.handleUsageDevice)
+	mux.HandleFunc("GET /api/tokens/ledgers", a.handleUsageLedgers)
 	mux.HandleFunc("POST /api/accounts", a.changing(a.handleAddKey))
 	mux.HandleFunc("POST /api/accounts/{id}/use-reset", a.changing(a.handleUseReset))
 	mux.HandleFunc("PATCH /api/accounts/{id}", a.changing(a.handleAccountPatch))
@@ -1385,7 +1392,16 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 	if stale {
 		go a.Usage.Scan(days)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"scanning": false, "stale": stale, "days": days, "summary": summary})
+	// On a client, the page asks for the host's usage, and the other
+	// computers', to be fetched again when it is more than a minute old.
+	if _, paired := remote.PairedDevice(r); !paired {
+		go a.syncUsageIfOld(usagePageSync)
+	}
+	answer := map[string]any{"scanning": false, "stale": stale, "days": days, "summary": summary}
+	if sharing := a.usageSharing(); sharing != nil {
+		answer["sharing"] = sharing
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // handleUsageRefresh forces a rescan of every window.
@@ -1394,10 +1410,12 @@ func (a *API) handleUsageRefresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "usage not configured"})
 		return
 	}
-	go a.Usage.Scan(30)
-	go a.Usage.Scan(90)
-	go a.Usage.Scan(7)
-	go a.Usage.Scan(1)
+	// One scan serves every window; a client then exchanges usage with its
+	// host, so the refresh shows the other computers' latest too.
+	go func() {
+		a.Usage.Scan(30)
+		a.syncUsage(context.Background())
+	}()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 

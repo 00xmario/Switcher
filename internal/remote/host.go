@@ -341,6 +341,20 @@ func (h *Host) NewPairingCode() (PairingView, error) {
 	return PairingView{Code: formatCode(h.code), ExpiresAt: h.codeExpires}, nil
 }
 
+// Enabled reports whether this computer shares its accounts.
+func (h *Host) Enabled() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.state.Enabled
+}
+
+// Paired reports whether a device id is paired with this host now.
+func (h *Host) Paired(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.ContainsFunc(h.state.Devices, func(d device) bool { return d.ID == id })
+}
+
 // Revoke removes a paired device; its token stops working immediately.
 func (h *Host) Revoke(id string) error {
 	h.mu.Lock()
@@ -392,8 +406,12 @@ var remotePaths = []string{"/remote/", "/api/accounts/", "/api/usage/refresh", "
 // Switcher's skill for AI agents, which a paired Mac may read, install or
 // remove: the skill's text is the host's own release's, so all a paired Mac
 // chooses is whether it is there.
+//
+// And usage, added up across the computers: a paired computer sends its own
+// ledger (only its own, see usage.DeviceStore) and reads everyone's, so
+// every computer shows the same combined usage.
 var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check", "/api/system",
-	"/api/system/apps", "/api/agent-skill"}
+	"/api/system/apps", "/api/agent-skill", "/api/tokens/device", "/api/tokens/ledgers"}
 
 func allowedRemotePath(path string) bool {
 	if slices.Contains(remoteExactPaths, path) {

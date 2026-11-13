@@ -29,6 +29,9 @@ var preambleID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // installShape is a Switcher's install id, as the client makes it.
 var installShape = preambleID
 
+// ValidInstallID reports whether s reads as a Switcher install's id.
+func ValidInstallID(s string) bool { return installShape.MatchString(s) }
+
 // loopbackConn is a connection from this computer. It reads the add-on's
 // preamble, if one comes first, when the TLS handshake first reads, so a
 // slow client never holds up accepting others.

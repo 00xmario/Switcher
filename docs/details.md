@@ -170,6 +170,9 @@ required; OpenCode Go uses its own API key.
 - **Cost and tokens**: a Usage tab that reads the provider CLIs' own
   session logs (like ccusage does) and prices them with LiteLLM rates:
   daily cost chart, per-provider and per-model breakdowns, cache savings.
+  A host and the computers that use it add their usage up, so each shows
+  the same total with each computer's share; see
+  [sharing](sharing.md#what-follows-the-host).
 - **Claude keychain import**: Switcher can copy Claude Code's stored login
   from the macOS keychain, or the native credentials file on Linux. The full
   account-scoped wrapper and identity are preserved. Switcher synchronizes

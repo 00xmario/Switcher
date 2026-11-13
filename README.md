@@ -151,7 +151,8 @@ and a six-digit code; only phones you approve on the Mac get in.
 ## And the rest
 
 - **Costs and tokens.** A Usage tab reads your CLIs' own session logs and
-  prices them, per day, provider and model.
+  prices them, per day, provider and model. With Macs sharing a host, every
+  one shows the same total: all of them added up, with each one's share.
 - **A command line for you and your agents.** Switch, sign in, set limits,
   share between Macs and set up Claude Desktop from a terminal or over SSH,
   with JSON output and stable exit codes.

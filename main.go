@@ -475,10 +475,8 @@ func run(port, desktopRelayPort int) {
 	usageService := usage.NewService(config.Dir(), nil)
 	// Cost/token usage: rescan the common windows periodically in the
 	// background so the API always has a recent summary ready.
-	go func() {
-		usageService.Scan(30)
-		usageService.Scan(90)
-	}()
+	// One scan serves every window.
+	go usageService.Scan(30)
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
@@ -492,11 +490,17 @@ func run(port, desktopRelayPort int) {
 		DesktopSessionMetadata: metadataIndex,
 		ManagementKey:          managementKey, Version: version, Updater: updater, Awake: keepAwake, Load: sysload.New(), Home: home, ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), Usage: usageService,
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
-		Autostart: autostart.New(executablePath()),
+		Autostart:    autostart.New(executablePath()),
+		UsageDevices: usage.OpenDeviceStore(filepath.Join(config.Dir(), "usage-devices")),
+		MachineName:  remote.MachineName(),
 		// The tray's Quit Switcher: stop as on SIGTERM, which also tells
 		// the login service not to restart it.
 		Quit: func() { _ = syscall.Kill(os.Getpid(), syscall.SIGTERM) },
 	}
+	// Usage added up across a host and the computers that use it: this
+	// computer's own, and the others' as the host keeps them.
+	usageService.SetIdentity(api.UsageIdentity)
+	usageService.SetOthers(api.UsageLedgers)
 	// Background usage sync: the server owns freshness, so the web UI and
 	// the menu bar always agree without waiting for a client to poll.
 	// A Mac that uses another Switcher's accounts leaves token refreshes and
@@ -650,6 +654,9 @@ func run(port, desktopRelayPort int) {
 			}
 		})
 	}
+
+	// Exchanged with the host only once sharing is set up above.
+	go api.RunUsageSharing(context.Background())
 
 	// Hardening headers on every response from the main listeners. The UI
 	// has no inline scripts (the theme init lives in app.js), so the CSP

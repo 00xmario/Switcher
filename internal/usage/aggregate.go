@@ -23,6 +23,9 @@ type Summary struct {
 	CacheSavings  float64         `json:"cache_savings_usd"`
 	ScannedAtMs   int64           `json:"scanned_at_ms"`
 	ScanMs        int64           `json:"scan_ms"`
+	// Devices is each computer's share, when more than one is counted:
+	// a host and the Macs that use it.
+	Devices []DeviceUsage `json:"devices,omitempty"`
 }
 
 // ProviderUsage aggregates one provider.
@@ -70,90 +73,19 @@ type bucket struct {
 	unpricedRecords int64
 }
 
-// SummaryFor runs the pipeline: scan every source, dedupe, price, and
-// bucket by local day. since/until are inclusive local days.
+// SummaryFor runs the pipeline for this computer alone: scan every source,
+// dedupe, price, and bucket by local day. since/until are inclusive local
+// days.
 func SummaryFor(sources []Source, cache *ScanCache, table RateTable, since, until time.Time, loc *time.Location) *Summary {
 	if loc == nil {
 		loc = time.Local
 	}
 	start := time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, loc)
-	end := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
-	startUTC, endUTC := start.UTC(), end.UTC()
-
-	buckets := map[bucketKey]*bucket{}
-	sessionSet := map[string]struct{}{}
-	seen := map[string]struct{}{}
-	providerSessions := map[string]map[string]struct{}{}
-	providerSessionOrder := []string{}
-	var records, unpriced, totalRecords int64
-	var totals Totals
-	var totalCost, savings float64
-
-	sink := func(r Record) {
-		ts := r.Timestamp
-		if ts.Before(startUTC) || !ts.Before(endUTC) {
-			return
-		}
-		totalRecords++
-		if r.DedupeKey != "" {
-			dk := r.SourceDir + "\x00" + r.DedupeKey
-			if _, dup := seen[dk]; dup {
-				return
-			}
-			seen[dk] = struct{}{}
-		}
-		cost, source := Price(table, r)
-		day := ts.In(loc).Format("2006-01-02")
-		cell := bucketFor(buckets, bucketKey{day: day, provider: r.Provider, model: r.Model})
-		cell.totals = addTotals(cell.totals, r.Totals)
-		cell.cost += cost
-		cell.savings += CacheSavings(table, r)
-		cell.records++
-		if source == CostUnpriced {
-			cell.unpricedRecords++
-		}
-		records++
-		totals = addTotals(totals, r.Totals)
-		totalCost += cost
-		savings += CacheSavings(table, r)
-		if source == CostUnpriced {
-			unpriced++
-		}
-		if r.SessionID != "" {
-			key := r.Provider + "\x00" + r.SessionID
-			if _, dup := sessionSet[key]; !dup {
-				sessionSet[key] = struct{}{}
-				set, ok := providerSessions[r.Provider]
-				if !ok {
-					set = map[string]struct{}{}
-					providerSessions[r.Provider] = set
-					providerSessionOrder = append(providerSessionOrder, r.Provider)
-				}
-				set[r.SessionID] = struct{}{}
-			}
-		}
-	}
-
 	began := time.Now()
-	for _, src := range sources {
-		scanSource(src, scanOptions{WindowStart: start}, cache, sink)
-	}
-	cache.Save()
-	elapsed := time.Since(began)
-
-	summary := buildSummary(buckets, totals, totalCost, savings, records, unpriced, int64(len(sessionSet)))
-	for _, provider := range providerSessionOrder {
-		for i := range summary.Providers {
-			if summary.Providers[i].Provider == provider {
-				summary.Providers[i].Sessions = int64(len(providerSessions[provider]))
-			}
-		}
-	}
-	summary.Since = start.Format("2006-01-02")
-	summary.Until = until.Format("2006-01-02")
-	summary.TimeZone = loc.String()
+	ledger := collectLedger(sources, cache, table, start)
+	summary := Combine([]DeviceLedger{{Key: "this", Ledger: ledger}}, "this", since, until, loc)
 	summary.ScannedAtMs = began.UnixMilli()
-	summary.ScanMs = elapsed.Milliseconds()
+	summary.ScanMs = time.Since(began).Milliseconds()
 	return summary
 }
 
