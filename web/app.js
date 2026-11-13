@@ -2027,8 +2027,10 @@ function renderUsageDevices(s, isCost) {
   title.className = 'usage-devices-title';
   title.textContent = 'By computer';
   usageDevices.appendChild(title);
-  for (const d of devices) {
-    const value = isCost ? d.cost_usd : d.tokens;
+  const shown = d => isCost ? d.cost_usd : d.tokens;
+  const sorted = [...devices].sort((a, b) => shown(b) - shown(a) || (b.tokens - a.tokens) || String(a.name).localeCompare(String(b.name)));
+  for (const d of sorted) {
+    const value = shown(d);
     const share = total > 0 ? value / total : 0;
     const tags = [d.this ? 'this computer' : '', d.host ? 'host' : ''].filter(Boolean);
     const age = d.updated_ms ? Date.now() - d.updated_ms : 0;
