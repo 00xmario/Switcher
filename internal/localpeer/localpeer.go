@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +64,9 @@ type socket struct {
 	listening bool
 	live      bool
 	connected bool
+	// closing: in a state a socket is in once its program has closed the
+	// connection (FIN_WAIT_1 and _2, CLOSING, LAST_ACK, TIME_WAIT, CLOSE).
+	closing bool
 }
 
 // peerKind is what the system shows of the other end of a connection.
@@ -268,11 +272,15 @@ func selfTest(v6 bool) support {
 	switch uid, kind := peerSince(server, time.Now()); {
 	case kind == peerFound && uid == me:
 		return working
+	case !otherEndOpen(server):
+		// The probe went away (it crashed, or something stopped it):
+		// nothing was learned.
+		return unanswered
 	case kind == peerUnseen:
 		return failed(server.RemoteAddr().(*net.TCPAddr), addr)
 	default:
-		// Another user's, or let go of, though the probe is alive and
-		// holding it: the system's answers are wrong here.
+		// Another user's, or closed, though the probe is alive and holding
+		// it: the system's answers are wrong here.
 		return unsupported
 	}
 }
@@ -407,6 +415,7 @@ func SameUser(ln net.Listener) net.Listener {
 	g.otherEndOpen = otherEndOpen
 	g.trusted = func() bool { return worksFor(v6) }
 	g.doubt = func() { doubt(v6) }
+	g.serveUnseen = serveUnseen
 	return g
 }
 
@@ -446,6 +455,7 @@ type sameUser struct {
 	otherEndOpen func(net.Conn) bool
 	trusted      func() bool
 	doubt        func()
+	serveUnseen  bool      // see serveUnseen
 	logged       time.Time // the last refusal logged
 	unseenLogged time.Time // the last connection served unseen, logged
 	logMu        sync.Mutex
@@ -537,66 +547,93 @@ func (l *sameUser) run() {
 	}
 }
 
+// serveUnseen says whether a connection whose socket the system does not
+// show may be served (see admit): on a Mac, where a system that did not
+// show this user's own programs' sockets once turned every one of them
+// away. Linux's kernel shows every socket it carries; one it does not show
+// is not a client of this computer's own (a connection whose address a NAT
+// rule rewrote, a sender that reset it), and is refused.
+var serveUnseen = runtime.GOOS == "darwin"
+
+// recheckWait is how long admit waits before asking again about a
+// connection the system did not show.
+var recheckWait = 20 * time.Millisecond
+
 // admit decides whether a connection is served.
 func (l *sameUser) admit(conn net.Conn, accepted time.Time) bool {
 	uid, kind := l.peer(conn, accepted)
+	if kind == peerUnseen && l.serveUnseen && loopbackPeer(conn) && l.otherEndOpen != nil && l.otherEndOpen(conn) {
+		// Asked again a moment later: a sender that reset its connection
+		// is no longer open then, one that was only being set up is shown.
+		time.Sleep(recheckWait)
+		uid, kind = l.peer(conn, time.Now())
+		if kind == peerUnseen && l.otherEndOpen(conn) {
+			// Still open, still not shown, from this computer's own address:
+			// a client waiting for its answer whose socket this system does
+			// not show. Served: the check must never turn this user's own
+			// programs away. The self-test is made again.
+			l.logUnseen(conn)
+			if l.doubt != nil {
+				l.doubt()
+			}
+			return true
+		}
+	}
 	switch {
 	case kind == peerFound && (uid == l.uid || l.root && uid == 0):
 		return true
-	case kind == peerFound || kind == peerGone:
-		// Another account's, or let go of by its program: refused, unless
-		// the self-test found that this system's answers mean nothing.
-		if l.trusted != nil && !l.trusted() {
-			return true
-		}
-		l.logRefusal(uid, kind)
-		return false
-	case l.otherEndOpen != nil && l.otherEndOpen(conn):
-		// Open from the other end, a client waiting for its answer, whose
-		// socket this system did not show: served, and the self-test made
-		// again.
-		l.logUnseen()
-		if l.doubt != nil {
-			l.doubt()
-		}
+	case l.trusted != nil && !l.trusted():
+		// The self-test found this system's answers mean nothing: nothing
+		// is refused for them.
 		return true
-	default:
-		// Closed from the other end already, and not shown: nobody is
-		// waiting for an answer.
-		l.logRefusal(0, peerUnseen)
-		return false
 	}
+	l.logRefusal(conn, uid, kind)
+	return false
+}
+
+// loopbackPeer reports whether conn comes from a loopback address, as a
+// program on this computer connecting to it directly does.
+func loopbackPeer(conn net.Conn) bool {
+	remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+	return ok && remote.IP.IsLoopback()
 }
 
 // logUnseen says, at most once a minute, that a connection was served
 // though the system did not show whose it was.
-func (l *sameUser) logUnseen() {
+func (l *sameUser) logUnseen(conn net.Conn) {
 	l.logMu.Lock()
 	defer l.logMu.Unlock()
 	if time.Since(l.unseenLogged) < time.Minute {
 		return
 	}
 	l.unseenLogged = time.Now()
-	log.Printf("served a connection to %s whose program this system did not show; checking again whether it shows every program's connections", l.Addr())
+	log.Printf("served a connection to %s from %s whose program this system did not show; checking again whether it shows every program's connections", l.Addr(), conn.RemoteAddr())
 }
 
 // logRefusal says, at most once a minute, that a connection was refused,
 // so that someone wondering why a program gets no answer finds out.
-func (l *sameUser) logRefusal(uid uint32, kind peerKind) {
+func (l *sameUser) logRefusal(conn net.Conn, uid uint32, kind peerKind) {
 	l.logMu.Lock()
 	defer l.logMu.Unlock()
 	if time.Since(l.logged) < time.Minute {
 		return
 	}
 	l.logged = time.Now()
-	who := "a program that had already gone"
-	if kind == peerFound {
+	who := "a program whose socket this system did not show"
+	switch kind {
+	case peerFound:
 		who = "another account's program (uid " + strconv.FormatUint(uint64(uid), 10) + ")"
 		if uid == 0 {
 			who = "a program running as root"
 		}
+	case peerGone:
+		who = "a program that had already closed it"
 	}
-	log.Printf("refused a connection to %s from %s; %s=1 lets every account's programs in, %s=root root's", l.Addr(), who, AllowOthersEnv, AllowOthersEnv)
+	from := "?"
+	if conn != nil {
+		from = conn.RemoteAddr().String()
+	}
+	log.Printf("refused a connection to %s from %s (%s); %s=1 lets every account's programs in, %s=root root's", l.Addr(), from, who, AllowOthersEnv, AllowOthersEnv)
 }
 
 // Transport is an HTTP transport for this user's own programs, the command
@@ -686,31 +723,33 @@ func ownConnection(conn net.Conn) error {
 	// launchd socket that any user can set up is held by root.
 	_, root := allowed()
 	mine := func(uid uint32) bool { return uid == uint32(os.Getuid()) || root && uid == 0 }
-	// Only a definite answer naming another account stops the request, and
-	// only on a system whose answers the self-test found to mean something
-	// (made then, when first needed): an answer the system does not give,
-	// asked a few times, never keeps this user from their own Switcher (the
-	// device token is never sent; see internal/deviceproof).
-	other := func(uid uint32) error {
-		if !worksFor(remote.IP.To4() == nil) {
-			return nil
-		}
-		return &OtherUserError{Port: remote.Port, UID: uid}
-	}
+	// An answer naming another account stops the request, on a system whose
+	// answers the self-test found to mean something (made then, when first
+	// needed). A listener the system does not show, asked a few times, stops
+	// it on Linux, whose kernel shows every listener; on a Mac it never keeps
+	// this user from their own Switcher (see serveUnseen; the device token is
+	// never sent, see internal/deviceproof).
+	trusted := func() bool { return worksFor(remote.IP.To4() == nil) }
 	for try := 0; ; try++ {
 		listener, ok := ListenerUID(remote)
-		if ok && !mine(listener) {
-			return other(listener)
+		if ok && !mine(listener) && trusted() {
+			return &OtherUserError{Port: remote.Port, UID: listener}
 		}
-		if ok || try == 2 {
+		if ok {
+			break
+		}
+		if try == 2 {
+			if !serveUnseen && trusted() {
+				return &OtherUserError{Port: remote.Port, Unknown: true}
+			}
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	// And whose this very connection's other end is. Before the server has
 	// taken it, the kernel shows it under the listener's owner.
-	if taker, ok := serverEndUID(conn); ok && !mine(taker) {
-		return other(taker)
+	if taker, ok := serverEndUID(conn); ok && !mine(taker) && trusted() {
+		return &OtherUserError{Port: remote.Port, UID: taker}
 	}
 	return nil
 }

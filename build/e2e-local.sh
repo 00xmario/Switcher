@@ -28,18 +28,23 @@ fail() {
 	exit 1
 }
 # Nothing from the developer's own setup: not the check's switch, not
-# another Switcher's address, not the real CLIs' folders.
+# another Switcher's address, not the real CLIs' folders (Claude Code's is
+# this home's own, which on a Mac also names its own Keychain item), not a
+# proxy.
 clean() {
-	env -u SWITCHER_ALLOW_LOCAL_USERS -u SWITCHER_URL -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u GROK_HOME \
+	env -u SWITCHER_ALLOW_LOCAL_USERS -u SWITCHER_URL -u CODEX_HOME -u GROK_HOME \
 		-u CLAUDE_SECURESTORAGE_CONFIG_DIR -u SWITCHER_PEER_PROBE \
-		HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" "$@"
+		-u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+		HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" CLAUDE_CONFIG_DIR="$work/home/.claude" "$@"
 }
 get() { curl -s --noproxy '*' --max-time 10 "$@"; }
 
 go build -o "$work/switcher" .
 mkdir -p "$work/home"
 
-# A free pair of ports: tried a few times.
+# A free pair of ports, the server answering and the Desktop relay connected
+# (in this home's Claude Desktop settings): tried a few times.
+mkdir -p "$work/home/.claude"
 up=
 for _ in 1 2 3 4 5; do
 	port=$((20000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 20000))
@@ -55,12 +60,15 @@ for _ in 1 2 3 4 5; do
 		kill -0 "$pid" 2>/dev/null || break
 		sleep 0.1
 	done
-	[ -z "$up" ] || break
+	if [ -n "$up" ]; then
+		clean "$work/switcher" -port "$port" desktop connect >/dev/null 2>"$work/cli.err" && break
+		up=
+	fi
 	kill "$pid" 2>/dev/null || true
 	wait "$pid" 2>/dev/null || true
 	pid=
 done
-[ -n "$up" ] || fail "the server never answered"
+[ -n "$up" ] || fail "the server never answered, or Claude Desktop would not connect: $(cat "$work/cli.err" 2>/dev/null)"
 grep -q "serving this user's programs only" "$work/home/server.log" ||
 	fail "the same-user check is not on here; it must be, to be tested"
 
@@ -72,10 +80,7 @@ for i in 1 2 3 4 5; do
 	[ "$code" = 200 ] || fail "curl's request $i to the main port: HTTP $code"
 done
 
-# The Desktop relay, connected (in this home's Claude Desktop settings),
-# answers with HTTP whatever it says.
-clean "$work/switcher" -port "$port" desktop connect >/dev/null 2>"$work/cli.err" ||
-	fail "connecting Claude Desktop: $(cat "$work/cli.err")"
+# The Desktop relay answers with HTTP whatever it says.
 get -o /dev/null "http://127.0.0.1:$relay/" || fail "curl's request to the Desktop relay was dropped"
 checked="$checked, Desktop relay"
 
@@ -99,7 +104,7 @@ if [ "$(uname -s)" = Darwin ]; then
 	[ "$answer" = answered ] || fail "Foundation's request to the main port was dropped ($answer)"
 	checked="$checked, Foundation"
 	if command -v python3 >/dev/null 2>&1; then
-		python3 -I -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$port/api/auth/status', timeout=10).read()" ||
+		python3 -I -c "import urllib.request as u; u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:$port/api/auth/status', timeout=10).read()" ||
 			fail "Python's request to the main port was dropped"
 		checked="$checked, Python"
 	fi

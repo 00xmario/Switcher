@@ -26,6 +26,17 @@ const (
 )
 
 // The TCP states in which a socket is one end of a connection that was made.
+// The TCP states a socket is in once its own program has closed the
+// connection.
+var closingStates = map[uint8]bool{
+	4:  true, // FIN_WAIT1
+	5:  true, // FIN_WAIT2
+	6:  true, // TIME_WAIT
+	7:  true, // CLOSE
+	9:  true, // LAST_ACK
+	11: true, // CLOSING
+}
+
 var connectedStates = map[uint8]bool{
 	1:  true, // ESTABLISHED
 	4:  true, // FIN_WAIT1
@@ -133,7 +144,7 @@ func kernelQuery(local, remote *net.TCPAddr) (socket, error) {
 		return socket{}, errNotFound
 	}
 	found := socket{uid: binary.NativeEndian.Uint32(msg[64:]), listening: msg[1] == tcpListen,
-		live: binary.NativeEndian.Uint32(msg[68:]) != 0, connected: connectedStates[msg[1]]}
+		live: binary.NativeEndian.Uint32(msg[68:]) != 0, connected: connectedStates[msg[1]], closing: closingStates[msg[1]]}
 	if !found.listening && binary.BigEndian.Uint16(msg[6:]) != uint16(remote.Port) {
 		return socket{}, errNotFound
 	}

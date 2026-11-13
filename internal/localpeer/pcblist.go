@@ -52,6 +52,16 @@ const (
 )
 
 // The TCP states in which a socket is one end of a connection that was made.
+// The TCP states a socket is in once its own program has closed the
+// connection.
+var bsdClosing = map[int32]bool{
+	6:  true, // FIN_WAIT_1
+	7:  true, // CLOSING
+	8:  true, // LAST_ACK
+	9:  true, // FIN_WAIT_2
+	10: true, // TIME_WAIT
+}
+
 var bsdConnected = map[int32]bool{
 	tcpsEstablished: true,
 	tcpsCloseWait:   true,
@@ -180,24 +190,29 @@ func matchPCB(pcbs []pcb, local, remote *net.TCPAddr) (socket, bool) {
 	}
 	// One pair of addresses is one connection; a socket winding down on it
 	// beside a new one is passed over for the one in use. Only sockets
-	// winding down is a connection whose sender has gone.
+	// closing is a connection whose sender has gone.
 	if len(found) > 1 {
-		var live []pcb
+		var live, closing []pcb
 		for _, p := range found {
-			if !p.noFDRef && bsdConnected[p.state] {
+			switch {
+			case !p.noFDRef && bsdConnected[p.state]:
 				live = append(live, p)
+			case bsdClosing[p.state]:
+				closing = append(closing, p)
 			}
 		}
-		if len(live) == 0 {
-			return socket{uid: found[0].uid, live: false, connected: false}, true
+		switch {
+		case len(live) > 0:
+			found = live
+		case len(closing) > 0:
+			found = closing[:1]
 		}
-		found = live
 	}
 	if len(found) != 1 {
 		return socket{}, false
 	}
 	p := found[0]
-	return socket{uid: p.uid, live: !p.noFDRef, connected: bsdConnected[p.state]}, true
+	return socket{uid: p.uid, live: !p.noFDRef, connected: bsdConnected[p.state], closing: bsdClosing[p.state]}, true
 }
 
 // listenerAt is the socket that takes connections to addr:port: one

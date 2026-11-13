@@ -435,14 +435,17 @@ environment; a terminal-only override needs the CLI command. The first
   service that runs as root and forwards connections for others would let
   them in), on the main port, the Desktop relay's and the sign-in
   callbacks'; the command line and the tray in turn send nothing to a port
-  another account holds. Only a definite answer turns a connection away:
-  the system showing it as another account's, or as let go of by its
-  program (a sender that has gone, whose request nobody waits for). One
-  whose socket the system does not show at all is served while it is open,
-  so the check never locks you out of your own Switcher, and Switcher checks
-  again whether the system shows every program's connections. (A client
-  that is both unshown and has already closed its sending side is not
-  served.) `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`)
+  another account holds. The system showing a connection as another
+  account's, or as closed with no program holding it any more (a sender
+  that has gone, whose request nobody waits for), turns it away. One whose
+  socket the system does not show at all: on Linux, whose kernel shows every
+  socket it carries, it is not one of this computer's own clients (a
+  connection whose address a NAT rule rewrote, a sender that reset it) and
+  is refused; on a Mac, where a system once showed no client's socket and
+  turned every one away, it is served if it comes from a loopback address
+  and is still unshown and open when asked again 20 ms later, so the check
+  never locks you out of your own Switcher, and Switcher checks again
+  whether the system shows every program's connections. `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`)
   lifts the check, for a container that shares the computer's network under
   its own user; `=root` lets only root's programs in as well; any other
   value leaves it on. A separate process of yours connects to Switcher, as

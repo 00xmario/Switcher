@@ -40,10 +40,11 @@ func connectedUID(local, remote *net.TCPAddr) (uint32, bool) {
 }
 
 // socketPeer is what the system shows of the socket bound to local and
-// connected to remote: a live, connected one and whose it is; one that is
-// there but its program has let go of, or that is no longer connected, or a
-// listener in its place (the connection is over): gone; or nothing it
-// shows.
+// connected to remote: a live, connected one (also one whose program is done
+// sending but holds it still) and whose it is; one that is closing with no
+// program holding it any more, or a listener in its place (no such
+// connection any more): gone; anything else, nothing shown at all included:
+// unseen.
 func socketPeer(local, remote *net.TCPAddr, since time.Time) (uint32, peerKind) {
 	found, ok := lookup(local, remote, since)
 	switch {
@@ -51,10 +52,12 @@ func socketPeer(local, remote *net.TCPAddr, since time.Time) (uint32, peerKind) 
 		return 0, peerUnseen
 	case found.listening:
 		return 0, peerGone
-	case !found.live || !found.connected:
+	case found.live && found.connected:
+		return found.uid, peerFound
+	case found.closing && !found.live:
 		return found.uid, peerGone
 	}
-	return found.uid, peerFound
+	return 0, peerUnseen
 }
 
 // peerOf is what the system shows of the other end of conn. The kernel finds

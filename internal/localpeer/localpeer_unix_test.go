@@ -408,12 +408,17 @@ func TestTransportRefusesAnotherUsersServer(t *testing.T) {
 	if !errors.As(err, &other) || other.UID != me()+2 {
 		t.Fatalf("a connection another user's program took was used: %v", err)
 	}
-	// A listener the system does not show is no other account's as far as
-	// anyone can tell: this user is never kept from their own Switcher.
+	// A listener the system does not show: on Linux, whose kernel shows
+	// every listener, nothing is sent to it; on a Mac it never keeps this
+	// user from their own Switcher.
 	client.CloseIdleConnections()
 	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) { return socket{}, false }
-	if _, err = get(); err != nil {
-		t.Fatalf("a port the system does not show was refused: %v", err)
+	_, err = get()
+	if serveUnseen && err != nil {
+		t.Fatalf("a port the system does not show was refused on a Mac: %v", err)
+	}
+	if !serveUnseen && (!errors.As(err, &other) || !other.Unknown) {
+		t.Fatalf("a port the system does not show was used on Linux: %v", err)
 	}
 	// A port held by root is refused too: on macOS any user can have
 	// launchd, which runs as root, hold one. Root is let in on request.
@@ -688,26 +693,23 @@ func TestOnlyTheFirstSelfTestIsWaitedFor(t *testing.T) {
 // self-test again instead. (One whose sender is gone is refused: see
 // TestGoneSenderIsNotThisUser.)
 func TestOpenConnectionsWhoseOwnerIsUnseenAreServed(t *testing.T) {
-	real := lookup
-	defer func() { lookup = real }()
+	real, wasServe := lookup, serveUnseen
+	defer func() { lookup, serveUnseen = real, wasServe }()
 	lookup = func(*net.TCPAddr, *net.TCPAddr, time.Time) (socket, bool) { return socket{}, false }
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	guarded := SameUser(ln)
-	defer guarded.Close()
-	taken := make(chan net.Conn, 4)
-	go func() {
-		for {
-			conn, err := guarded.Accept()
-			if err != nil {
-				return
-			}
-			taken <- conn
+	serve := func(mac bool) (bool, error) {
+		serveUnseen = mac
+		ln, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-	try := func() (bool, error) {
+		guarded := SameUser(ln)
+		defer guarded.Close()
+		taken := make(chan net.Conn, 1)
+		go func() {
+			if conn, err := guarded.Accept(); err == nil {
+				taken <- conn
+			}
+		}()
 		conn, err := net.Dial("tcp4", ln.Addr().String())
 		if err != nil {
 			t.Fatal(err)
@@ -722,24 +724,33 @@ func TestOpenConnectionsWhoseOwnerIsUnseenAreServed(t *testing.T) {
 			return false, checked
 		}
 	}
-	for _, state := range []support{working, unanswered, unsupported} {
+	for _, state := range []support{working, unanswered} {
 		setSupport(t, state)
-		if served, err := try(); !served || err != nil {
-			t.Fatalf("self-test %v: served=%v, the command line's check: %v", state, served, err)
+		if served, err := serve(true); !served || err != nil {
+			t.Fatalf("on a Mac, self-test %v: served=%v, the command line's check: %v", state, served, err)
+		}
+		if served, err := serve(false); served || err == nil {
+			t.Fatalf("on Linux, self-test %v: served=%v, the command line's check: %v", state, served, err)
 		}
 	}
-	// On a system found working, it is tested again (at most once a
-	// minute).
+	// Where the self-test found the system's answers mean nothing, nothing
+	// is refused for them, on Linux too.
+	setSupport(t, unsupported)
+	if served, err := serve(false); !served || err != nil {
+		t.Fatalf("on Linux, system unsupported: served=%v, the command line's check: %v", served, err)
+	}
+	// On a Mac, after one is served unseen, the self-test is made again (at
+	// most once a minute).
 	setSupport(t, working)
 	works[0].Lock()
 	works[0].checked = time.Now().Add(-2 * selfTestAgain)
 	works[0].Unlock()
 	tested := make(chan bool, 4)
 	useSelfTest(t, func(bool) support { tested <- true; return working })
-	if served, _ := try(); !served {
+	if served, _ := serve(true); !served {
 		t.Fatal("not served")
 	}
-	try()
+	serve(true)
 	select {
 	case <-tested:
 	case <-time.After(time.Second):
@@ -894,3 +905,65 @@ func useSelfTest(t *testing.T, f func(bool) support) {
 		swap(was)
 	})
 }
+
+// On a Mac an unseen connection is served only from this computer's own
+// address and only if, asked again a moment later, it is still unseen and
+// open: not one whose address a NAT rule rewrote, not a sender that reset.
+func TestUnseenIsServedOnlyFromLoopbackAndAfterAskingAgain(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	client, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	asks := 0
+	l := &sameUser{Listener: ln, uid: me(), serveUnseen: true, trusted: func() bool { return true }}
+	l.peer = func(net.Conn, time.Time) (uint32, peerKind) { asks++; return 0, peerUnseen }
+	open := true
+	l.otherEndOpen = func(net.Conn) bool { return open }
+	if !l.admit(server, time.Now()) || asks != 2 {
+		t.Fatalf("an open, unseen connection from loopback: asked %d times", asks)
+	}
+	// Closed by the time it is asked again: a sender that reset.
+	asks = 0
+	l.otherEndOpen = func(net.Conn) bool { asks++; return asks < 2 }
+	l.peer = func(net.Conn, time.Time) (uint32, peerKind) { return 0, peerUnseen }
+	if l.admit(server, time.Now()) {
+		t.Fatal("a connection closed when asked again was served")
+	}
+	// Shown as another account's when asked again.
+	l.otherEndOpen = func(net.Conn) bool { return true }
+	n := 0
+	l.peer = func(net.Conn, time.Time) (uint32, peerKind) {
+		n++
+		if n == 1 {
+			return 0, peerUnseen
+		}
+		return me() + 1, peerFound
+	}
+	if l.admit(server, time.Now()) {
+		t.Fatal("a connection shown as another account's when asked again was served")
+	}
+	// Not from this computer's own address: a NAT rule rewrote it.
+	nat := &fakeAddrConn{Conn: server, remote: &net.TCPAddr{IP: net.IPv4(192, 168, 1, 7), Port: 5000}}
+	l.peer = func(net.Conn, time.Time) (uint32, peerKind) { return 0, peerUnseen }
+	if l.admit(nat, time.Now()) {
+		t.Fatal("an unseen connection from another address was served")
+	}
+}
+
+type fakeAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *fakeAddrConn) RemoteAddr() net.Addr { return c.remote }
