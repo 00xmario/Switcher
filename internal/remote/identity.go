@@ -190,14 +190,8 @@ func decodeOne(r io.Reader, limit int64, v any) error {
 	if int64(len(body)) > limit {
 		return errors.New("the answer is too long")
 	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return errors.New("unexpected data after the answer")
-	}
-	return nil
+	// One value and nothing after it, decoded from the one copy read.
+	return json.Unmarshal(body, v)
 }
 
 // errNoTailscale says the Tailscale app or daemon is not on this computer.

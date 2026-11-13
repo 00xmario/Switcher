@@ -152,10 +152,14 @@ is at the other end when pairing without a code.
   later.
 
   What a paired computer sends is checked like everything else it sends:
-  one computer's usage per pairing, known providers only, plain model
-  names, bounded sizes and totals, and read within fixed limits, so a
-  computer that was lost or turned against its owner can neither flood the
-  host nor put anything but numbers on another computer's Usage page.
+  one computer's usage per pairing, sent at most once a minute, known
+  providers only, plain model names, bounded sizes and totals, and read
+  within fixed limits; the host makes its answer once for everyone while
+  nothing changes, and leaves out the largest ledger first. So a computer
+  that was lost or turned against its owner can neither flood the host,
+  crowd the other computers out, nor put anything but numbers on another
+  computer's Usage page. A computer's usage is kept under an id made from a
+  secret that never leaves it, different for every host.
 - Codex CLI and every provider proxy on `127.0.0.1:8787`, and the T3 Code hub.
   Their configuration does not change.
 - Claude Code and Claude Desktop, once **Connect Claude Desktop** is done on the

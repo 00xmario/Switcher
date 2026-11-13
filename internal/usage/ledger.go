@@ -227,18 +227,19 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 		}
 		quarter := unixQuarter(r.Timestamp)
 		cost, source := Price(table, r)
-		k := key{quarter, r.Provider, r.Model}
+		model := ledgerModel(r.Model)
+		k := key{quarter, r.Provider, model}
 		e := entries[k]
 		if e == nil {
-			e = &LedgerEntry{Quarter: quarter, Provider: r.Provider, Model: r.Model}
+			e = &LedgerEntry{Quarter: quarter, Provider: r.Provider, Model: model}
 			entries[k] = e
 		}
-		e.Totals = addTotals(e.Totals, r.Totals)
+		e.Totals = boundedSum(e.Totals, r.Totals)
 		e.Cost += cost
 		e.Savings += CacheSavings(table, r)
-		e.Records++
+		e.Records = count(e.Records + 1)
 		if source == CostUnpriced {
-			e.Unpriced++
+			e.Unpriced = count(e.Unpriced + 1)
 		}
 		if r.SessionID != "" {
 			sum := sha256.Sum256([]byte(r.Provider + "\x00" + r.SessionID))
@@ -274,16 +275,81 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 		}
 		return a.Model < b.Model
 	})
-	// Within the limits another computer takes: the newest usage stays.
-	if len(l.Entries) > maxLedgerEntries {
-		l.Entries = l.Entries[len(l.Entries)-maxLedgerEntries:]
-	}
-	if len(l.Sessions) > maxLedgerSessions {
-		sort.Slice(l.Sessions, func(i, j int) bool { return l.Sessions[i].Last > l.Sessions[j].Last })
-		l.Sessions = l.Sessions[:maxLedgerSessions]
-	}
 	sort.Slice(l.Sessions, func(i, j int) bool { return l.Sessions[i].ID < l.Sessions[j].ID })
+	l.bound()
 	return l
+}
+
+// ForSending is the ledger cut to what another computer takes, the newest
+// usage kept; this computer's own view keeps all of it. The ledger itself
+// is not changed.
+func (l *Ledger) ForSending() *Ledger {
+	out := *l
+	if len(out.Entries) > maxLedgerEntries {
+		out.Entries = out.Entries[len(out.Entries)-maxLedgerEntries:]
+	}
+	if len(out.Sessions) > maxLedgerSessions {
+		sessions := append([]SessionSpan(nil), out.Sessions...)
+		sort.Slice(sessions, func(i, j int) bool { return sessions[i].Last > sessions[j].Last })
+		out.Sessions = sessions[:maxLedgerSessions]
+	}
+	return &out
+}
+
+// boundedSum adds two entries' counts, each bounded as a ledger's may be.
+func boundedSum(a, b Totals) Totals {
+	return Totals{
+		UncachedInput: count(count(a.UncachedInput) + count(b.UncachedInput)),
+		CachedInput:   count(count(a.CachedInput) + count(b.CachedInput)),
+		CacheCreation: count(count(a.CacheCreation) + count(b.CacheCreation)),
+		Output:        count(count(a.Output) + count(b.Output)),
+		Reasoning:     count(count(a.Reasoning) + count(b.Reasoning)),
+	}
+}
+
+// bound keeps every count whole, not negative and within what a ledger may
+// hold in all: the entries that would take a total past it are left out,
+// so adding up every computer's ledgers cannot overflow.
+func (l *Ledger) bound() {
+	var sum [7]int64
+	entries := l.Entries[:0]
+	for _, e := range l.Entries {
+		e.Totals = Totals{UncachedInput: count(e.Totals.UncachedInput), CachedInput: count(e.Totals.CachedInput),
+			CacheCreation: count(e.Totals.CacheCreation), Output: count(e.Totals.Output), Reasoning: count(e.Totals.Reasoning)}
+		e.Cost, e.Savings = amount(e.Cost), amount(e.Savings)
+		e.Records, e.Unpriced = count(e.Records), count(e.Unpriced)
+		e.Unpriced = min(e.Unpriced, e.Records)
+		counts := [7]int64{e.Totals.UncachedInput, e.Totals.CachedInput, e.Totals.CacheCreation, e.Totals.Output, e.Totals.Reasoning, e.Records, e.Unpriced}
+		fits := true
+		for i, n := range counts {
+			fits = fits && sum[i]+n <= maxLedgerTotal
+		}
+		if !fits {
+			continue
+		}
+		for i, n := range counts {
+			sum[i] += n
+		}
+		entries = append(entries, e)
+	}
+	l.Entries = entries
+}
+
+// ledgerModel keeps a model name to characters JSON carries as they are,
+// and short: no '<', '>', '&', quotes or backslashes, which it writes as
+// several bytes each, and nothing that is not plain ASCII. Model names are
+// such already.
+func ledgerModel(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= maxLedgerName {
+			break
+		}
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ._:/@+()[]=,-", r) {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // DeviceLedger is one computer's ledger, as the computers that add them up
@@ -399,32 +465,16 @@ func (l *Ledger) Clean(now time.Time) bool {
 		return false
 	}
 	oldest, newest := unixQuarter(now.AddDate(0, 0, -LedgerDays-1)), unixQuarter(now.Add(24*time.Hour))
-	var sum [7]int64 // each count over the whole ledger
 	entries := l.Entries[:0]
 	for _, e := range l.Entries {
 		if len(entries) >= maxLedgerEntries || e.Quarter < oldest || e.Quarter > newest || !knownProviders[e.Provider] {
 			continue
 		}
-		e.Model = plainName(e.Model, maxLedgerName)
-		e.Totals = Totals{UncachedInput: count(e.Totals.UncachedInput), CachedInput: count(e.Totals.CachedInput),
-			CacheCreation: count(e.Totals.CacheCreation), Output: count(e.Totals.Output), Reasoning: count(e.Totals.Reasoning)}
-		e.Cost, e.Savings = amount(e.Cost), amount(e.Savings)
-		e.Records, e.Unpriced = count(e.Records), count(e.Unpriced)
-		e.Unpriced = min(e.Unpriced, e.Records)
-		counts := [7]int64{e.Totals.UncachedInput, e.Totals.CachedInput, e.Totals.CacheCreation, e.Totals.Output, e.Totals.Reasoning, e.Records, e.Unpriced}
-		fits := true
-		for i, n := range counts {
-			fits = fits && sum[i]+n <= maxLedgerTotal
-		}
-		if !fits {
-			continue
-		}
-		for i, n := range counts {
-			sum[i] += n
-		}
+		e.Model = ledgerModel(e.Model)
 		entries = append(entries, e)
 	}
 	l.Entries = entries
+	l.bound()
 	sessions := l.Sessions[:0]
 	for _, s := range l.Sessions {
 		if len(sessions) >= maxLedgerSessions || s.Last < oldest || s.First > newest || s.First > s.Last || !knownProviders[s.Provider] {

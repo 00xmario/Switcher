@@ -3,11 +3,16 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,17 +45,61 @@ const (
 	// usageUploadLimit bounds a ledger a paired computer sends; the largest
 	// a ledger may be is well within it.
 	usageUploadLimit = 16 << 20
-	// usageAnswerLimit bounds the ledgers a host gives at once: a client
-	// takes up to remote's usageLimit.
-	usageAnswerLimit = 48 << 20
 )
 
-// usageUploads bounds how many ledgers from paired computers are read at
-// once.
+// usageAnswerLimit bounds the ledgers a host gives at once: a client takes
+// up to remote's usageLimit.
+var usageAnswerLimit = 48 << 20
+
+// usageUploads bounds how many ledgers from paired computers are decoded at
+// once; each is read in full first, so a slow sender holds no slot.
 var usageUploads = make(chan struct{}, 2)
 
 // usageTick is how often the sharing loop looks whether an exchange is due.
 var usageTick = 30 * time.Second
+
+const (
+	// usageUploadEvery is how soon a pairing may send its usage again: it
+	// sends every few minutes, and at most once a minute when asked.
+	usageUploadEvery = 50 * time.Second
+	// usageIOWait bounds reading an upload and writing an answer.
+	usageIOWait = 30 * time.Second
+)
+
+// usageUploaders remembers, per pairing, whether it is sending and when it
+// last began to.
+type usageUploaders struct {
+	mu    sync.Mutex
+	state map[string]usageUploader
+}
+
+type usageUploader struct {
+	busy bool
+	last time.Time
+}
+
+// begin lets a pairing send, one upload at a time and not too often.
+func (u *usageUploaders) begin(device string, now time.Time) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.state == nil {
+		u.state = map[string]usageUploader{}
+	}
+	s := u.state[device]
+	if s.busy || now.Sub(s.last) < usageUploadEvery {
+		return false
+	}
+	u.state[device] = usageUploader{busy: true, last: now}
+	return true
+}
+
+func (u *usageUploaders) end(device string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	s := u.state[device]
+	s.busy = false
+	u.state[device] = s
+}
 
 // handleUsageDevice keeps the ledger a paired computer sends: its own only.
 func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
@@ -60,25 +109,36 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	select {
-	case usageUploads <- struct{}{}:
-		defer func() { <-usageUploads }()
-	default:
-		w.Header().Set("Retry-After", "5")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "the host is reading other computers' usage; try again in a moment"})
+	if !a.usageUploaders.begin(device, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "this computer sent its usage a moment ago; it sends it again shortly"})
 		return
 	}
-	var body struct {
-		Install string        `json:"install"`
-		Ledger  *usage.Ledger `json:"ledger"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, usageUploadLimit)).Decode(&body); err != nil || !remote.ValidInstallID(body.Install) || body.Ledger == nil {
+	defer a.usageUploaders.end(device)
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(usageIOWait))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, usageUploadLimit))
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid usage ledger"})
 		return
 	}
-	err := a.UsageDevices.Put(usage.DeviceKey(body.Install), device, name, body.Ledger, a.RemoteHost.Paired, time.Now())
+	select {
+	case usageUploads <- struct{}{}:
+		defer func() { <-usageUploads }()
+	case <-r.Context().Done():
+		return
+	}
+	var body struct {
+		ID     string        `json:"id"`
+		Ledger *usage.Ledger `json:"ledger"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || !remote.ValidInstallID(body.ID) || body.Ledger == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid usage ledger"})
+		return
+	}
+	raw = nil
+	err = a.UsageDevices.Put(usage.DeviceKey(body.ID), device, name, body.Ledger, a.RemoteHost.Paired, time.Now())
 	switch {
-	case errors.Is(err, usage.ErrStoreFull):
+	case errors.Is(err, usage.ErrStoreFull) || errors.Is(err, usage.ErrLedgerTooLarge):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case err != nil:
 		log.Printf("usage: keeping a paired computer's usage: %v", err)
@@ -92,54 +152,98 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 // keeps and gives the usage of the computers paired with it.
 func (a *API) hostingUsage() bool { return a.RemoteHost != nil && a.RemoteHost.Enabled() }
 
+// usageAnswer is the last answer to GET /api/tokens/ledgers, kept while
+// nothing in it changed: every paired computer asking is given the same
+// bytes, made once.
+type usageAnswer struct {
+	mu   sync.Mutex
+	sig  string
+	body []byte
+}
+
 // handleUsageLedgers gives a paired computer every computer's ledger: this
-// host's own and the ones paired computers sent, the most recent first, as
-// many as fit one answer.
+// host's own first, then the ones paired computers sent, the smallest
+// first, as many as fit one answer.
 func (a *API) handleUsageLedgers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := remote.PairedDeviceID(r); !ok || a.UsageDevices == nil || a.Usage == nil || !a.hostingUsage() {
 		http.NotFound(w, r)
 		return
 	}
+	body := a.usageLedgersAnswer()
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(usageIOWait))
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(body)
+}
+
+func (a *API) usageLedgersAnswer() []byte {
 	devices := a.UsageDevices.Ledgers(a.RemoteHost.Paired)
-	sort.SliceStable(devices, func(i, j int) bool { return devices[i].UpdatedMs > devices[j].UpdatedMs })
-	if own, at := a.Usage.OwnLedger(); own != nil {
-		key, name, _ := a.UsageIdentity()
-		devices = append([]usage.DeviceLedger{{Key: key, Name: name, Host: true, UpdatedMs: at.UnixMilli(), Ledger: own}}, devices...)
-	} else {
+	own, at := a.Usage.OwnLedger()
+	if own == nil {
 		go a.Usage.Rescan()
+	}
+	key, name, _ := a.UsageIdentity()
+	var sig strings.Builder
+	fmt.Fprintf(&sig, "%p|%d|%s|%s", own, at.UnixNano(), key, name)
+	for _, d := range devices {
+		fmt.Fprintf(&sig, "|%s:%d:%s", d.Key, d.UpdatedMs, d.Name)
+	}
+	a.usageAnswer.mu.Lock()
+	defer a.usageAnswer.mu.Unlock()
+	if a.usageAnswer.body != nil && a.usageAnswer.sig == sig.String() {
+		return a.usageAnswer.body
+	}
+	type encoded struct{ raw []byte }
+	var parts []encoded
+	for _, d := range devices {
+		if raw, err := json.Marshal(d); err == nil {
+			parts = append(parts, encoded{raw})
+		}
+	}
+	// A large ledger is the one left out, not the ones it would crowd out.
+	sort.SliceStable(parts, func(i, j int) bool { return len(parts[i].raw) < len(parts[j].raw) })
+	if own != nil {
+		if raw, err := json.Marshal(usage.DeviceLedger{Key: key, Name: name, Host: true, UpdatedMs: at.UnixMilli(), Ledger: own.ForSending()}); err == nil {
+			parts = append([]encoded{{raw}}, parts...)
+		}
 	}
 	var out bytes.Buffer
 	out.WriteString(`{"devices":[`)
 	written := 0
-	for _, d := range devices {
-		raw, err := json.Marshal(d)
-		if err != nil || out.Len()+len(raw)+3 > usageAnswerLimit {
+	for _, p := range parts {
+		if out.Len()+len(p.raw)+3 > usageAnswerLimit {
 			continue
 		}
 		if written > 0 {
 			out.WriteByte(',')
 		}
-		out.Write(raw)
+		out.Write(p.raw)
 		written++
 	}
 	out.WriteString("]}\n")
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write(out.Bytes())
+	a.usageAnswer.sig, a.usageAnswer.body = sig.String(), out.Bytes()
+	return a.usageAnswer.body
 }
+
+// thisUsageKey stands in for this computer's key when it has no usage id.
+var thisUsageKey = sync.OnceValue(func() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+})
 
 // UsageIdentity is this computer among the ones whose usage is added up.
 func (a *API) UsageIdentity() (key, name string, host bool) {
-	key, name = "this", "This computer"
+	key, name = thisUsageKey(), "This computer"
 	if a.RemoteClient != nil {
-		if install, err := a.RemoteClient.InstallID(); err == nil {
-			key = usage.DeviceKey(install)
+		if id, err := a.RemoteClient.UsageID(); err == nil {
+			key = usage.DeviceKey(id)
 		}
 	}
 	if a.MachineName != "" {
 		name = a.MachineName
 	}
-	return key, name, a.RemoteHost != nil && a.RemoteHost.Enabled()
+	return key, name, a.hostingUsage()
 }
 
 // UsageLedgers are the other computers' ledgers to add to this one's: those

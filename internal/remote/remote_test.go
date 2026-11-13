@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"switcher/internal/usage"
 )
 
 // hostMux stands in for the host's server: it echoes what reached it.
@@ -728,5 +731,49 @@ func TestAFullFailureRecordDropsNoCount(t *testing.T) {
 	h.mu.Unlock()
 	if known.count != sourceFailures || others.count != sourceFailures {
 		t.Fatalf("a known source's count %d, the new sources' %d", known.count, others.count)
+	}
+}
+
+// A ledger too large to send is cut until it fits, and gives up once
+// nothing is left: it never loops.
+func TestUsageBodyAlwaysEnds(t *testing.T) {
+	one := &usage.Ledger{Entries: []usage.LedgerEntry{{Quarter: 1, Provider: "claude", Model: strings.Repeat("m", usageSendLimit+1)}}}
+	done := make(chan error, 1)
+	var body []byte
+	go func() {
+		var err error
+		body, err = usageBody(strings.Repeat("a", 32), one)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil || len(body) > usageSendLimit || strings.Contains(string(body), "mmmm") {
+			t.Fatalf("a ledger too large: %v, %d bytes", err, len(body))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cutting a ledger to size never ended")
+	}
+}
+
+// The usage id is this install's, differs from host to host, and is not
+// the install id the host may learn.
+func TestUsageIDIsPerHostAndSecret(t *testing.T) {
+	c := NewClient(t.TempDir(), "")
+	a, err := c.usageIDFor("host-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := c.usageIDFor("host-a")
+	b, _ := c.usageIDFor("host-b")
+	install, _ := c.InstallID()
+	if a != again || a == b || a == install || !ValidInstallID(a) {
+		t.Fatalf("ids: %s %s %s (install %s)", a, again, b, install)
+	}
+	if other, _ := NewClient(t.TempDir(), "").usageIDFor("host-a"); other == a {
+		t.Fatal("two installs share an id")
+	}
+	info, err := os.Stat(filepath.Join(c.Dir(), "usage-secret.json"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the secret's file: %v %v", info, err)
 	}
 }

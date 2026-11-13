@@ -56,13 +56,15 @@ type API struct {
 	CallbackReady func(signInURL string) error
 	// UsageDevices keeps, on a host, the usage its paired computers send;
 	// MachineName names this computer in the combined usage.
-	UsageDevices *usage.DeviceStore
-	MachineName  string
-	usageShare   usageShare
-	Store        *store.Store
-	Logins       *login.Manager
-	Proxy        *proxy.Manager
-	DesktopRelay *desktoprelay.Manager
+	UsageDevices   *usage.DeviceStore
+	MachineName    string
+	usageShare     usageShare
+	usageAnswer    usageAnswer
+	usageUploaders usageUploaders
+	Store          *store.Store
+	Logins         *login.Manager
+	Proxy          *proxy.Manager
+	DesktopRelay   *desktoprelay.Manager
 	// DesktopSessionMetadata is the same explicit, lazy index supplied to the
 	// relay's trusted conversation resolver. GET only decorates response copies.
 	// Nil disables display lookup; the manager may still verify saved associations

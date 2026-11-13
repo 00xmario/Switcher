@@ -142,17 +142,15 @@ func TestUsageIsCombinedAcrossHostAndClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	install, err := miniAPI.RemoteClient.InstallID()
+	// The same Switcher: its secret carries over.
+	secret, err := os.ReadFile(filepath.Join(miniAPI.RemoteClient.Dir(), "usage-secret.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	againAPI, _ := usageComputer(t, "Mini", 3)
 	againAPI.RemoteClient = remote.NewClient(t.TempDir(), "")
-	if err := os.WriteFile(filepath.Join(againAPI.RemoteClient.Dir(), "install.json"), []byte(mustJSON(t, map[string]string{"id": install})), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(againAPI.RemoteClient.Dir(), "usage-secret.json"), secret, 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if id, _ := againAPI.RemoteClient.InstallID(); id != install {
-		t.Fatalf("the install id did not carry over: %q", id)
 	}
 	if _, err := againAPI.RemoteClient.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Mini"); err != nil {
 		t.Fatal(err)
@@ -313,5 +311,97 @@ func TestPairingAgainExchangesAtOnce(t *testing.T) {
 	}
 	if !counts(120) {
 		t.Fatalf("pairing again did not exchange at once: %d tokens", hostUsage.Get(30).TotalTokens)
+	}
+}
+
+// A pairing sends its usage one upload at a time, and not again within the
+// minute.
+func TestUsageUploadsArePerPairing(t *testing.T) {
+	var u usageUploaders
+	now := time.Now()
+	if !u.begin("a", now) || u.begin("a", now) {
+		t.Fatal("one pairing sent twice at once")
+	}
+	if !u.begin("b", now) {
+		t.Fatal("one pairing's upload held another's up")
+	}
+	u.end("a")
+	if u.begin("a", now.Add(10*time.Second)) {
+		t.Fatal("a pairing sent again at once")
+	}
+	if !u.begin("a", now.Add(usageUploadEvery)) {
+		t.Fatal("a pairing could not send again after the wait")
+	}
+}
+
+// The host's answer is made once while nothing in it changes, and a large
+// ledger is the one left out when not every one fits.
+func TestTheUsageAnswerIsSharedAndFair(t *testing.T) {
+	hostAPI, _ := usageComputer(t, "k12", 100)
+	hostAPI.UsageDevices = usage.OpenDeviceStore(filepath.Join(t.TempDir(), "usage-devices"))
+	mux := http.NewServeMux()
+	hostAPI.Register(mux)
+	host, err := remote.NewHost(t.TempDir(), 0, mux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	hostAPI.RemoteHost = host
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Small", "Big"} {
+		code, err := host.NewPairingCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := remote.NewClient(t.TempDir(), "").Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	ledger := func(entries int) *usage.Ledger {
+		l := &usage.Ledger{}
+		for i := 0; i < entries; i++ {
+			l.Entries = append(l.Entries, usage.LedgerEntry{Quarter: now.Unix()/900 - int64(i), Provider: "claude", Model: "fixture-model", Records: 1})
+		}
+		return l
+	}
+	smallKey, bigKey := usage.DeviceKey(strings.Repeat("1", 32)), usage.DeviceKey(strings.Repeat("2", 32))
+	// The big one sent last: the most recent, and still left out.
+	if err := hostAPI.UsageDevices.Put(smallKey, deviceNamed(t, host, "Small"), "Small", ledger(5), host.Paired, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostAPI.UsageDevices.Put(bigKey, deviceNamed(t, host, "Big"), "Big", ledger(5000), host.Paired, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	was := usageAnswerLimit
+	usageAnswerLimit = 64 << 10
+	t.Cleanup(func() { usageAnswerLimit = was })
+	first := hostAPI.usageLedgersAnswer()
+	second := hostAPI.usageLedgersAnswer()
+	if &first[0] != &second[0] {
+		t.Fatal("the same answer was made twice")
+	}
+	var answer struct {
+		Devices usage.DeviceLedgers `json:"devices"`
+	}
+	if err := json.Unmarshal(first, &answer); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, d := range answer.Devices {
+		keys = append(keys, d.Key)
+	}
+	if len(keys) != 2 || !answer.Devices[0].Host || keys[1] != smallKey {
+		t.Fatalf("the answer holds %v", keys)
+	}
+	// A change makes a new one.
+	if err := hostAPI.UsageDevices.Put(smallKey, deviceNamed(t, host, "Small"), "Small", ledger(6), host.Paired, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if third := hostAPI.usageLedgersAnswer(); &third[0] == &first[0] {
+		t.Fatal("a changed answer was not made again")
 	}
 }

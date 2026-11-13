@@ -368,3 +368,76 @@ func TestServiceAddsOthersToItsOwn(t *testing.T) {
 		t.Fatalf("summary: tokens %d devices %+v", got.TotalTokens, got.Devices)
 	}
 }
+
+// Model names keep to what JSON carries byte for byte, so a ledger is no
+// larger written out than read in; a ledger that is anyway larger than a
+// host keeps is refused; and an unchanged one is not written again at once.
+func TestModelNamesAndStoredSizesAreBounded(t *testing.T) {
+	for in, want := range map[string]string{
+		"claude-opus-4-1":        "claude-opus-4-1",
+		"gpt-5.1-codex-max":      "gpt-5.1-codex-max",
+		"<synthetic>":            "synthetic",
+		`a"b\c&d<e>f` + " ":      "abcdef",
+		strings.Repeat("<", 500): "",
+		strings.Repeat("m", 500): strings.Repeat("m", maxLedgerName),
+	} {
+		if got := ledgerModel(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+	now := time.Now()
+	big := &Ledger{}
+	for i := 0; i < 1000; i++ {
+		big.Entries = append(big.Entries, LedgerEntry{Quarter: unixQuarter(now) - int64(i), Provider: "claude", Model: strings.Repeat("m", 120), Records: 1})
+	}
+	was := keptLedgerLimit
+	keptLedgerLimit = 64 << 10
+	defer func() { keptLedgerLimit = was }()
+	dir := t.TempDir()
+	store := OpenDeviceStore(dir)
+	paired := func(string) bool { return true }
+	if err := store.Put(DeviceKey("big"), "dev", "x", big, paired, now); err != ErrLedgerTooLarge {
+		t.Fatalf("a ledger larger than a host keeps: %v", err)
+	}
+	small := func() *Ledger { return &Ledger{Entries: []LedgerEntry{entryAt(now, "claude", "m", 5, 1)}} }
+	if err := store.Put(DeviceKey("small"), "dev", "x", small(), paired, now); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, DeviceKey("small")+".json")
+	before, _ := os.Stat(file)
+	if err := store.Put(DeviceKey("small"), "dev", "x", small(), paired, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(file)
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("an unchanged ledger was written again at once")
+	}
+	if got := store.Ledgers(paired); len(got) != 1 || got[0].UpdatedMs != now.Add(time.Minute).UnixMilli() {
+		t.Fatalf("the time it was sent: %+v", got)
+	}
+}
+
+// This computer's own view keeps all of its usage; only what is sent is cut
+// to what another computer takes. Its totals are bounded as anyone's.
+func TestOwnLedgerIsKeptWholeAndBounded(t *testing.T) {
+	now := time.Now()
+	l := &Ledger{}
+	for i := 0; i < maxLedgerEntries+10; i++ {
+		l.Entries = append(l.Entries, LedgerEntry{Quarter: unixQuarter(now) - int64(maxLedgerEntries+10-i), Provider: "claude", Model: "m", Records: 1})
+	}
+	sent := l.ForSending()
+	if len(l.Entries) != maxLedgerEntries+10 || len(sent.Entries) != maxLedgerEntries || sent.Entries[len(sent.Entries)-1] != l.Entries[len(l.Entries)-1] {
+		t.Fatalf("kept %d, sent %d", len(l.Entries), len(sent.Entries))
+	}
+	huge := &Ledger{Entries: []LedgerEntry{
+		{Quarter: 1, Provider: "claude", Totals: Totals{Output: 1 << 62}, Records: 1 << 62},
+		{Quarter: 2, Provider: "claude", Totals: Totals{Output: 1 << 62}, Records: 1 << 62},
+	}}
+	huge.bound()
+	if len(huge.Entries) != 1 || huge.Entries[0].Totals.Output != maxLedgerTotal {
+		t.Fatalf("bounded: %+v", huge.Entries)
+	}
+	if got := boundedSum(Totals{Output: maxLedgerTotal}, Totals{Output: maxLedgerTotal}); got.Output != maxLedgerTotal {
+		t.Fatalf("a sum past the bound: %d", got.Output)
+	}
+}
