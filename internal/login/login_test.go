@@ -347,3 +347,37 @@ func TestNoSuccessWithoutASavedAccount(t *testing.T) {
 		t.Fatal("a sign-in that ended said the account was added")
 	}
 }
+
+type otherPKCEProvider struct{ *pkceProvider }
+
+func (*otherPKCEProvider) ID() string { return "other" }
+
+// Starting a sign-in replaces only the same provider's waiting one: another
+// provider's goes on, by its state or by an unnamed callback coming back
+// where that provider's do, and such a callback never finishes another
+// provider's sign-in.
+func TestASignInLeavesAnotherProvidersAlone(t *testing.T) {
+	m := New(func(*store.Account, string) error { return nil })
+	first, err := m.Start(context.Background(), &pkceProvider{state: "fake-state", real: "fake-code"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Start(context.Background(), &otherPKCEProvider{&pkceProvider{state: "other-state", real: "other-code"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err, finished := m.Outcome(first.State, 0); finished {
+		t.Fatalf("another provider's sign-in ended the first: %v", err)
+	}
+	// With two under way, a callback that names none finishes the one of
+	// the provider whose callbacks come back there, and only that one.
+	if _, err := m.CompleteUnnamedFor(context.Background(), "other", "fake-code"); err == nil {
+		t.Fatal("a code for one provider finished another's sign-in")
+	}
+	if state, err := m.CompleteUnnamedFor(context.Background(), "other", "other-code"); err != nil || state != second.State {
+		t.Fatalf("the other provider's sign-in: %q %v", state, err)
+	}
+	if err := m.Complete(context.Background(), first.State, "fake-code"); err != nil {
+		t.Fatalf("the first sign-in, by its state: %v", err)
+	}
+}

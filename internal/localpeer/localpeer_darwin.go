@@ -15,6 +15,13 @@ const checksAtOnce = 8
 
 // readPCBs reads the list of TCP sockets.
 func readPCBs() ([]pcb, bool) {
+	pcbs, err := readPCBsFor()
+	return pcbs, err == nil
+}
+
+// readPCBsFor is readPCBs, saying why there is no list: one that kept
+// growing while it was read, or a system without it or with another layout.
+func readPCBsFor() ([]pcb, error) {
 	var raw []byte
 	var err error
 	// The list can grow between asking for its size and reading it.
@@ -23,10 +30,29 @@ func readPCBs() ([]pcb, bool) {
 			break
 		}
 	}
-	if err != nil {
-		return nil, false
+	switch {
+	case err == unix.ENOMEM:
+		return nil, errTransient
+	case err != nil:
+		return nil, errUnsupported
 	}
-	return parsePCBs(raw)
+	pcbs, ok := parsePCBs(raw)
+	if !ok {
+		return nil, errUnsupported
+	}
+	return pcbs, nil
+}
+
+// queryFailure says why a lookup fails: see selfTest.
+func queryFailure(local, remote *net.TCPAddr) error {
+	pcbs, err := readPCBsFor()
+	if err != nil {
+		return err
+	}
+	if _, ok := matchPCB(pcbs, local, remote); !ok {
+		return errNotFound
+	}
+	return nil
 }
 
 // A read of the list answers every lookup that asks for one no older than

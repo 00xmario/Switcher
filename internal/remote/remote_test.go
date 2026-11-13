@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -668,5 +669,64 @@ func TestADevicesRunningRequestsHoldBoundedMemory(t *testing.T) {
 	host.heldMu.Unlock()
 	if left != 0 {
 		t.Fatalf("bytes read after the end are held for good: %v", left)
+	}
+}
+
+// Failed pairings are counted per address, per IPv6 /64 (link-local ones
+// whatever interface they name), and not from loopback, where the Tailscale
+// add-on's connections arrive.
+func TestFailedPairingsAreCountedPerNetwork(t *testing.T) {
+	for addr, want := range map[string]string{
+		"192.168.1.20:5000":           "192.168.1.20",
+		"[::ffff:192.168.1.20]:5000":  "192.168.1.20",
+		"[2001:db8:1:2::a]:5000":      "2001:db8:1:2::/64",
+		"[2001:db8:1:2:ffff::b]:5000": "2001:db8:1:2::/64",
+		"[fe80::a%eth0]:5000":         "fe80::/64",
+		"[fe80::b%en1]:5000":          "fe80::/64",
+		"127.0.0.1:5000":              "",
+		"[::1]:5000":                  "",
+	} {
+		if got := failureSource(addr); got != want {
+			t.Errorf("%s counts as %q, want %q", addr, got, want)
+		}
+	}
+}
+
+// With the record of failures full of sources still counting, new sources
+// share one count: none is dropped to make room.
+func TestAFullFailureRecordDropsNoCount(t *testing.T) {
+	h, err := NewHost(t.TempDir(), 0, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Quiet = true
+	t.Cleanup(h.Close)
+	if err := h.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.NewPairingCode(); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	h.failures = map[string]failure{}
+	for i := 0; i < maxFailureSources; i++ {
+		h.failures[fmt.Sprintf("10.%d.%d.1", i/256, i%256)] = failure{count: sourceFailures, since: time.Now()}
+	}
+	h.mu.Unlock()
+	try := func(remote string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/remote/pair", strings.NewReader(`{"nonce":"`+strings.Repeat("a", 32)+`","proof":"wrong","name":"x"}`))
+		r.RemoteAddr = remote
+		h.pair(w, r)
+		return w.Code
+	}
+	for i := 0; i < sourceFailures; i++ {
+		try(fmt.Sprintf("192.168.%d.%d:5000", i/250, i%250+1))
+	}
+	h.mu.Lock()
+	known, others := h.failures["10.0.0.1"], h.failures["others"]
+	h.mu.Unlock()
+	if known.count != sourceFailures || others.count != sourceFailures {
+		t.Fatalf("a known source's count %d, the new sources' %d", known.count, others.count)
 	}
 }

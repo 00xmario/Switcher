@@ -435,11 +435,15 @@ environment; a terminal-only override needs the CLI command. The first
   service that runs as root and forwards connections for others would let
   them in), on the main port, the Desktop relay's and the sign-in
   callbacks'; the command line and the tray in turn send nothing to a port
-  another account holds. `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a
+  another account holds, or whose owner cannot be told.
+  `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`) lifts this, for a
   container that shares the computer's network under its own user; `=root`
-  lets only root's programs in as well. Where the system's answer cannot be
-  read as expected, the check stands aside rather than refuse you, and
-  tries again a minute later.
+  lets only root's programs in as well; any other value leaves it on. A
+  connection Switcher makes to itself checks the system's answers: only a
+  system that takes no questions about sockets, or answers wrongly about
+  Switcher's own, turns the check off (it is tested again every minute). A
+  test that could not be made, as when another account has taken every free
+  port, leaves the check on and is made again a few seconds later.
 - **Web pages cannot reach it.** Requests must name this computer as their
   host, so another site's name pointed at `127.0.0.1` is refused, and a
   request another site started is refused whatever it asks for. The
@@ -454,10 +458,12 @@ environment; a terminal-only override needs the CLI command. The first
   SameSite=Strict cookies, CSRF-protected mutations, and login lockout,
   counted apart for this computer and for the network, so guesses from
   the network never lock you out at the computer itself). A local device
-  token lets the menu bar app authenticate without a browser; the app never
-  sends it, but signs each request with it (method, path, body, time and a
-  one-time nonce), so a program of another account that took the port while
-  Switcher was not running learns nothing it could use. When enabled, unauthenticated browsers receive only a
+  token lets the menu bar app, the command line and the tray authenticate
+  without a browser. They never send it, but sign each request with it
+  (method, path, body, time and a one-time nonce), so a program of another
+  account that took the port while Switcher was not running learns nothing
+  it could use. It counts on the local port only, never on the LAN
+  listener. When enabled, unauthenticated browsers receive only a
   standalone login page; the Accounts page, its assets, and dashboard APIs
   require a valid session. Logout and expired sessions return to that page.
   Password rotation invalidates prior credential-generation sessions. Sessions
@@ -528,9 +534,11 @@ environment; a terminal-only override needs the CLI command. The first
   `install.sh` install nothing whose list is not signed by that key (or by
   a second one kept offline in case the first is lost), so whoever can
   change a release on GitHub, with a stolen token say, still cannot get a
-  build installed. Downloads go over HTTPS, follow redirects only to
-  GitHub's own hosts, and are installed only when newer than what runs
-  (`install.sh` too, unless `SWITCHER_TAG` names an older release). The
+  build installed. The updater downloads over HTTPS, follows redirects only
+  to GitHub's own hosts, and installs only a release newer than what runs.
+  `install.sh` downloads over HTTPS only, redirects included, bounds every
+  download, and does not replace a newer installed version with an older
+  release unless `SWITCHER_TAG` asks for one. The
   release pipeline builds only from commits on main, after the Linux and
   macOS checks pass, with its actions pinned to commits; it attests where
   each file was built and leaves the release a draft, unseen by updaters.

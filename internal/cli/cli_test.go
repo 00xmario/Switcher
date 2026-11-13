@@ -14,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"switcher/internal/deviceproof"
 )
 
 // fakeSwitcher answers the API calls the command line makes.
@@ -488,17 +491,24 @@ func TestCodexRouteTestReportsItsOutcome(t *testing.T) {
 	}
 }
 
+// The device token is never sent: requests to this computer carry a proof
+// made with it, and requests elsewhere carry neither.
 func TestDeviceTokenStaysOnThisMac(t *testing.T) {
-	var got string
+	var got, bearer string
+	var body []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("Authorization")
+		got, bearer = r.Header.Get(deviceproof.Header), r.Header.Get("Authorization")
+		body, _ = io.ReadAll(r.Body)
+		if _, _, ok := deviceproof.Check(got, "secret", r.Method, deviceproof.Target(r.URL.Path, r.URL.RawQuery), body, time.Now()); got != "" && !ok {
+			got = "invalid: " + got
+		}
 		io.WriteString(w, `{}`)
 	}))
 	defer srv.Close()
 	token := func() string { return "secret" }
-	newClient(srv.URL, token).call(http.MethodGet, "/api/state", nil, nil)
-	if got != "Bearer secret" {
-		t.Fatalf("loopback: %q", got)
+	newClient(srv.URL, token).call(http.MethodPost, "/api/accounts/x/activate?native=1", map[string]bool{"native": true}, nil)
+	if strings.HasPrefix(got, "invalid") || got == "" || bearer != "" || string(body) != `{"native":true}` {
+		t.Fatalf("loopback: proof %q, Authorization %q, body %s", got, bearer, body)
 	}
 	got = ""
 	other := strings.Replace(srv.URL, "127.0.0.1", "localhost.example", 1)
@@ -507,8 +517,8 @@ func TestDeviceTokenStaysOnThisMac(t *testing.T) {
 		return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(srv.URL, "http://"))
 	}}
 	cl.call(http.MethodGet, "/api/state", nil, nil)
-	if got != "" {
-		t.Fatalf("token sent to another host: %q", got)
+	if got != "" || bearer != "" {
+		t.Fatalf("token sent to another host: proof %q, Authorization %q", got, bearer)
 	}
 }
 

@@ -528,7 +528,7 @@ func run(port, desktopRelayPort int) {
 	// flow, so every path is served on every listener.
 	callbackMux := http.NewServeMux()
 	for _, path := range []string{"/auth/callback", "/callback", "/oauth-callback", "/oauth2callback"} {
-		callbackMux.HandleFunc("GET "+path, callbackHandler(logins))
+		callbackMux.HandleFunc("GET "+path, callbackHandler(logins, unnamedCallbacks[path]))
 	}
 	callbacks := &callbackListeners{handler: callbackMux, held: map[string]bool{}}
 	for _, port := range callbackPorts {
@@ -876,9 +876,15 @@ func callbackGuard(next http.Handler) http.Handler {
 	})
 }
 
+// unnamedCallbacks are the providers whose browser comes back without
+// naming its sign-in, by the path it comes back to: a callback there
+// finishes that provider's sign-in, never another's.
+var unnamedCallbacks = map[string]string{"/auth/callback": "codex", "/callback": "claude"}
+
 // callbackHandler completes the OAuth flow and answers the browser with a
-// tiny result page.
-func callbackHandler(logins *login.Manager) http.HandlerFunc {
+// tiny result page. provider is the one whose unnamed callbacks come back
+// here, if any.
+func callbackHandler(logins *login.Manager, provider string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
@@ -890,7 +896,7 @@ func callbackHandler(logins *login.Manager) http.HandlerFunc {
 		// it fails this page alone, and the sign-in waits for the real one.
 		var err error
 		if state == "" {
-			state, err = logins.CompleteUnnamed(r.Context(), code)
+			state, err = logins.CompleteUnnamedFor(r.Context(), provider, code)
 		} else {
 			err = logins.Complete(r.Context(), state, code)
 		}

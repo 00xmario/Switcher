@@ -846,7 +846,7 @@ func (a *API) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		authenticated = true
 		cookieAuthenticated = true
 	}
-	if token, err := a.Settings.ReadDeviceToken(); err == nil && deviceAuthorized(r, token) {
+	if token, err := a.Settings.ReadDeviceToken(); err == nil && isLoopbackRequest(r) && deviceAuthorized(r, token) {
 		authenticated = true
 	}
 	if !isLoopbackRequest(r) || (a.Settings.Enabled() && !authenticated) {
@@ -1045,7 +1045,7 @@ func (a *API) handleRotateDeviceToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !authorized {
-		if token, err := a.Settings.ReadDeviceToken(); err == nil && deviceAuthorized(r, token) {
+		if token, err := a.Settings.ReadDeviceToken(); err == nil && isLoopbackRequest(r) && deviceAuthorized(r, token) {
 			authorized = true
 		}
 	}

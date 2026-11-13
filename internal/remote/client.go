@@ -1123,11 +1123,11 @@ func (c *Client) localManagementKey(r *http.Request) bool {
 }
 
 // ownCredentials are this Mac's, never the host's to see: the device token
-// (which also unlocks this Mac's LAN listener), the management key, the
+// and its proofs, the management key, the
 // browser session and the CLIs' own logins. The host answers with its own
 // accounts and never reads them.
 var ownCredentials = []string{"Authorization", "X-Api-Key", "Api-Key", "X-Goog-Api-Key", "ChatGPT-Account-Id",
-	"X-Management-Key", "Cookie", "X-Switcher-CSRF"}
+	"X-Management-Key", "Cookie", "X-Switcher-CSRF", "X-Switcher-Proof"}
 
 func (c *Client) proxy(w http.ResponseWriter, r *http.Request) {
 	rp := &httputil.ReverseProxy{

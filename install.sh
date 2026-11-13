@@ -43,7 +43,10 @@ max_download=268435456
 signing_tools() {
 	command -v ssh-keygen >/dev/null 2>&1 ||
 		fail "Checking the release's signature needs ssh-keygen (OpenSSH 8.1 or newer); install it and run this again."
-	if ssh-keygen -Y verify </dev/null 2>&1 | grep -q 'option -- .\{0,1\}Y'; then
+	# An ssh-keygen without -Y says the option is unknown, in its C library's
+	# words: "unknown option -- Y", "illegal option -- Y", "invalid option --
+	# 'Y'", "unrecognized option: Y".
+	if ssh-keygen -Y verify </dev/null 2>&1 | grep -Eq "option[^A-Za-z]*'?Y'?([^A-Za-z]|\$)"; then
 		fail "Checking the release's signature needs OpenSSH 8.1 or newer; this ssh-keygen is older. Update it and run this again."
 	fi
 }

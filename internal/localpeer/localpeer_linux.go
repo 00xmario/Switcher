@@ -2,6 +2,7 @@ package localpeer
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync"
 	"syscall"
@@ -56,14 +57,32 @@ const checksAtOnce = 32
 
 // kernelLookup asks the kernel at once; since is always satisfied.
 func kernelLookup(local, remote *net.TCPAddr, _ time.Time) (socket, bool) {
+	found, err := kernelQuery(local, remote)
+	return found, err == nil
+}
+
+// queryFailure says why a lookup fails: see selfTest.
+func queryFailure(local, remote *net.TCPAddr) error {
+	_, err := kernelQuery(local, remote)
+	return err
+}
+
+// kernelQuery is kernelLookup, saying why there is no answer: no such
+// socket, a kernel that takes no such questions, or one that did not answer
+// this time.
+func kernelQuery(local, remote *net.TCPAddr) (socket, error) {
 	family, src, ok1 := diagAddr(local.IP)
 	family2, dst, ok2 := diagAddr(remote.IP)
 	if !ok1 || !ok2 || family != family2 || local.Port < 0 || local.Port > 65535 || remote.Port < 0 || remote.Port > 65535 {
-		return socket{}, false
+		return socket{}, errNotFound
 	}
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
-		return socket{}, false
+		if errors.Is(err, unix.EPROTONOSUPPORT) || errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EINVAL) ||
+			errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+			return socket{}, errUnsupported
+		}
+		return socket{}, errTransient
 	}
 	defer unix.Close(fd)
 	// A kernel that does not answer must not hold a connection up.
@@ -93,33 +112,39 @@ func kernelLookup(local, remote *net.TCPAddr, _ time.Time) (socket, bool) {
 		body[i] = 0xff
 	}
 	if err := unix.Sendto(fd, request, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return socket{}, false
+		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+			return socket{}, errUnsupported
+		}
+		return socket{}, errTransient
 	}
 	answer := make([]byte, 4096)
 	n, from, err := unix.Recvfrom(fd, answer, 0)
-	if err != nil || n < unix.NLMSG_HDRLEN+diagAnswerSize {
-		return socket{}, false
+	if err != nil {
+		return socket{}, errTransient
 	}
 	// Only the kernel's word counts: any program may send to a netlink socket.
 	if kernel, ok := from.(*unix.SockaddrNetlink); !ok || kernel.Pid != 0 {
-		return socket{}, false
+		return socket{}, errTransient
 	}
 	// An error answer (no such socket) has another type.
-	if binary.NativeEndian.Uint16(answer[4:]) != sockDiagByFamily {
-		return socket{}, false
+	if n < unix.NLMSG_HDRLEN || binary.NativeEndian.Uint16(answer[4:]) != sockDiagByFamily {
+		return socket{}, errNotFound
+	}
+	if n < unix.NLMSG_HDRLEN+diagAnswerSize {
+		return socket{}, errUnsupported
 	}
 	msg := answer[unix.NLMSG_HDRLEN:n]
 	// The socket found must be the one asked for. The kernel falls back to
 	// a listener when no connection matches; the caller is told which.
 	if binary.BigEndian.Uint16(msg[4:]) != uint16(local.Port) {
-		return socket{}, false
+		return socket{}, errNotFound
 	}
 	found := socket{uid: binary.NativeEndian.Uint32(msg[64:]), listening: msg[1] == tcpListen,
 		live: binary.NativeEndian.Uint32(msg[68:]) != 0, connected: connectedStates[msg[1]]}
 	if !found.listening && binary.BigEndian.Uint16(msg[6:]) != uint16(remote.Port) {
-		return socket{}, false
+		return socket{}, errNotFound
 	}
-	return found, true
+	return found, nil
 }
 
 // diagAddr is an address as the request carries it: its bytes in network

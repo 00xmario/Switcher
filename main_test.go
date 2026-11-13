@@ -691,7 +691,7 @@ func TestIgnoreOwnRelayProxy(t *testing.T) {
 // `switcher login finish` reads the callback's outcome as JSON; browsers keep
 // getting the HTML page.
 func TestCallbackAnswersJSONToTheCommandLine(t *testing.T) {
-	handler := callbackHandler(login.New(nil))
+	handler := callbackHandler(login.New(nil), "")
 	r := httptest.NewRequest("GET", "/callback?code=abc&state=unknown", nil)
 	r.Header.Set("Accept", "application/json")
 	w := httptest.NewRecorder()

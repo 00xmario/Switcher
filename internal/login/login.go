@@ -98,14 +98,15 @@ func (m *Manager) Start(ctx context.Context, prov provider.Provider, reloginTarg
 	if err != nil {
 		return Handle{}, fmt.Errorf("start login: %w", err)
 	}
-	// Only one browser sign-in whose callback names none can finish: a new
-	// one replaces any still waiting, so a sign-in that failed at the
-	// provider does not keep the next one from finishing. Only this
-	// computer's own dashboard or command line starts one.
+	// Only one browser sign-in per provider whose callback names none can
+	// finish: a new one replaces that provider's still waiting, so a
+	// sign-in that failed at the provider does not keep the next one from
+	// finishing. Another provider's goes on. Only this computer's own
+	// dashboard or command line starts one.
 	if info.PKCE {
 		m.mu.Lock()
 		for state, p := range m.pending {
-			if p.kind == "browser" && p.pkce && !p.completing && !p.finished {
+			if p.kind == "browser" && p.pkce && !p.completing && !p.finished && p.provider.ID() == prov.ID() {
 				p.finished = true
 				delete(m.pending, state)
 				close(p.done)
@@ -150,7 +151,7 @@ func (m *Manager) Complete(ctx context.Context, state, code string) error {
 	m.mu.Lock()
 	m.gcLocked()
 	if state == "" {
-		state = m.singlePendingLocked()
+		state = m.singlePendingLocked("")
 	}
 	p, ok := m.pending[state]
 	if !ok || p.kind != "browser" || p.completing {
@@ -206,9 +207,16 @@ var ErrNoCode = errors.New("the sign-in came back without a code")
 // one. Several run side by side, a few at a time. It returns the sign-in's
 // state.
 func (m *Manager) CompleteUnnamed(ctx context.Context, code string) (string, error) {
+	return m.CompleteUnnamedFor(ctx, "", code)
+}
+
+// CompleteUnnamedFor is CompleteUnnamed for a callback that comes back
+// where one provider's sign-ins do (providerID; "" for any): among that
+// provider's sign-ins only.
+func (m *Manager) CompleteUnnamedFor(ctx context.Context, providerID, code string) (string, error) {
 	m.mu.Lock()
 	m.gcLocked()
-	state := m.singlePendingLocked()
+	state := m.singlePendingLocked(providerID)
 	p := m.pending[state]
 	m.mu.Unlock()
 	if p == nil {
@@ -364,13 +372,13 @@ func (m *Manager) SinglePending() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gcLocked()
-	return m.singlePendingLocked()
+	return m.singlePendingLocked("")
 }
 
-func (m *Manager) singlePendingLocked() string {
+func (m *Manager) singlePendingLocked(providerID string) string {
 	var found string
 	for state, p := range m.pending {
-		if p.kind == "browser" && p.pkce && !p.completing {
+		if p.kind == "browser" && p.pkce && !p.completing && (providerID == "" || p.provider.ID() == providerID) {
 			if found != "" {
 				return ""
 			}

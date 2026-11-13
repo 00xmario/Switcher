@@ -531,3 +531,134 @@ func TestADeadConnectionDoesNotTakeTheNextOwnerOfItsPort(t *testing.T) {
 type baseFunc func(*http.Request) (*http.Response, error)
 
 func (f baseFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// setSupport puts the self-test's finding for IPv4 in place for a test.
+func setSupport(t *testing.T, state support) {
+	t.Helper()
+	w := &works[0]
+	w.Lock()
+	was, wasChecked := w.state, w.checked
+	w.state, w.checked = state, time.Now()
+	w.Unlock()
+	t.Cleanup(func() {
+		w.Lock()
+		w.state, w.checked = was, wasChecked
+		w.Unlock()
+	})
+}
+
+// A self-test that could not be made, or that the system did not answer
+// this time, leaves the check on and is made again soon: another account
+// can bring that about, by taking every free port or keeping the socket list
+// busy, and must not turn the check off by it. Only a system that takes no
+// questions, or answers wrongly about this process's own sockets, turns it
+// off.
+func TestASelfTestThatCannotBeMadeLeavesTheCheckOn(t *testing.T) {
+	why := whyNoAnswer
+	defer func() { whyNoAnswer = why }()
+	for err, want := range map[error]support{
+		errTransient:   unanswered,
+		nil:            unanswered,
+		errUnsupported: unsupported,
+		errNotFound:    unsupported,
+	} {
+		whyNoAnswer = func(*net.TCPAddr, *net.TCPAddr) error { return err }
+		if got := failed(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}); got != want {
+			t.Errorf("a lookup failing with %v: %v, want %v", err, got, want)
+		}
+	}
+
+	run := runSelfTest
+	defer func() { runSelfTest = run }()
+	tests := 0
+	runSelfTest = func(bool) support { tests++; return unanswered }
+	setSupport(t, unanswered)
+	if !worksFor(false) || tests != 0 {
+		t.Fatalf("an unanswered self-test turned the check off, or was made again at once (%d)", tests)
+	}
+	works[0].Lock()
+	works[0].checked = time.Now().Add(-selfTestSoon)
+	works[0].Unlock()
+	if !worksFor(false) || tests != 1 {
+		t.Fatalf("an unanswered self-test was not made again soon (%d)", tests)
+	}
+	runSelfTest = func(bool) support { tests++; return unsupported }
+	works[0].Lock()
+	works[0].checked = time.Now().Add(-selfTestSoon)
+	works[0].Unlock()
+	if worksFor(false) {
+		t.Fatal("a system without answers kept the check on")
+	}
+	// Once seen working, it stays on.
+	runSelfTest = func(bool) support { tests++; return unanswered }
+	setSupport(t, working)
+	works[0].Lock()
+	works[0].checked = time.Now().Add(-time.Hour)
+	works[0].Unlock()
+	before := tests
+	if !worksFor(false) || tests != before {
+		t.Fatal("a working check was tested again")
+	}
+}
+
+// While the self-test is unanswered, a connection whose owner cannot be
+// told is refused, by the server and by the command line alike; only on a
+// system known not to answer is it taken.
+func TestUnknownOwnersAreRefusedUntilTheSystemIsKnownNotToAnswer(t *testing.T) {
+	real := lookup
+	defer func() { lookup = real }()
+	lookup = func(*net.TCPAddr, *net.TCPAddr, time.Time) (socket, bool) { return socket{}, false }
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded := SameUser(ln)
+	defer guarded.Close()
+	taken := make(chan net.Conn, 4)
+	go func() {
+		for {
+			conn, err := guarded.Accept()
+			if err != nil {
+				return
+			}
+			taken <- conn
+		}
+	}()
+	try := func() (bool, error) {
+		conn, err := net.Dial("tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		checked := ownConnection(conn)
+		select {
+		case c := <-taken:
+			c.Close()
+			return true, checked
+		case <-time.After(300 * time.Millisecond):
+			return false, checked
+		}
+	}
+	setSupport(t, unanswered)
+	if served, err := try(); served || err == nil {
+		t.Fatalf("with the self-test unanswered: served=%v, the command line's check: %v", served, err)
+	}
+	setSupport(t, unsupported)
+	if served, err := try(); !served || err != nil {
+		t.Fatalf("on a system known not to answer: served=%v, the command line's check: %v", served, err)
+	}
+}
+
+// Only the values that say so let every account in.
+func TestOnlyAYesLetsEveryoneIn(t *testing.T) {
+	for value, want := range map[string][2]bool{
+		"": {false, false}, "0": {false, false}, "false": {false, false}, "no": {false, false}, "off": {false, false}, "whatever": {false, false},
+		"1": {true, true}, "true": {true, true}, "yes": {true, true}, "on": {true, true},
+		"root": {false, true},
+	} {
+		t.Setenv(AllowOthersEnv, value)
+		if everyone, root := allowed(); everyone != want[0] || root != want[1] {
+			t.Errorf("%s=%q: everyone=%v root=%v", AllowOthersEnv, value, everyone, root)
+		}
+	}
+}

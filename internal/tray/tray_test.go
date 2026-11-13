@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"switcher/internal/deviceproof"
 )
 
 type recordingUI struct {
@@ -60,14 +62,23 @@ type fakeServer struct {
 	waits   int // waits for changes
 }
 
+// proven says whether r carries a proof made with the device token, and
+// not the token itself; it puts the body back.
+func proven(r *http.Request) bool {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	_, _, ok := deviceproof.Check(r.Header.Get(deviceproof.Header), "device-token", r.Method, deviceproof.Target(r.URL.Path, r.URL.RawQuery), body, time.Now())
+	return ok && r.Header.Get("Authorization") == ""
+}
+
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/api/state/changes" && r.Header.Get("Authorization") == "Bearer device-token" {
+	if r.URL.Path == "/api/state/changes" && proven(r) {
 		f.changes(w, r)
 		return
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if r.Header.Get("Authorization") != "Bearer device-token" {
+	if !proven(r) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

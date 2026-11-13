@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"switcher/internal/deviceproof"
 	"switcher/internal/localpeer"
 )
 
@@ -121,12 +122,13 @@ var ErrNotRunning = errors.New("Switcher is not running")
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
+	var sent []byte
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(raw)
+		sent, reader = raw, bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, reader)
 	if err != nil {
@@ -136,9 +138,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Signed with the device token, which is never sent.
 	if c.Token != nil {
 		if token := c.Token(); token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+			deviceproof.Sign(req, token, sent)
 		}
 	}
 	client := c.HTTP

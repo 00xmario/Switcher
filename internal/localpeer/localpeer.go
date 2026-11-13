@@ -24,21 +24,29 @@ import (
 
 // AllowOthersEnv turns the check off, for a setup where another account's
 // programs are meant to use this Switcher, such as a container that shares
-// the computer's network under its own user. Set to "root" it lets only
-// root's programs in beside this user's.
+// the computer's network under its own user: set to 1 (or true, yes, on).
+// Set to "root" it lets only root's programs in beside this user's. Any
+// other value, 0 or false among them, leaves the check on.
 const AllowOthersEnv = "SWITCHER_ALLOW_LOCAL_USERS"
 
 // allowed is what AllowOthersEnv asks for: everyone, or root as well.
 func allowed() (everyone, root bool) {
 	switch value := os.Getenv(AllowOthersEnv); value {
-	case "":
-		return false, false
+	case "1", "true", "yes", "on":
+		return true, true
 	case "root":
 		return false, true
 	default:
-		return true, true
+		return false, false
 	}
 }
+
+// Why a lookup has no answer.
+var (
+	errNotFound    = errors.New("no such socket")
+	errUnsupported = errors.New("this system does not say whose a socket is")
+	errTransient   = errors.New("the system did not answer this time")
+)
 
 // socket is what the kernel says about one socket. live is false for one
 // its program has closed and the kernel is still winding down: such a
@@ -86,29 +94,48 @@ func ListenerUID(addr *net.TCPAddr) (uid uint32, ok bool) {
 	return listenerUID(addr)
 }
 
-// works remembers, per address family, whether this computer says who owns
-// a connection.
-// works remembers, per address family, whether this computer says who owns
-// a connection. A failed self-test is tried again a minute later: a moment
-// in which the system could not answer does not leave the check off for
-// good.
+// support is what the self-test found out about this computer.
+type support int
+
+const (
+	// untested: not tried yet. The check is on.
+	untested support = iota
+	// working: a connection this process made to itself came back as its
+	// own user's. The check is on for good.
+	working
+	// unanswered: the test could not be made, or the system did not answer
+	// it this time, as when the computer is out of ports or its socket list
+	// kept changing while read; another account can bring that about. The
+	// check stays on, and the test is made again soon.
+	unanswered
+	// unsupported: the system takes no questions about sockets, or answered
+	// wrongly about this process's own. Its answers mean nothing, so the
+	// check is off; the test is made again now and then.
+	unsupported
+)
+
+// works remembers, per address family, what the self-test found.
 var works [2]struct {
 	sync.Mutex
-	ok      bool
+	state   support
 	checked time.Time
 }
 
-const selfTestAgain = time.Minute
+const (
+	selfTestSoon  = 5 * time.Second
+	selfTestAgain = time.Minute
+)
 
-// Works reports whether this computer says who owns a connection: a
-// connection this process makes to itself must come back as its own user.
-// Only then is "someone else" or "unknown" a reason to refuse.
+// Works reports whether the check is on for IPv4 loopback connections:
+// everywhere but on a computer known not to say who owns a connection.
 func Works() bool { return worksFor(false) }
 
 // worksFor is Works for IPv4 or for IPv6 loopback connections. Each is
-// tried by itself: a listener of one family is guarded only by what was
-// seen to work for that family.
-func worksFor(v6 bool) bool {
+// tried by itself: a listener of one family is guarded by what was found
+// for that family.
+func worksFor(v6 bool) bool { return supportFor(v6) != unsupported }
+
+func supportFor(v6 bool) support {
 	i := 0
 	if v6 {
 		i = 1
@@ -116,37 +143,70 @@ func worksFor(v6 bool) bool {
 	w := &works[i]
 	w.Lock()
 	defer w.Unlock()
-	if !w.ok && (w.checked.IsZero() || time.Since(w.checked) >= selfTestAgain) {
-		w.ok, w.checked = selfTest(v6), time.Now()
+	switch age := time.Since(w.checked); {
+	case w.state == untested,
+		w.state == unanswered && age >= selfTestSoon,
+		w.state == unsupported && age >= selfTestAgain:
+		w.state, w.checked = runSelfTest(v6), time.Now()
 	}
-	return w.ok
+	return w.state
 }
 
-func selfTest(v6 bool) bool {
+// runSelfTest and whyNoAnswer are selfTest and queryFailure; tests stand
+// in for them.
+var (
+	runSelfTest = selfTest
+	whyNoAnswer = queryFailure
+)
+
+// selfTest makes a connection to itself and asks whose its ends are.
+func selfTest(v6 bool) support {
 	network, address := "tcp4", "127.0.0.1:0"
+	from := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
 	if v6 {
 		network, address = "tcp6", "[::1]:0"
+		from = &net.TCPAddr{IP: net.IPv6loopback}
 	}
+	me := uint32(os.Getuid())
 	ln, err := net.Listen(network, address)
 	if err != nil {
-		return false
+		return unanswered
 	}
 	defer ln.Close()
-	if uid, ok := ListenerUID(ln.Addr().(*net.TCPAddr)); !ok || uid != uint32(os.Getuid()) {
-		return false
+	addr := ln.Addr().(*net.TCPAddr)
+	if uid, ok := ListenerUID(addr); !ok {
+		return failed(addr, from)
+	} else if uid != me {
+		return unsupported
 	}
-	client, err := net.Dial(network, ln.Addr().String())
+	client, err := net.Dial(network, addr.String())
 	if err != nil {
-		return false
+		return unanswered
 	}
 	defer client.Close()
 	server, err := ln.Accept()
 	if err != nil {
-		return false
+		return unanswered
 	}
 	defer server.Close()
-	uid, ok := PeerUID(server)
-	return ok && uid == uint32(os.Getuid())
+	if uid, ok := PeerUID(server); !ok {
+		return failed(client.LocalAddr().(*net.TCPAddr), addr)
+	} else if uid != me {
+		return unsupported
+	}
+	return working
+}
+
+// failed is what a lookup of one of the self-test's own sockets failing
+// means: a system without answers, or one that found no socket this
+// process holds, is unsupported; one that did not answer this time is not.
+func failed(local, remote *net.TCPAddr) support {
+	switch err := whyNoAnswer(local, remote); {
+	case errors.Is(err, errUnsupported), errors.Is(err, errNotFound):
+		return unsupported
+	default:
+		return unanswered
+	}
 }
 
 // SameUser wraps a listener on this computer so it takes connections only
@@ -165,8 +225,8 @@ func SameUser(ln net.Listener) net.Listener {
 	}
 	g := guard(ln, uint32(os.Getuid()), root, func(conn net.Conn) (uint32, bool) { return PeerUID(conn) })
 	g.ownerSince = peerUIDSince
-	// Where the system cannot say whose a connection is, everyone's is
-	// taken; the self-test is tried again now and then.
+	// Where the system is known not to say whose a connection is, everyone's
+	// is taken; the self-test is tried again now and then.
 	v6 := addr.IP.To4() == nil
 	g.enforced = func() bool { return worksFor(v6) }
 	return g
@@ -314,10 +374,11 @@ func (l *sameUser) logRefusal(uid uint32, known bool) {
 // Transport is an HTTP transport for this user's own programs, the command
 // line and the tray, that talk to Switcher on this computer. A connection
 // to this computer is checked before a byte goes over it: the port, and the
-// program that took the connection, must be this user's or root's. Another
-// account's program that took Switcher's port would otherwise be handed the
-// device token and whatever the request holds. Connections elsewhere go as
-// with base (the default transport when nil).
+// program that took the connection, must be this user's (or root's, where
+// the user lets root in). Another account's program that took Switcher's
+// port would otherwise be handed whatever the request holds; the device
+// token itself never travels (see internal/deviceproof). Connections
+// elsewhere go as with base (the default transport when nil).
 func Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport

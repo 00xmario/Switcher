@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -704,6 +705,35 @@ type failure struct {
 	since time.Time
 }
 
+// maxFailureSources bounds the sources whose failed pairings are counted.
+const maxFailureSources = 4096
+
+// failureSource is what failed pairings are counted by: the address, or for
+// IPv6 its /64, since one network hands out as many addresses as it likes
+// (a link-local one without its interface's name). Tailnet connections all
+// arrive from the add-on on loopback; for those the code's length is the
+// whole defence, and there is no source.
+func failureSource(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.WithZone("").Unmap()
+	switch {
+	case addr.IsLoopback():
+		return ""
+	case addr.Is6():
+		prefix, _ := addr.Prefix(64)
+		return prefix.String()
+	default:
+		return addr.String()
+	}
+}
+
 const pairFailed = "pairing failed: check the code shown on the other Mac"
 
 func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
@@ -712,24 +742,21 @@ func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid pairing request")
 		return
 	}
-	// Tailnet connections all arrive from the add-on on loopback; for those
-	// the code's length is the whole defence.
-	source, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if ip := net.ParseIP(source); ip != nil && ip.IsLoopback() {
-		source = ""
-	} else if ip != nil && ip.To4() == nil {
-		// One IPv6 network hands out as many addresses as it likes.
-		source = ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
-	}
+	source := failureSource(r.RemoteAddr)
 	h.mu.Lock()
-	if h.failures == nil || len(h.failures) > 4096 {
+	if h.failures == nil || len(h.failures) >= maxFailureSources {
 		kept := map[string]failure{}
 		for k, f := range h.failures {
-			if time.Since(f.since) <= codeTTL && len(kept) < 4096 {
+			if time.Since(f.since) <= codeTTL {
 				kept[k] = f
 			}
 		}
 		h.failures = kept
+	}
+	// With the record full of sources still counting, a new one counts with
+	// every other new one: no count is ever dropped to make room.
+	if _, known := h.failures[source]; !known && source != "" && len(h.failures) >= maxFailureSources {
+		source = "others"
 	}
 	f := h.failures[source]
 	if time.Since(f.since) > codeTTL {

@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"switcher/internal/deviceproof"
 	"switcher/internal/settings"
 )
 
 func signed(method, target, body, token string, at time.Time, nonce string) *http.Request {
 	r := httptest.NewRequest(method, "http://127.0.0.1:8787"+target, strings.NewReader(body))
 	seconds := fmt.Sprint(at.Unix())
-	r.Header.Set(proofHeader, "v1."+seconds+"."+nonce+"."+proofMAC(token, method, r.URL.Path+map[bool]string{true: "?" + r.URL.RawQuery}[r.URL.RawQuery != ""], []byte(body), seconds, nonce))
+	r.Header.Set(proofHeader, "v1."+seconds+"."+nonce+"."+deviceproof.MAC(token, method, r.URL.Path+map[bool]string{true: "?" + r.URL.RawQuery}[r.URL.RawQuery != ""], []byte(body), seconds, nonce))
 	return r
 }
 
@@ -23,7 +24,7 @@ func signed(method, target, body, token string, at time.Time, nonce string) *htt
 // it. This vector is checked by the Swift side too (menubar_layout_test.swift),
 // so both compute the same proof.
 func TestProofVectorMatchesTheMenuBarApp(t *testing.T) {
-	got := proofMAC(strings.Repeat("ab", 32), "POST", "/api/accounts/claude-work/activate", []byte(`{"native":true}`), "1794571200", strings.Repeat("0f", 16))
+	got := deviceproof.MAC(strings.Repeat("ab", 32), "POST", "/api/accounts/claude-work/activate", []byte(`{"native":true}`), "1794571200", strings.Repeat("0f", 16))
 	if want := "155d3f70dc25bca1cc74e6fdf9e3b4ee689b4788b526e94966daacb563f0f535"; got != want {
 		t.Fatalf("vector: %s, want %s", got, want)
 	}
@@ -113,4 +114,49 @@ func TestTheGateTakesProofs(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("an unsigned request: %d", w.Code)
 	}
+}
+
+// The device token counts on the local port only: on the LAN listener it
+// opens nothing, as a bearer token or a proof, and a made-up proof makes the
+// gate read no body before refusing.
+func TestTheDeviceTokenOpensNothingOnTheLAN(t *testing.T) {
+	prefs := settings.New(t.TempDir())
+	if err := prefs.SetPassword("fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	token, err := prefs.EnsureDeviceToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, AuthKind(r)) })
+	lan := (&AuthGate{Store: prefs}).WrapLAN(next)
+	bearer := httptest.NewRequest("GET", "/api/state", nil)
+	bearer.Header.Set("Authorization", "Bearer "+token)
+	proof := signed("GET", "/api/state", "", token, time.Now(), fmt.Sprintf("%032x", time.Now().UnixNano()))
+	for name, r := range map[string]*http.Request{"a bearer token": bearer, "a proof": proof} {
+		r.RemoteAddr = "192.0.2.9:5000"
+		w := httptest.NewRecorder()
+		lan.ServeHTTP(w, r)
+		if w.Code == http.StatusOK && w.Body.String() == string(AuthDevice) {
+			t.Errorf("%s opened the LAN listener", name)
+		}
+	}
+	// A body larger than a proof may cover is refused before it is read.
+	read := 0
+	big := httptest.NewRequest("POST", "/api/x", readCounter{&read})
+	big.ContentLength = proofBodyLimit + 1
+	big.Header.Set(proofHeader, "v1."+fmt.Sprint(time.Now().Unix())+"."+strings.Repeat("0", 32)+"."+strings.Repeat("0", 64))
+	if validProof(big, token, time.Now()) || read != 0 {
+		t.Fatalf("an oversized body was read (%d bytes) or taken", read)
+	}
+}
+
+type readCounter struct{ n *int }
+
+func (c readCounter) Read(p []byte) (int, error) {
+	*c.n += len(p)
+	for i := range p {
+		p[i] = 'a'
+	}
+	return len(p), nil
 }

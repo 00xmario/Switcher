@@ -79,8 +79,11 @@ func (a *authGate) gate(next http.Handler) http.Handler {
 			return
 		}
 		// Device token, as a bearer token or a proof (see proof.go): CSRF-
-		// immune, there is no ambient cookie.
-		if token, err := a.store.ReadDeviceToken(); err == nil && token != "" {
+		// immune, there is no ambient cookie. Only this computer's own
+		// programs hold it, so it counts on the local port alone: not on the
+		// LAN listener, where a body sent with a made-up proof would be read
+		// before it is refused.
+		if token, err := a.store.ReadDeviceToken(); err == nil && token != "" && !a.lan {
 			if deviceAuthorized(r, token) {
 				ctx := context.WithValue(r.Context(), authKindKey, AuthDevice)
 				next.ServeHTTP(w, r.WithContext(ctx))

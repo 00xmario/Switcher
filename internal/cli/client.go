@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"switcher/internal/deviceproof"
 	"switcher/internal/localpeer"
 )
 
@@ -48,12 +49,13 @@ func (cl *client) call(method, path string, body, out any) error {
 
 func (cl *client) callWith(method, path string, body, out any, header http.Header) error {
 	var reader io.Reader
+	var sent []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(b)
+		sent, reader = b, bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(method, cl.base+path, reader)
 	if err != nil {
@@ -66,10 +68,12 @@ func (cl *client) callWith(method, path string, body, out any, header http.Heade
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// The device token unlocks this Mac's dashboard; it never goes elsewhere.
+	// The device token unlocks this Mac's dashboard. It is never sent, not
+	// even here: each request is signed with it, so whatever answers learns
+	// nothing it could use.
 	if cl.token != nil && loopback(req.URL.Hostname()) {
 		if token := cl.token(); token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+			deviceproof.Sign(req, token, sent)
 		}
 	}
 	resp, err := cl.http.Do(req)

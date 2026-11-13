@@ -81,7 +81,10 @@ present=$(ls "$work/dl" | grep -vx SHA256SUMS.sig | sort)
 # commit with the toolchain go.mod names, must be identical.
 git worktree add --quiet --detach "$work/src" "$commit"
 want=$(awk '$1 == "go" { print "go" $2 }' "$work/src/go.mod")
-[ "$(cd "$work/src" && go env GOVERSION)" = "$want" ] || fail "go is $(go env GOVERSION), $tag is built with $want"
+for module in "$work/src" "$work/src/cmd/switcher-tailnet"; do
+	have=$(cd "$module" && go env GOVERSION)
+	[ "$have" = "$want" ] || fail "go is $have in ${module#"$work/src"}/, $tag is built with $want"
+done
 (
 	cd "$work/src/cmd/switcher-tailnet"
 	for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
@@ -101,11 +104,18 @@ for f in "$work"/built/*; do
 done
 
 # Every file carries GitHub's attestation that the Release workflow built it
-# from the commit, for this tag, on GitHub's runners.
+# from the commit, for this tag, on GitHub's runners, under its own name: a
+# file the workflow built under another name does not pass for this one.
 for f in $artifacts; do
-	gh attestation verify "$work/dl/$f" --repo "$repo" --signer-workflow "$workflow" \
-		--source-ref "refs/tags/$tag" --source-digest "$commit" --deny-self-hosted-runners >/dev/null ||
+	sum=$(sha256sum "$work/dl/$f" | cut -d' ' -f1)
+	names=$(gh attestation verify "$work/dl/$f" --repo "$repo" --signer-workflow "$workflow" \
+		--source-ref "refs/tags/$tag" --source-digest "$commit" --deny-self-hosted-runners \
+		--format json --jq "[.[].verificationResult.statement.subject[] | select(.digest.sha256 == \"$sum\") | .name] | unique | join(\" \")") ||
 		fail "$f carries no attestation that the Release workflow built it from $commit"
+	case " $names " in
+	*" $f "*) ;;
+	*) fail "$f is attested under another name: $names" ;;
+	esac
 done
 
 # The list is written here from the checked files; the per-file checksums
