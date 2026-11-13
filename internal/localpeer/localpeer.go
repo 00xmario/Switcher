@@ -124,7 +124,15 @@ var works [2]struct {
 const (
 	selfTestSoon  = 5 * time.Second
 	selfTestAgain = time.Minute
+	selfTestWait  = 2 * time.Second
 )
+
+// sameAddr reports whether two addresses are the same TCP address.
+func sameAddr(a, b net.Addr) bool {
+	x, ok1 := a.(*net.TCPAddr)
+	y, ok2 := b.(*net.TCPAddr)
+	return ok1 && ok2 && x.Port == y.Port && x.IP.Equal(y.IP)
+}
 
 // Works reports whether the check is on for IPv4 loopback connections:
 // everywhere but on a computer known not to say who owns a connection.
@@ -173,20 +181,36 @@ func selfTest(v6 bool) support {
 		return unanswered
 	}
 	defer ln.Close()
+	// Nothing here waits for long: the test is made while connections wait
+	// to be checked.
+	deadline := time.Now().Add(selfTestWait)
+	if tcp, ok := ln.(*net.TCPListener); ok {
+		_ = tcp.SetDeadline(deadline)
+	}
 	addr := ln.Addr().(*net.TCPAddr)
 	if uid, ok := ListenerUID(addr); !ok {
 		return failed(addr, from)
 	} else if uid != me {
 		return unsupported
 	}
-	client, err := net.Dial(network, addr.String())
+	client, err := net.DialTimeout(network, addr.String(), selfTestWait)
 	if err != nil {
 		return unanswered
 	}
 	defer client.Close()
-	server, err := ln.Accept()
-	if err != nil {
-		return unanswered
+	// Any account may connect to the test's port: only the test's own
+	// connection is asked about, the others are closed.
+	var server net.Conn
+	for server == nil {
+		conn, err := ln.Accept()
+		if err != nil {
+			return unanswered
+		}
+		if sameAddr(conn.RemoteAddr(), client.LocalAddr()) {
+			server = conn
+		} else {
+			conn.Close()
+		}
 	}
 	defer server.Close()
 	if uid, ok := PeerUID(server); !ok {

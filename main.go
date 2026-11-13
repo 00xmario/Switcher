@@ -878,8 +878,10 @@ func callbackGuard(next http.Handler) http.Handler {
 
 // unnamedCallbacks are the providers whose browser comes back without
 // naming its sign-in, by the path it comes back to: a callback there
-// finishes that provider's sign-in, never another's.
-var unnamedCallbacks = map[string]string{"/auth/callback": "codex", "/callback": "claude"}
+// finishes that provider's sign-in, never another's. Google's sign-ins
+// always name theirs, so an unnamed callback on their paths finishes none.
+var unnamedCallbacks = map[string]string{"/auth/callback": "codex", "/callback": "claude",
+	"/oauth-callback": "none", "/oauth2callback": "none"}
 
 // callbackHandler completes the OAuth flow and answers the browser with a
 // tiny result page. provider is the one whose unnamed callbacks come back

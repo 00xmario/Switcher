@@ -763,8 +763,11 @@ func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
 		f = failure{since: time.Now()}
 	}
 	// Both "no code" and "wrong code" give the same answer, so nobody can
-	// probe for a live code; a source that keeps failing is refused.
-	if f.count >= sourceFailures || !h.state.Enabled || h.code == "" || time.Now().After(h.codeExpires) {
+	// probe for a live code; a source that keeps failing is refused. The
+	// new sources counted together are not: whoever fills the record must
+	// not keep a device with the right code from pairing, and the code's
+	// length holds off their guesses.
+	if f.count >= sourceFailures && source != "others" || !h.state.Enabled || h.code == "" || time.Now().After(h.codeExpires) {
 		h.mu.Unlock()
 		writeError(w, http.StatusForbidden, pairFailed)
 		return

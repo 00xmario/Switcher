@@ -147,3 +147,19 @@ func TestSocketsBoundToTheLoopbackInterfaceAreFound(t *testing.T) {
 		t.Fatalf("a client bound to the loopback interface: %d %v", uid, ok)
 	}
 }
+
+// Only a moment without memory, descriptors or an answer in time passes; any
+// other error asking the kernel means it takes no such questions, which turns
+// the check off rather than refuse every connection.
+func TestNetlinkFailuresAreClassified(t *testing.T) {
+	for err, want := range map[error]error{
+		unix.EAGAIN: errTransient, unix.EINTR: errTransient, unix.ENOBUFS: errTransient, unix.ENOMEM: errTransient,
+		unix.EMFILE: errTransient, unix.ENFILE: errTransient,
+		unix.EOPNOTSUPP: errUnsupported, unix.ENOSYS: errUnsupported, unix.EPROTONOSUPPORT: errUnsupported,
+		unix.ECONNREFUSED: errUnsupported, unix.EACCES: errUnsupported, unix.EPERM: errUnsupported, unix.EINVAL: errUnsupported,
+	} {
+		if got := netlinkFailure(err); got != want {
+			t.Errorf("%v: %v, want %v", err, got, want)
+		}
+	}
+}

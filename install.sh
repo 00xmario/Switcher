@@ -46,7 +46,7 @@ signing_tools() {
 	# An ssh-keygen without -Y says the option is unknown, in its C library's
 	# words: "unknown option -- Y", "illegal option -- Y", "invalid option --
 	# 'Y'", "unrecognized option: Y".
-	if ssh-keygen -Y verify </dev/null 2>&1 | grep -Eq "option[^A-Za-z]*'?Y'?([^A-Za-z]|\$)"; then
+	if LC_ALL=C ssh-keygen -Y verify </dev/null 2>&1 | grep -Eq "option[^A-Za-z]*'?Y'?([^A-Za-z]|\$)"; then
 		fail "Checking the release's signature needs OpenSSH 8.1 or newer; this ssh-keygen is older. Update it and run this again."
 	fi
 }

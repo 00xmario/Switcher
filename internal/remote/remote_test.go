@@ -732,6 +732,18 @@ func TestAFullFailureRecordDropsNoCount(t *testing.T) {
 	if known.count != sourceFailures || others.count != sourceFailures {
 		t.Fatalf("a known source's count %d, the new sources' %d", known.count, others.count)
 	}
+	// A device with the right code still pairs from a new address.
+	nonce := strings.Repeat("b", 32)
+	h.mu.Lock()
+	proof := pairingProof(h.codeKey, "client", nonce)
+	h.mu.Unlock()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/remote/pair", strings.NewReader(`{"nonce":"`+nonce+`","proof":"`+proof+`","name":"Laptop"}`))
+	r.RemoteAddr = "192.168.200.1:5000"
+	h.pair(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the right code from a new address: %d %s", w.Code, w.Body.String())
+	}
 }
 
 // A ledger too large to send is cut until it fits, and gives up once

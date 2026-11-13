@@ -78,11 +78,7 @@ func kernelQuery(local, remote *net.TCPAddr) (socket, error) {
 	}
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
-		if errors.Is(err, unix.EPROTONOSUPPORT) || errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EINVAL) ||
-			errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
-			return socket{}, errUnsupported
-		}
-		return socket{}, errTransient
+		return socket{}, netlinkFailure(err)
 	}
 	defer unix.Close(fd)
 	// A kernel that does not answer must not hold a connection up.
@@ -112,15 +108,12 @@ func kernelQuery(local, remote *net.TCPAddr) (socket, error) {
 		body[i] = 0xff
 	}
 	if err := unix.Sendto(fd, request, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
-			return socket{}, errUnsupported
-		}
-		return socket{}, errTransient
+		return socket{}, netlinkFailure(err)
 	}
 	answer := make([]byte, 4096)
 	n, from, err := unix.Recvfrom(fd, answer, 0)
 	if err != nil {
-		return socket{}, errTransient
+		return socket{}, netlinkFailure(err)
 	}
 	// Only the kernel's word counts: any program may send to a netlink socket.
 	if kernel, ok := from.(*unix.SockaddrNetlink); !ok || kernel.Pid != 0 {
@@ -145,6 +138,18 @@ func kernelQuery(local, remote *net.TCPAddr) (socket, error) {
 		return socket{}, errNotFound
 	}
 	return found, nil
+}
+
+// netlinkFailure says what an error asking the kernel means: a moment
+// without memory, descriptors or an answer in time passes; anything else
+// is a kernel, or a sandbox, that takes no such questions.
+func netlinkFailure(err error) error {
+	for _, passing := range []error{unix.EAGAIN, unix.EWOULDBLOCK, unix.EINTR, unix.ENOBUFS, unix.ENOMEM, unix.EMFILE, unix.ENFILE} {
+		if errors.Is(err, passing) {
+			return errTransient
+		}
+	}
+	return errUnsupported
 }
 
 // diagAddr is an address as the request carries it: its bytes in network

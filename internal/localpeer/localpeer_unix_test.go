@@ -662,3 +662,40 @@ func TestOnlyAYesLetsEveryoneIn(t *testing.T) {
 		}
 	}
 }
+
+// Another account may connect to the self-test's port before the test's own
+// connection arrives: the test asks only about its own, and a stranger's
+// cannot turn the check off.
+func TestASelfTestAsksOnlyAboutItsOwnConnection(t *testing.T) {
+	needsKernel(t)
+	real := lookup
+	defer func() { lookup = real }()
+	var stranger net.Conn
+	defer func() {
+		if stranger != nil {
+			stranger.Close()
+		}
+	}()
+	var strangerPort int
+	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
+		// While the test asks whose its listener is, a stranger connects.
+		if remote.Port == 0 && stranger == nil {
+			conn, err := net.Dial("tcp4", local.String())
+			if err == nil {
+				stranger, strangerPort = conn, conn.LocalAddr().(*net.TCPAddr).Port
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		found, ok := real(local, remote, since)
+		if ok && !found.listening && local.Port == strangerPort {
+			found.uid = me() + 1
+		}
+		return found, ok
+	}
+	if got := selfTest(false); got != working {
+		t.Fatalf("a stranger's connection made the self-test %v", got)
+	}
+	if stranger == nil {
+		t.Fatal("the stranger never connected")
+	}
+}
