@@ -451,6 +451,11 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, done, ok := h.track(context.WithValue(context.WithValue(r.Context(), deviceKey{}, d.Name), deviceIDKey{}, d.ID), d.ID)
+	if errors.Is(context.Cause(ctx), errTooBusy) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "this device has too many requests running on this Switcher; try again in a moment")
+		return
+	}
 	if !ok {
 		w.Header().Set(rejectedHeader, "1")
 		writeError(w, http.StatusUnauthorized, "this device is not paired with this Switcher")
@@ -464,12 +469,18 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // device is removed. A device removed since it was authenticated gets no
 // request at all.
 func (h *Host) track(ctx context.Context, id string) (context.Context, func(), bool) {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancelCause(ctx)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.state.Enabled || !slices.ContainsFunc(h.state.Devices, func(d device) bool { return d.ID == id }) {
-		cancel()
-		return nil, nil, false
+		cancel(nil)
+		return ctx, nil, false
+	}
+	// One device holds only so many requests at once: each may hold a
+	// large body in this computer's memory.
+	if len(h.running[id]) >= perDeviceRequests {
+		cancel(errTooBusy)
+		return ctx, nil, false
 	}
 	if h.running == nil {
 		h.running = map[string]map[uint64]context.CancelFunc{}
@@ -479,9 +490,9 @@ func (h *Host) track(ctx context.Context, id string) (context.Context, func(), b
 	}
 	h.runningSeq++
 	seq := h.runningSeq
-	h.running[id][seq] = cancel
+	h.running[id][seq] = func() { cancel(nil) }
 	return ctx, func() {
-		cancel()
+		cancel(nil)
 		h.mu.Lock()
 		if set := h.running[id]; set != nil {
 			delete(set, seq)
@@ -492,6 +503,14 @@ func (h *Host) track(ctx context.Context, id string) (context.Context, func(), b
 		h.mu.Unlock()
 	}, true
 }
+
+// perDeviceRequests is how many requests one paired device may have running
+// at once: plenty for many conversations and agents, with their state
+// polls, and a bound on what a device gone wrong can make this computer
+// hold.
+const perDeviceRequests = 48
+
+var errTooBusy = errors.New("too many requests running for this device")
 
 // endRemovedLocked ends the requests in flight of every device that is no
 // longer paired.

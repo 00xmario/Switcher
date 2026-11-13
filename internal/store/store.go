@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Token set returned by an OAuth login or a refresh. Extra carries
@@ -279,6 +281,27 @@ func readJSON(path string, v any) error {
 		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
 	}
 	return nil
+}
+
+// CleanTemp removes temporary files a crash left behind while writing
+// (they hold what the file would have held, tokens included). Only ones
+// older than an hour go, so a write in progress is never touched.
+func (s *Store) CleanTemp() {
+	for _, dir := range []string{s.accountsDir, filepath.Dir(s.statePath)} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() || !strings.HasSuffix(entry.Name(), ".tmp") || !strings.Contains(entry.Name(), ".json") {
+				continue
+			}
+			if time.Since(info.ModTime()) > time.Hour {
+				_ = os.Remove(filepath.Join(dir, entry.Name()))
+			}
+		}
+	}
 }
 
 // writeAtomic puts raw at path whole or not at all, for this user alone

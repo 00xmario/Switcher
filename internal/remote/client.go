@@ -1184,11 +1184,15 @@ var errHostRedirect = errors.New("the Switcher host answered with a redirect")
 // body as before.
 func inertAnswer(h http.Header) {
 	for _, name := range []string{"Set-Cookie", "Set-Cookie2", "Clear-Site-Data", "Refresh", "Location", "Content-Location", "Link", "Service-Worker-Allowed",
+		// The host does not name a file to save its answer as.
+		"Content-Disposition",
 		"Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "Access-Control-Allow-Headers",
 		"Access-Control-Allow-Methods", "Access-Control-Expose-Headers", "Content-Security-Policy-Report-Only"} {
 		h.Del(name)
 	}
-	if kind := h.Get("Content-Type"); kind != "" && !dataType(kind) {
+	// Exactly one content type, and a data type: a browser takes the last
+	// of several, and guesses when there is none.
+	if kinds := h.Values("Content-Type"); len(kinds) != 1 || !dataType(kinds[0]) {
 		h.Set("Content-Type", "application/octet-stream")
 		h.Set("Content-Disposition", "attachment")
 	}

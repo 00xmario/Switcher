@@ -636,9 +636,48 @@ func TestBrowserSignInNeedsItsCallbackPort(t *testing.T) {
 	if w := start(); w.Code != http.StatusOK || len(asked) != 1 || !strings.Contains(asked[0], "redirect_uri") {
 		t.Fatalf("a sign-in with its port held: %d %v", w.Code, asked)
 	}
+	if got := api.Logins.SinglePending(); got != "" {
+		t.Fatalf("fixture sign-ins are not PKCE-bound, yet one is pending by itself: %q", got)
+	}
 	refuse = errors.New("another program is using port 1455")
 	w := start()
 	if w.Code != http.StatusConflict || strings.Contains(w.Body.String(), "auth.example") || !strings.Contains(w.Body.String(), "another program") {
 		t.Fatalf("a sign-in whose port another program holds: %d %s", w.Code, w.Body.String())
+	}
+	// The refused sign-in is gone: it does not stay around to confuse the
+	// next one's callback.
+	if _, err, finished := api.Logins.Outcome("state-1", 0); !finished || !errors.Is(err, login.ErrUnknown) {
+		t.Fatalf("a refused sign-in is still pending: finished=%v err=%v", finished, err)
+	}
+}
+
+// With a password set, the dashboard's files need a session however their
+// path is spelled: a provider prefix followed by dot segments is not a
+// provider route.
+func TestDotSegmentsDoNotPassForAProviderRoute(t *testing.T) {
+	for _, path := range []string{"/codex/../app.js", "/claude/v1/../../index.html", "/codex/./x", "/grok/..", "/codex//app.js", "/gemini/."} {
+		if nativeRoute(path) {
+			t.Errorf("%s counts as a provider route", path)
+		}
+	}
+	for _, path := range []string{"/codex/v1/responses", "/claude/v1/messages", "/codex/responses..json", "/v0/management/auth-files"} {
+		if !nativeRoute(path) {
+			t.Errorf("%s no longer counts as a provider route", path)
+		}
+	}
+	prefs := settings.New(t.TempDir())
+	if err := prefs.SetPassword("fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("dashboard file")) })
+	mux.HandleFunc("/codex/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("proxy")) })
+	gated := (&AuthGate{Store: prefs}).Wrap(mux)
+	for _, target := range []string{"/codex%2F..%2Fapp.js", "/codex/..%2Fapp.js", "/codex%2f%2e%2e%2fapp.js"} {
+		w := httptest.NewRecorder()
+		gated.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:9123"+target, nil))
+		if strings.Contains(w.Body.String(), "dashboard file") {
+			t.Errorf("%s served a dashboard file without a session (%d)", target, w.Code)
+		}
 	}
 }

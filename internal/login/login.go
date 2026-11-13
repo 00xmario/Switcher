@@ -155,6 +155,18 @@ func (m *Manager) Complete(ctx context.Context, state, code string) error {
 	return err
 }
 
+// Discard drops a sign-in that was started but will not be offered, such as
+// one whose callback port another program holds. Left pending, it would
+// make the next sign-in ambiguous for a callback that names no state.
+func (m *Manager) Discard(state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p, ok := m.pending[state]; ok && !p.completing {
+		delete(m.pending, state)
+		close(p.done)
+	}
+}
+
 // Outcome reports the current status of a login flow. finished=true means
 // the outcome (success or failure) is being reported with this call.
 func (m *Manager) Outcome(state string, wait time.Duration) (account store.Account, err error, finished bool) {

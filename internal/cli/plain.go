@@ -58,7 +58,7 @@ func printable(r rune, size int) bool {
 		return false
 	case r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0: // C0, DEL, C1
 		return false
-	case r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069: // reordering marks
+	case r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0x200e || r == 0x200f || r == 0x061c: // reordering marks
 		return false
 	}
 	return true

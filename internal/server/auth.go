@@ -171,6 +171,12 @@ func exempt(r *http.Request) bool {
 // Native routes have their own provider or management-key authentication.
 // Changing the browser gate must not make CLI traffic require a cookie.
 func nativeRoute(path string) bool {
+	// A path with dot segments is no provider route: the router resolves
+	// them (an encoded slash keeps them from being cleaned on the way in),
+	// so "/codex/../app.js" is the dashboard's file, behind its login.
+	if strings.Contains(path, "/../") || strings.Contains(path, "/./") || strings.HasSuffix(path, "/..") || strings.HasSuffix(path, "/.") || strings.Contains(path, "//") {
+		return false
+	}
 	switch path {
 	case "/v0/management/auth-files", "/v0/management/api-call", "/v0/management/reset-quota":
 		return true

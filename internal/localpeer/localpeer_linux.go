@@ -1,99 +1,131 @@
 package localpeer
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/binary"
-	"fmt"
 	"net"
-	"os"
-	"strconv"
+
+	"golang.org/x/sys/unix"
 )
 
-// The kernel's table of TCP sockets, one per line:
-//
-//	sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
-//	 0: 0100007F:2253 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 12345 ...
-//
-// An address is the four bytes as the kernel holds them, printed as one
-// number in this machine's byte order; the port is in hexadecimal.
-var tcpTable = "/proc/net/tcp"
+// The kernel answers one question at a time over a netlink socket
+// (NETLINK_SOCK_DIAG, as `ss` uses): which socket would a TCP packet from
+// one address to another be handed to, and whose is it. That is the socket
+// connected between the two addresses or, when there is none, the one
+// listening for it, whatever kind of socket it is: an IPv6 socket that
+// takes IPv4 connections is found like any other. One question costs a few
+// system calls, however many sockets the computer has.
+const (
+	sockDiagByFamily = 20 // SOCK_DIAG_BY_FAMILY
+	tcpListen        = 10 // TCP_LISTEN
+	diagRequestSize  = 56 // struct inet_diag_req_v2
+	diagAnswerSize   = 72 // struct inet_diag_msg
+)
 
-// tcp6Table lists the IPv6 sockets the same way, an address being its four
-// 32-bit words, each printed in this machine's byte order.
-var tcp6Table = "/proc/net/tcp6"
-
-const stateListen = "0A"
-
-// tableAddr is an address as its table prints it, with that table.
-func tableAddr(a *net.TCPAddr) (text, table string, ok bool) {
-	if a.Port < 0 || a.Port > 65535 {
-		return "", "", false
-	}
-	if ip := a.IP.To4(); ip != nil {
-		return fmt.Sprintf("%08X:%04X", binary.NativeEndian.Uint32(ip), a.Port), tcpTable, true
-	}
-	ip := a.IP.To16()
-	if ip == nil {
-		return "", "", false
-	}
-	for i := 0; i < 16; i += 4 {
-		text += fmt.Sprintf("%08X", binary.NativeEndian.Uint32(ip[i:i+4]))
-	}
-	return fmt.Sprintf("%s:%04X", text, a.Port), tcp6Table, true
+// socket is what the kernel says about one socket.
+type socket struct {
+	uid       uint32
+	listening bool
 }
 
-// socketUID is the owner of the socket bound to local and connected to remote.
-func socketUID(local, remote *net.TCPAddr) (uint32, bool) {
-	from, table, ok1 := tableAddr(local)
-	to, table2, ok2 := tableAddr(remote)
-	if !ok1 || !ok2 || table != table2 {
-		return 0, false
-	}
-	return find(table, func(fields [][]byte) bool {
-		return string(fields[1]) == from && string(fields[2]) == to && string(fields[3]) != stateListen
-	})
-}
+// lookup asks for the socket whose own address is local and whose other
+// end is remote. A zero remote port asks for the listener at local.
+var lookup = kernelLookup
 
-// listenerUID is the owner of the socket listening on addr, or on every
-// address at its port.
-func listenerUID(addr *net.TCPAddr) (uint32, bool) {
-	exact, table, ok := tableAddr(addr)
-	if !ok {
-		return 0, false
+func kernelLookup(local, remote *net.TCPAddr) (socket, bool) {
+	family, src, ok1 := diagAddr(local.IP)
+	family2, dst, ok2 := diagAddr(remote.IP)
+	if !ok1 || !ok2 || family != family2 || local.Port < 0 || local.Port > 65535 || remote.Port < 0 || remote.Port > 65535 {
+		return socket{}, false
 	}
-	any := fmt.Sprintf("%08X:%04X", 0, addr.Port)
-	if table == tcp6Table {
-		any = fmt.Sprintf("%032X:%04X", 0, addr.Port)
-	}
-	return find(table, func(fields [][]byte) bool {
-		return string(fields[3]) == stateListen && (string(fields[1]) == exact || string(fields[1]) == any)
-	})
-}
-
-// find answers the uid of the one socket that matches. Two matches are no
-// answer: the caller cannot tell which is meant.
-func find(table string, match func(fields [][]byte) bool) (uint32, bool) {
-	raw, err := os.ReadFile(table)
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
+		return socket{}, false
+	}
+	defer unix.Close(fd)
+	// A kernel that does not answer must not hold a connection up.
+	wait := unix.Timeval{Sec: 2}
+	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &wait)
+	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &wait)
+
+	request := make([]byte, unix.NLMSG_HDRLEN+diagRequestSize)
+	binary.NativeEndian.PutUint32(request[0:], uint32(len(request)))
+	binary.NativeEndian.PutUint16(request[4:], sockDiagByFamily)
+	binary.NativeEndian.PutUint16(request[6:], unix.NLM_F_REQUEST)
+	binary.NativeEndian.PutUint32(request[8:], 1) // sequence number
+	body := request[unix.NLMSG_HDRLEN:]
+	body[0] = family
+	body[1] = unix.IPPROTO_TCP
+	binary.NativeEndian.PutUint32(body[4:], ^uint32(0)) // sockets in any state
+	binary.BigEndian.PutUint16(body[8:], uint16(local.Port))
+	binary.BigEndian.PutUint16(body[10:], uint16(remote.Port))
+	copy(body[12:28], src[:])
+	copy(body[28:44], dst[:])
+	// Any interface, and no cookie: bytes 44..48 stay zero, 48..56 all ones.
+	for i := 48; i < 56; i++ {
+		body[i] = 0xff
+	}
+	if err := unix.Sendto(fd, request, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		return socket{}, false
+	}
+	answer := make([]byte, 4096)
+	n, from, err := unix.Recvfrom(fd, answer, 0)
+	if err != nil || n < unix.NLMSG_HDRLEN+diagAnswerSize {
+		return socket{}, false // an error answer (no such socket) is shorter
+	}
+	// Only the kernel's word counts: any program may send to a netlink socket.
+	if kernel, ok := from.(*unix.SockaddrNetlink); !ok || kernel.Pid != 0 {
+		return socket{}, false
+	}
+	if binary.NativeEndian.Uint16(answer[4:]) != sockDiagByFamily {
+		return socket{}, false
+	}
+	msg := answer[unix.NLMSG_HDRLEN:n]
+	// The socket found must be the one asked for. The kernel falls back to
+	// a listener when no connection matches; the caller is told which.
+	if binary.BigEndian.Uint16(msg[4:]) != uint16(local.Port) {
+		return socket{}, false
+	}
+	found := socket{uid: binary.NativeEndian.Uint32(msg[64:]), listening: msg[1] == tcpListen}
+	if !found.listening && binary.BigEndian.Uint16(msg[6:]) != uint16(remote.Port) {
+		return socket{}, false
+	}
+	return found, true
+}
+
+// diagAddr is an address as the request carries it: its bytes in network
+// order, an IPv4 address in the first four.
+func diagAddr(ip net.IP) (family uint8, addr [16]byte, ok bool) {
+	if v4 := ip.To4(); v4 != nil {
+		copy(addr[:], v4)
+		return unix.AF_INET, addr, true
+	}
+	if v6 := ip.To16(); v6 != nil {
+		copy(addr[:], v6)
+		return unix.AF_INET6, addr, true
+	}
+	return 0, addr, false
+}
+
+// socketUID is the owner of the socket bound to local and connected to
+// remote. A listener in its place is no answer: the connection is gone.
+func socketUID(local, remote *net.TCPAddr) (uint32, bool) {
+	found, ok := lookup(local, remote)
+	if !ok || found.listening {
 		return 0, false
 	}
-	var uid uint32
-	found := 0
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	for scanner.Scan() {
-		fields := bytes.Fields(scanner.Bytes())
-		if len(fields) < 8 || !match(fields) {
-			continue
-		}
-		n, err := strconv.ParseUint(string(fields[7]), 10, 32)
-		if err != nil {
-			return 0, false
-		}
-		if found > 0 && uint32(n) != uid {
-			return 0, false
-		}
-		uid, found = uint32(n), found+1
+	return found.uid, true
+}
+
+// listenerUID is the owner of the socket a connection to addr would reach.
+func listenerUID(addr *net.TCPAddr) (uint32, bool) {
+	// From this computer's own address of the same kind, with no port.
+	from := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	if addr.IP.To4() == nil {
+		from = &net.TCPAddr{IP: net.IPv6loopback}
 	}
-	return uid, found > 0
+	found, ok := lookup(addr, from)
+	if !ok || !found.listening {
+		return 0, false
+	}
+	return found.uid, true
 }

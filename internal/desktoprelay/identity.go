@@ -13,6 +13,9 @@ import (
 // unpacked. Anthropic's own limit is half of it.
 const maxRequestBytes = 64 << 20
 
+// unpacking bounds how many packed requests are unpacked at once.
+var unpacking = make(chan struct{}, 2)
+
 type identityView struct {
 	SessionID string
 	ParentID  string
@@ -34,6 +37,10 @@ func identity(r *http.Request, body []byte) identityView {
 		// body can hold gigabytes, and whoever may send a request, a paired
 		// Mac included, could otherwise use up this computer's memory. A
 		// larger one is not read, as anything else that cannot be.
+		// Few at a time, too: many small packed bodies unpacked at once
+		// add up to the same.
+		unpacking <- struct{}{}
+		defer func() { <-unpacking }()
 		if z, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
 			unpacked, _ := io.ReadAll(io.LimitReader(z, maxRequestBytes+1))
 			z.Close()

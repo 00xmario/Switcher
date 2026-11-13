@@ -317,6 +317,19 @@ func TestHostAnswersCannotRunOnThisSwitchersDashboard(t *testing.T) {
 		case "/api/providers/odd":
 			h.Set("Content-Type", "text/html;;;")
 			io.WriteString(w, "<b>x</b>")
+		case "/api/providers/twice":
+			// A browser takes the last of two content types.
+			h.Add("Content-Type", "application/json")
+			h.Add("Content-Type", "text/html")
+			io.WriteString(w, "<b>x</b>")
+		case "/api/providers/untyped":
+			// Without a type the server passing it on would guess one.
+			h["Content-Type"] = nil
+			io.WriteString(w, "<!doctype html><html><body><script>1</script></body></html>")
+		case "/api/providers/download":
+			h.Set("Content-Type", "application/json")
+			h.Set("Content-Disposition", `attachment; filename="Switcher Update.command"`)
+			io.WriteString(w, "{}")
 		case "/api/providers/away":
 			h.Set("Location", "https://attacker.example/")
 			w.WriteHeader(http.StatusFound)
@@ -368,8 +381,14 @@ func TestHostAnswersCannotRunOnThisSwitchersDashboard(t *testing.T) {
 		}
 		return w
 	}
-	for _, path := range []string{"/api/providers/page", "/api/providers/code.js", "/api/providers/svg", "/api/providers/odd"} {
+	if w := serve("/api/providers/download"); w.Header().Get("Content-Disposition") != "" {
+		t.Errorf("the host named a file to save: %q", w.Header().Get("Content-Disposition"))
+	}
+	for _, path := range []string{"/api/providers/page", "/api/providers/code.js", "/api/providers/svg", "/api/providers/odd", "/api/providers/twice", "/api/providers/untyped"} {
 		w := serve(path)
+		if kinds := w.Header().Values("Content-Type"); len(kinds) != 1 {
+			t.Errorf("%s has %d content types", path, len(kinds))
+		}
 		if got := w.Header().Get("Content-Type"); got != "application/octet-stream" || w.Header().Get("Content-Disposition") != "attachment" {
 			t.Errorf("%s would render or run as %q", path, got)
 		}
@@ -512,5 +531,57 @@ func TestRemovingADeviceEndsItsRequestsInFlight(t *testing.T) {
 	host.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("requests of removed devices are still tracked: %d", left)
+	}
+}
+
+// One paired device holds only so many requests at once on the host; the
+// next is told to try again, and room comes back as requests finish.
+func TestADeviceHasABoundedNumberOfRequestsRunning(t *testing.T) {
+	started := make(chan struct{}, perDeviceRequests+8)
+	release := make(chan struct{})
+	host, client := pairedWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/codex/hold" {
+			started <- struct{}{}
+			<-release
+		}
+		io.WriteString(w, "done")
+	}))
+	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	call := func(path string) int {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader("{}")))
+		return w.Code
+	}
+	finished := make(chan int, perDeviceRequests)
+	for i := 0; i < perDeviceRequests; i++ {
+		go func() { finished <- call("/codex/hold") }()
+	}
+	for i := 0; i < perDeviceRequests; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d requests started", i, perDeviceRequests)
+		}
+	}
+	if code := call("/codex/one-more"); code != http.StatusTooManyRequests {
+		t.Fatalf("request beyond the bound: %d", code)
+	}
+	if !client.Connected() || len(host.Status().Devices) != 1 {
+		t.Fatal("being told to wait unpaired the device")
+	}
+	close(release)
+	for i := 0; i < perDeviceRequests; i++ {
+		if code := <-finished; code != http.StatusOK {
+			t.Fatalf("held request: %d", code)
+		}
+	}
+	if code := call("/codex/after"); code != http.StatusOK {
+		t.Fatalf("after the others finished: %d", code)
+	}
+	host.mu.Lock()
+	left := len(host.running)
+	host.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("finished requests are still counted: %d", left)
 	}
 }

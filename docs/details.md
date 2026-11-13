@@ -423,7 +423,9 @@ environment; a terminal-only override needs the CLI command. The first
 - **Default: local only, no authentication.** The server binds `127.0.0.1`
   and nothing leaves the machine, which is why the default install has no
   login. This is the same trust model as the CLIs themselves. Switcher
-  takes its port once, at start, and keeps it. On Linux it also serves only
+  takes its port once, at start, and keeps it, also across its own
+  restarts after an update or a change of listeners, when the listening
+  socket is handed to the next process. On Linux it also serves only
   the user it runs as: the kernel says whose each local connection is, and
   another account's are dropped, as are the sign-in callback's; the command
   line and the tray in turn send nothing to a port another account holds.
@@ -484,7 +486,8 @@ environment; a terminal-only override needs the CLI command. The first
   on for a host that starts sharing now, off with a one-time offer for one
   that shared before. Paired Macs get revocable tokens, stored only as
   hashes on the host; account tokens never leave the host. Removing a
-  paired Mac also ends what it had running. A paired Mac in turn treats its
+  paired Mac also ends what it had running, and one paired Mac holds at
+  most 48 requests at once. A paired Mac in turn treats its
   host as another computer: what the host answers is passed on as data
   only, never as a page, a script, a cookie or a redirect, and every name
   and message from it is shown without control characters. See

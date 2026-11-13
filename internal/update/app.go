@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"switcher/internal/reexec"
 	"syscall"
 	"time"
 )
@@ -299,7 +300,7 @@ func restartApp(bundle, exe string) error {
 		return relaunchApp(bundle, parent, os.Getpid())
 	}
 	time.Sleep(300 * time.Millisecond) // let the HTTP response flush
-	return syscall.Exec(exe, os.Args, os.Environ())
+	return reexec.Exec(exe, os.Args, os.Environ())
 }
 
 func processPath(pid int) string {

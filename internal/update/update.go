@@ -26,8 +26,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"switcher/internal/reexec"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -502,7 +502,7 @@ func (c *Checker) installAndRestartFor(unattended bool) error {
 		syncDir:    syncDirectory,
 		exec: func(path string) error {
 			time.Sleep(300 * time.Millisecond) // let the HTTP response flush
-			return syscall.Exec(path, os.Args, os.Environ())
+			return reexec.Exec(path, os.Args, os.Environ())
 		},
 	})
 }

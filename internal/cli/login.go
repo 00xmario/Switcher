@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"switcher/internal/localpeer"
 	"time"
 )
 
@@ -215,6 +216,9 @@ func (c *ctx) finish(address, state string) (string, error) {
 	target := fmt.Sprintf("http://%s%s?%s", net.JoinHostPort("127.0.0.1", port), u.EscapedPath(), query.Encode())
 	req, _ := http.NewRequest(http.MethodGet, target, nil)
 	req.Header.Set("Accept", "application/json")
+	if err := localpeer.OwnServer(req.URL.Hostname(), portOf(req.URL)); err != nil {
+		return "", err
+	}
 	resp, err := c.cl.http.Do(req)
 	if err != nil {
 		if refused(err) {

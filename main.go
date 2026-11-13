@@ -60,6 +60,7 @@ import (
 	"switcher/internal/provider/grok"
 	"switcher/internal/provider/opencode"
 	"switcher/internal/proxy"
+	"switcher/internal/reexec"
 	"switcher/internal/remote"
 	"switcher/internal/server"
 	"switcher/internal/sessionmeta"
@@ -307,19 +308,30 @@ func run(port, desktopRelayPort int) {
 	// The port is held from here on and served on later: were it let go in
 	// between, another account's program could take it and be sent the
 	// menu bar app's token and the CLIs' requests in Switcher's place.
-	bound, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	// After a restart in place it is the very socket the image before this
+	// one served on: the port was never free in between.
+	bound := reexec.Inherited(fmt.Sprintf("127.0.0.1:%d", port))
+	var err error
+	if bound == nil {
+		bound, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	}
 	if err != nil {
 		// A distinct status, so the login service does not keep retrying.
 		log.Printf("Switcher is already running here, or port %d is in use: %v", port, err)
+		if owner, ok := localpeer.ListenerUID(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}); ok && owner != uint32(os.Getuid()) {
+			log.Printf("port %d is held by another user of this computer (uid %d), not by your Switcher: anything sent to it reaches that user's program", port, owner)
+		}
 		os.Exit(autostart.AlreadyRunningExit)
 	}
 	// Only this user's programs are served, where the system says whose a
 	// connection is (Linux).
+	reexec.Keep(bound)
 	bound = localpeer.SameUser(bound)
 	if localpeer.Enforced() {
 		log.Printf("serving this user's programs only; other accounts on this computer are refused (%s=1 lifts this)", localpeer.AllowOthersEnv)
 	}
 	st := store.New(config.Dir())
+	st.CleanTemp()
 	claudeProvider := claude.New()
 	if err := claudeProvider.ConfigureNative(st, config.Dir()); err != nil {
 		log.Printf("native Claude switching unavailable: %v", err)

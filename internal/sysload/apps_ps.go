@@ -74,6 +74,8 @@ const fileCacheFor = time.Minute
 // path it shows, so the look must not be able to hold up the listing.
 var statWait = 250 * time.Millisecond
 
+const maxPendingLooks = 8
+
 // lookedAt reports whether a path is one this computer may look at.
 func lookedAt(path string) bool {
 	// Spelled plainly: no ".." or "//" to step around the lists below.
@@ -114,7 +116,9 @@ func cachedIsFile(path string) bool {
 	}
 	// One look at a time per path: a path that never answers costs one
 	// waiting goroutine, not one per listing.
-	if fileCache.pending[path] {
+	// And only a few paths at once: each look that never answers holds a
+	// thread, and any process can show a new path.
+	if fileCache.pending[path] || len(fileCache.pending) >= maxPendingLooks {
 		fileCache.Unlock()
 		return false
 	}

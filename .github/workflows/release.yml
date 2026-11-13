@@ -59,6 +59,9 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
+          # What ships is built from the checkout alone, not from a cache
+          # another run filled.
+          cache: false
 
       - name: Verify
         run: make verify

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // An account file is this user's alone from its first byte, also when a
@@ -59,6 +60,49 @@ func TestAccountWritesArePrivateAndLeaveNothingBehind(t *testing.T) {
 	for _, a := range list {
 		if strings.Contains(a.ID, "tmp") {
 			t.Fatal("a temporary file was listed as an account")
+		}
+	}
+}
+
+// What a crash left behind while writing goes at the next start; a write
+// that may still be in progress, and everything else, stays.
+func TestCleanTempRemovesOnlyOldLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+	if err := s.Save(Account{ID: "a", Provider: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	accounts := filepath.Join(dir, "accounts")
+	old := time.Now().Add(-2 * time.Hour)
+	write := func(path string, aged bool) {
+		if err := os.WriteFile(path, []byte(`{"token":"secret"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if aged {
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write(filepath.Join(accounts, "a.json.123.tmp"), true)
+	write(filepath.Join(accounts, "a.json.tmp"), true)
+	write(filepath.Join(dir, "state.json.456.tmp"), true)
+	write(filepath.Join(accounts, "b.json.789.tmp"), false)
+	write(filepath.Join(accounts, "notes.tmp"), true)
+	if err := os.Chtimes(filepath.Join(accounts, "a.json"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	s.CleanTemp()
+	for name, want := range map[string]bool{
+		filepath.Join(accounts, "a.json.123.tmp"): false,
+		filepath.Join(accounts, "a.json.tmp"):     false,
+		filepath.Join(dir, "state.json.456.tmp"):  false,
+		filepath.Join(accounts, "b.json.789.tmp"): true,
+		filepath.Join(accounts, "notes.tmp"):      true,
+		filepath.Join(accounts, "a.json"):         true,
+	} {
+		if _, err := os.Stat(name); (err == nil) != want {
+			t.Errorf("%s: exists=%v, want %v", filepath.Base(name), err == nil, want)
 		}
 	}
 }

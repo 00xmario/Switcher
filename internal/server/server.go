@@ -29,6 +29,7 @@ import (
 	"switcher/internal/phone"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
+	"switcher/internal/reexec"
 	"switcher/internal/remote"
 	"switcher/internal/sessionmeta"
 	"switcher/internal/settings"
@@ -37,7 +38,6 @@ import (
 	"switcher/internal/update"
 	"switcher/internal/usage"
 	"sync"
-	"syscall"
 )
 
 // UpdateChecker separates metadata refresh from installation and lets route
@@ -1185,6 +1185,7 @@ func (a *API) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	// holds it, that program, not Switcher, would be handed the sign-in.
 	if handle.URL != "" && a.CallbackReady != nil {
 		if err := a.CallbackReady(handle.URL); err != nil {
+			a.Logins.Discard(handle.State)
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
@@ -1744,7 +1745,7 @@ func restartSelf() {
 	}
 	log.Printf("settings: restarting in place for the new listener topology")
 	time.Sleep(200 * time.Millisecond)
-	if err := syscall.Exec(current, os.Args, os.Environ()); err != nil {
+	if err := reexec.Exec(current, os.Args, os.Environ()); err != nil {
 		log.Printf("settings: restart failed: %v", err)
 	}
 }
