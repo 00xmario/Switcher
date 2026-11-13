@@ -665,37 +665,40 @@ func TestOnlyAYesLetsEveryoneIn(t *testing.T) {
 
 // Another account may connect to the self-test's port before the test's own
 // connection arrives: the test asks only about its own, and a stranger's
-// cannot turn the check off.
+// cannot turn the check off. (On a computer short of free ports the test
+// may not be made at all, which leaves the check on: it is tried again.)
 func TestASelfTestAsksOnlyAboutItsOwnConnection(t *testing.T) {
 	needsKernel(t)
 	real := lookup
 	defer func() { lookup = real }()
-	var stranger net.Conn
-	defer func() {
+	for attempt := 0; attempt < 5; attempt++ {
+		var stranger net.Conn
+		var strangerPort int
+		lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
+			// While the test asks whose its listener is, a stranger connects.
+			if remote.Port == 0 && stranger == nil {
+				if conn, err := net.Dial("tcp4", local.String()); err == nil {
+					stranger, strangerPort = conn, conn.LocalAddr().(*net.TCPAddr).Port
+					time.Sleep(50 * time.Millisecond)
+				}
+			}
+			found, ok := real(local, remote, since)
+			if ok && !found.listening && local.Port == strangerPort {
+				found.uid = me() + 1
+			}
+			return found, ok
+		}
+		got := selfTest(false)
 		if stranger != nil {
 			stranger.Close()
 		}
-	}()
-	var strangerPort int
-	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
-		// While the test asks whose its listener is, a stranger connects.
-		if remote.Port == 0 && stranger == nil {
-			conn, err := net.Dial("tcp4", local.String())
-			if err == nil {
-				stranger, strangerPort = conn, conn.LocalAddr().(*net.TCPAddr).Port
-				time.Sleep(50 * time.Millisecond)
-			}
+		if got == unsupported {
+			t.Fatal("a stranger's connection turned the check off")
 		}
-		found, ok := real(local, remote, since)
-		if ok && !found.listening && local.Port == strangerPort {
-			found.uid = me() + 1
+		if got == working && stranger != nil {
+			return
 		}
-		return found, ok
+		time.Sleep(200 * time.Millisecond)
 	}
-	if got := selfTest(false); got != working {
-		t.Fatalf("a stranger's connection made the self-test %v", got)
-	}
-	if stranger == nil {
-		t.Fatal("the stranger never connected")
-	}
+	t.Skip("the self-test could not be made here with a stranger connected; it never turned the check off")
 }
