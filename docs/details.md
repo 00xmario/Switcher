@@ -438,7 +438,8 @@ environment; a terminal-only override needs the CLI command. The first
   another account holds. `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a
   container that shares the computer's network under its own user; `=root`
   lets only root's programs in as well. Where the system's answer cannot be
-  read as expected, the check turns itself off rather than refuse you.
+  read as expected, the check stands aside rather than refuse you, and
+  tries again a minute later.
 - **Web pages cannot reach it.** Requests must name this computer as their
   host, so another site's name pointed at `127.0.0.1` is refused, and a
   request another site started is refused whatever it asks for. The
@@ -452,8 +453,11 @@ environment; a terminal-only override needs the CLI command. The first
   expiry that ends for good 30 days after the sign-in, HttpOnly
   SameSite=Strict cookies, CSRF-protected mutations, and login lockout,
   counted apart for this computer and for the network, so guesses from
-  the network never lock you out at the computer itself). A local device token lets the menu bar app authenticate
-  without a browser. When enabled, unauthenticated browsers receive only a
+  the network never lock you out at the computer itself). A local device
+  token lets the menu bar app authenticate without a browser; the app never
+  sends it, but signs each request with it (method, path, body, time and a
+  one-time nonce), so a program of another account that took the port while
+  Switcher was not running learns nothing it could use. When enabled, unauthenticated browsers receive only a
   standalone login page; the Accounts page, its assets, and dashboard APIs
   require a valid session. Logout and expired sessions return to that page.
   Password rotation invalidates prior credential-generation sessions. Sessions
@@ -525,10 +529,16 @@ environment; a terminal-only override needs the CLI command. The first
   a second one kept offline in case the first is lost), so whoever can
   change a release on GitHub, with a stolen token say, still cannot get a
   build installed. Downloads go over HTTPS, follow redirects only to
-  GitHub's own hosts, and are installed only when newer than what runs. The
-  release pipeline builds only from commits on main, with its actions
-  pinned to commits, and leaves the release a draft, unseen by updaters,
-  until it is signed (`build/release-sign.sh`).
+  GitHub's own hosts, and are installed only when newer than what runs
+  (`install.sh` too, unless `SWITCHER_TAG` names an older release). The
+  release pipeline builds only from commits on main, after the Linux and
+  macOS checks pass, with its actions pinned to commits; it attests where
+  each file was built and leaves the release a draft, unseen by updaters.
+  `build/release-sign.sh` signs only a draft built from the commit you
+  tagged on main: it builds the Linux binaries and Tailscale add-ons again
+  and requires them identical, checks every file's attestation that the
+  Release workflow built it from that commit on GitHub's own runners, and
+  writes the list of checksums itself.
 - The command line prints text from other computers (a host's accounts, a
   paired device's name, a Switcher found on the network) without terminal
   control characters.

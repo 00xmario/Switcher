@@ -78,10 +78,10 @@ func (a *authGate) gate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Device token: Bearer auth is CSRF-immune (no ambient cookie).
+		// Device token, as a bearer token or a proof (see proof.go): CSRF-
+		// immune, there is no ambient cookie.
 		if token, err := a.store.ReadDeviceToken(); err == nil && token != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if got != "" && subtleEqual(got, token) {
+			if deviceAuthorized(r, token) {
 				ctx := context.WithValue(r.Context(), authKindKey, AuthDevice)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return

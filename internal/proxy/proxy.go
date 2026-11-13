@@ -572,6 +572,27 @@ func (m *Manager) Exhausted(id string) (time.Time, bool) {
 	return t, ok
 }
 
+// OutOfUsage reports whether an account cannot be used right now: marked
+// out of usage, or showing a window used up. A banked reset is worth
+// spending only then.
+func (m *Manager) OutOfUsage(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if until, ok := m.exhausted[id]; ok && time.Now().Before(until) {
+		return true
+	}
+	usage, ok := m.cachedUsageLocked(id)
+	if !ok {
+		return false
+	}
+	for _, w := range usage.Windows {
+		if w.UsedPercent >= 100 {
+			return true
+		}
+	}
+	return false
+}
+
 // Usage returns the last observed usage snapshot for an account.
 func (m *Manager) LastUsage(id string) (provider.Usage, bool) {
 	m.mu.Lock()

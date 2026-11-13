@@ -30,7 +30,7 @@ func runMenuActionRegressionFixtures() {
     delegate.runUpdate()
     guard requests.count == 1, requests[0].url?.path == "/api/update/check",
           requests[0].httpMethod == "POST",
-          requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+          signedBy(requests[0], "fixture-device-token") && requests[0].value(forHTTPHeaderField: "Authorization") == nil else {
         fail("Check for updates must request authenticated metadata without installation")
     }
     completions.removeFirst()(Data(#"{"status":"ok","update":{"latest":"fixture-2","update_available":true}}"#.utf8), response(200), nil)
@@ -176,6 +176,33 @@ func runMenuActionRegressionFixtures() {
 
 // Update badge and install progress: the menu bar mark announces a waiting
 // release, and an install draws its progress from the server's reports.
+// The proof the app signs with matches the server's (internal/server/
+// proof_test.go has the same vector), and the token never travels.
+func runRequestProofFixtures() {
+    var request = URLRequest(url: URL(string: "http://127.0.0.1:8787/api/accounts/claude-work/activate")!)
+    request.httpMethod = "POST"
+    request.httpBody = Data(#"{"native":true}"#.utf8)
+    let token = String(repeating: "ab", count: 32)
+    guard requestProof(request, token: token, seconds: "1794571200", nonce: String(repeating: "0f", count: 16))
+            == "155d3f70dc25bca1cc74e6fdf9e3b4ee689b4788b526e94966daacb563f0f535" else {
+        fail("The request proof differs from the server's")
+    }
+    signRequest(&request, token: token)
+    let header = request.value(forHTTPHeaderField: "X-Switcher-Proof") ?? ""
+    guard header.hasPrefix("v1."), header.split(separator: ".").count == 4, !header.contains(token),
+          request.value(forHTTPHeaderField: "Authorization") == nil,
+          signedBy(request, token), !signedBy(request, String(repeating: "cd", count: 32)), !signedBy(request, nil) else {
+        fail("A signed request must carry a proof and no token")
+    }
+    var other = request
+    signRequest(&other, token: token)
+    guard other.value(forHTTPHeaderField: "X-Switcher-Proof") != header else {
+        fail("Two proofs must differ: each has its own nonce")
+    }
+    other.url = URL(string: "http://127.0.0.1:8787/api/accounts/other/activate")
+    guard !signedBy(other, token) else { fail("A proof must not cover another path") }
+}
+
 func runUpdateBadgeAndProgressFixtures() {
     let mark = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
         NSColor.black.setFill(); rect.fill(); return true
@@ -240,7 +267,7 @@ func runUpdateBadgeAndProgressFixtures() {
     let install = completions.removeFirst()
     runTask(0.4)
     guard requests.count == 2, requests[1].url?.path == "/api/update", requests[1].httpMethod == "GET",
-          requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+          signedBy(requests[1], "fixture-device-token") && requests[1].value(forHTTPHeaderField: "Authorization") == nil else {
         fail("An install must poll its progress")
     }
     completions.removeFirst()(Data(#"{"update_available":true,"install":{"step":"downloading","fraction":0.4,"done":4000000,"total":8000000}}"#.utf8), response(200), nil)
@@ -602,7 +629,7 @@ func runLiveStateFixtures() {
     let delegate = AppDelegate(runtime: runtime)
     delegate.watchStateChanges()
     guard requests.count == 1, since(requests[0]) == "", requests[0].timeoutInterval > 25,
-          requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+          signedBy(requests[0], "fixture-device-token") && requests[0].value(forHTTPHeaderField: "Authorization") == nil else {
         fail("The menu must wait for changes with its device token and a deadline past the server's wait")
     }
     completions[0](Data(#"{"etag":"tag-1","changed":true}"#.utf8), response(200), nil)
@@ -716,7 +743,7 @@ func runLoadAndLimitFixtures() {
     chips.first(where: { $0.title == "20%" })?.onClicked?()
     guard requests.count == 1, requests[0].url?.path == "/api/accounts/claude-kept", requests[0].httpMethod == "PATCH",
           json(requests[0])["usage_limit"] as? Int == 20,
-          requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token" else {
+          signedBy(requests[0], "fixture-device-token") && requests[0].value(forHTTPHeaderField: "Authorization") == nil else {
         fail("A limit chip must save the limit for its account")
     }
     completions.removeFirst()(Data(#"{"status":"ok"}"#.utf8), response(200), nil)
@@ -795,6 +822,7 @@ func runLoadAndLimitFixtures() {
 struct MenuBarLayoutTest {
     static func main() {
         _ = NSApplication.shared
+        runRequestProofFixtures()
         runMenuActionRegressionFixtures()
         runUpdateBadgeAndProgressFixtures()
         runKeepAwakeFixtures()

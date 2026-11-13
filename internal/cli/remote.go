@@ -83,7 +83,7 @@ func runShare(c *ctx, args []string) error {
 			address = r.Host.LAN[0]
 		}
 		c.result(map[string]any{"code": code.Code, "expires_at": code.ExpiresAt, "host": r.Host},
-			fmt.Sprintf("Pairing code: %s (valid for ten minutes)\nOn the other %s: switcher connect %s --code %s", code.Code, machine(), orDefault(address, "<this "+machine()+"'s address>"), code.Code))
+			fmt.Sprintf("Pairing code: %s (valid for ten minutes)\nOn the other %s: switcher connect %s --code %s\n(its dashboard takes the code from Switcher 1.31 on; before, use this command)", code.Code, machine(), orDefault(address, "<this "+machine()+"'s address>"), code.Code))
 		return nil
 	case "revoke":
 		if len(pos) < 2 {

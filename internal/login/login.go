@@ -47,8 +47,18 @@ type pending struct {
 	completing    bool
 	finished      bool          // its outcome is recorded; done is closed
 	tries         chan struct{} // turns for unnamed callbacks' exchanges
-	done          chan struct{}
-	started       time.Time
+	// exchanging holds, per code, the exchange of that code under way:
+	// the same code delivered twice is exchanged once, as a provider may
+	// revoke what a code gave when it is used again.
+	exchanging map[string]*exchange
+	done       chan struct{}
+	started    time.Time
+}
+
+// exchange is one code's exchange, and what came of it once done is closed.
+type exchange struct {
+	done chan struct{}
+	err  error
 }
 
 // unnamedTries bounds how many exchanges for one sign-in run at once from
@@ -87,6 +97,21 @@ func (m *Manager) Start(ctx context.Context, prov provider.Provider, reloginTarg
 	info, err := prov.LoginStart(ctx)
 	if err != nil {
 		return Handle{}, fmt.Errorf("start login: %w", err)
+	}
+	// Only one browser sign-in whose callback names none can finish: a new
+	// one replaces any still waiting, so a sign-in that failed at the
+	// provider does not keep the next one from finishing. Only this
+	// computer's own dashboard or command line starts one.
+	if info.PKCE {
+		m.mu.Lock()
+		for state, p := range m.pending {
+			if p.kind == "browser" && p.pkce && !p.completing && !p.finished {
+				p.finished = true
+				delete(m.pending, state)
+				close(p.done)
+			}
+		}
+		m.mu.Unlock()
 	}
 	m.track(info.State, prov, reloginTarget, "browser", info.PKCE)
 	return Handle{State: info.State, URL: info.URL, Kind: info.Kind}, nil
@@ -192,30 +217,59 @@ func (m *Manager) CompleteUnnamed(ctx context.Context, code string) (string, err
 	if code == "" {
 		return state, ErrNoCode
 	}
+	// The same code already being exchanged: its outcome answers this
+	// callback too.
+	m.mu.Lock()
+	if x := p.exchanging[code]; x != nil {
+		m.mu.Unlock()
+		select {
+		case <-x.done:
+			return state, x.err
+		case <-ctx.Done():
+			return state, ctx.Err()
+		}
+	}
+	x := &exchange{done: make(chan struct{})}
+	if p.exchanging == nil {
+		p.exchanging = map[string]*exchange{}
+	}
+	p.exchanging[code] = x
+	m.mu.Unlock()
+	x.err = m.exchangeUnnamed(ctx, state, p, code)
+	close(x.done)
+	m.mu.Lock()
+	delete(p.exchanging, code)
+	m.mu.Unlock()
+	return state, x.err
+}
+
+func (m *Manager) exchangeUnnamed(ctx context.Context, state string, p *pending, code string) error {
 	select {
 	case p.tries <- struct{}{}:
 	case <-ctx.Done():
-		return state, ctx.Err()
+		return ctx.Err()
 	case <-p.done:
-		return state, ErrUnknown
+		return m.recorded(state, p)
 	}
 	defer func() { <-p.tries }()
 	m.mu.Lock()
 	gone := p.finished || p.completing
 	m.mu.Unlock()
 	if gone {
-		return state, ErrUnknown
+		return m.recorded(state, p)
 	}
 	account, err := p.provider.LoginExchange(ctx, state, code)
 	if err != nil {
 		// This callback's code is not the sign-in's; the sign-in goes on.
 		log.Printf("login: a callback for %s brought a code that did not exchange (state %.8s...): %v", p.provider.ID(), state, err)
-		return state, fmt.Errorf("login exchange: %w", err)
+		return fmt.Errorf("login exchange: %w", err)
 	}
 	m.mu.Lock()
 	if p.finished || p.completing {
+		// The sign-in ended, or another callback is saving, while this code
+		// was exchanged: what is recorded is the answer, not this exchange.
 		m.mu.Unlock()
-		return state, nil
+		return m.recorded(state, p)
 	}
 	// Claimed now: one success is saved, once.
 	p.completing = true
@@ -232,7 +286,19 @@ func (m *Manager) CompleteUnnamed(ctx context.Context, code string) (string, err
 	m.mu.Lock()
 	m.finishLocked(state, p, account, err)
 	m.mu.Unlock()
-	return state, err
+	return err
+}
+
+// recorded waits for a sign-in's outcome and answers with it: nil only for
+// an account that was saved.
+func (m *Manager) recorded(state string, p *pending) error {
+	<-p.done
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if res, ok := m.results[state]; ok {
+		return res.err
+	}
+	return ErrUnknown
 }
 
 // Discard drops a sign-in that was started but will not be offered, such as

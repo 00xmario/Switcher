@@ -42,11 +42,37 @@ jobs:
       - name: Verify on Linux
         run: make verify-linux
 
-  release:
-    needs: verify-linux
+  # The checks on a Mac, in a job of their own: the tests run code of the
+  # repository and its dependencies, and nothing they do may reach the job
+  # that builds what ships.
+  verify-mac:
     runs-on: macos-15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Verify
+        run: make verify
+      # The native Keychain writer, on a throwaway keychain of this runner.
+      - name: Verify the native Keychain writer
+        run: build/macos/keychain-test.sh
+
+  release:
+    needs: [verify-linux, verify-mac]
+    runs-on: macos-15
+    # Writes the draft release, and GitHub's attestations of where each file
+    # was built, which build/release-sign.sh checks before it signs.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
@@ -62,12 +88,6 @@ jobs:
           # What ships is built from the checkout alone, not from a cache
           # another run filled.
           cache: false
-
-      - name: Verify
-        run: make verify
-      # The native Keychain writer, on a throwaway keychain of this runner.
-      - name: Verify the native Keychain writer
-        run: build/macos/keychain-test.sh
 
       - name: Build plain binaries
         run: |
@@ -181,6 +201,13 @@ jobs:
             esac
           done > SHA256SUMS
           cat SHA256SUMS
+
+      # GitHub's signed statement that this workflow built each listed file
+      # from this commit for this tag, on its own runners.
+      - name: Attest where the files were built
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
 
       # A draft: no updater or installer sees it until it is signed and
       # published.

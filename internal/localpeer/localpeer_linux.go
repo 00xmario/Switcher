@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -49,7 +50,12 @@ var loopbackIndex = sync.OnceValue(func() uint32 {
 	return 1
 })
 
-func kernelLookup(local, remote *net.TCPAddr) (socket, bool) {
+// checksAtOnce bounds how many connections are being looked up at a time:
+// each lookup here is one question to the kernel.
+const checksAtOnce = 32
+
+// kernelLookup asks the kernel at once; since is always satisfied.
+func kernelLookup(local, remote *net.TCPAddr, _ time.Time) (socket, bool) {
 	family, src, ok1 := diagAddr(local.IP)
 	family2, dst, ok2 := diagAddr(remote.IP)
 	if !ok1 || !ok2 || family != family2 || local.Port < 0 || local.Port > 65535 || remote.Port < 0 || remote.Port > 65535 {

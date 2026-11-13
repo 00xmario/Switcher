@@ -132,7 +132,8 @@ export function createRemote({ api, confirm = async () => true, onConnectionChan
             ${ring(host.pairing.expires_at, now())}
             <div><span class="remote-code-label">Enter this code on the other Mac</span>
             <strong class="remote-code-value">${escape(host.pairing.code)}</strong>
-            <span class="remote-code-time">Valid for ${remaining(host.pairing.expires_at, now())}</span></div>
+            <span class="remote-code-time">Valid for ${remaining(host.pairing.expires_at, now())}</span>
+            <span class="remote-code-time">A ${mac()} on Switcher 1.30 or earlier takes it on its command line: switcher connect &lt;this ${mac()}&gt; --code ${escape(host.pairing.code)}</span></div>
           </div>` : `<div><button type="button" class="primary" data-remote-action="pair" ${busy ? 'disabled' : ''}>${LINK_ICON}Pair a Mac</button></div>`}
         ${host.devices.length ? `<ul class="remote-devices">${host.devices.map(d => `<li>
             <span class="set-icon">${MAC_ICON}</span>

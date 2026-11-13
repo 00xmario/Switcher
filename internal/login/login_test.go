@@ -3,6 +3,7 @@ package login
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -154,13 +155,21 @@ func TestStatelessCallbackNeedsPKCE(t *testing.T) {
 // exchange until released.
 type pkceProvider struct {
 	reloginProvider
+	state   string // "pkce-state" when empty
 	real    string
 	hold    chan struct{}
 	started chan string
 }
 
 func (p *pkceProvider) LoginStart(context.Context) (provider.LoginInfo, error) {
-	return provider.LoginInfo{State: "pkce-state", Kind: "browser", PKCE: true}, nil
+	return provider.LoginInfo{State: p.stateName(), Kind: "browser", PKCE: true}, nil
+}
+
+func (p *pkceProvider) stateName() string {
+	if p.state == "" {
+		return "pkce-state"
+	}
+	return p.state
 }
 
 func (p *pkceProvider) LoginExchange(ctx context.Context, state, code string) (store.Account, error) {
@@ -174,7 +183,7 @@ func (p *pkceProvider) LoginExchange(ctx context.Context, state, code string) (s
 			return store.Account{}, ctx.Err()
 		}
 	}
-	if state != "pkce-state" || code != p.real {
+	if state != p.stateName() || code != p.real {
 		return store.Account{}, errors.New("invalid_grant")
 	}
 	return store.Account{ID: "you", Provider: "fake", Email: "you@example.com"}, nil
@@ -230,7 +239,7 @@ func TestUnnamedCallbacksRunSideBySide(t *testing.T) {
 	}
 	results := make(chan error, 16)
 	for i := 0; i < unnamedTries; i++ {
-		go func() { _, err := m.CompleteUnnamed(context.Background(), "forged"); results <- err }()
+		go func() { _, err := m.CompleteUnnamed(context.Background(), fmt.Sprintf("forged-%d", i)); results <- err }()
 	}
 	for i := 0; i < unnamedTries; i++ {
 		<-p.started // every turn is taken by a forgery, held at the provider
@@ -260,5 +269,81 @@ func TestUnnamedCallbacksRunSideBySide(t *testing.T) {
 	defer mu.Unlock()
 	if account, err, finished := m.Outcome(handle.State, 0); !finished || err != nil || account.ID != "you" || saved != 1 {
 		t.Fatalf("outcome: %+v %v %v, saved %d", account, err, finished, saved)
+	}
+}
+
+// The same code delivered twice, as by a browser retrying a redirect, is
+// exchanged once; both callbacks get its outcome.
+func TestTheSameCodeIsExchangedOnce(t *testing.T) {
+	p := &pkceProvider{real: "real-code", hold: make(chan struct{}), started: make(chan string, 4)}
+	saved := 0
+	var mu sync.Mutex
+	m := New(func(*store.Account, string) error { mu.Lock(); saved++; mu.Unlock(); return nil })
+	if _, err := m.Start(context.Background(), p, ""); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { _, err := m.CompleteUnnamed(context.Background(), "real-code"); results <- err }()
+	}
+	<-p.started
+	select {
+	case <-p.started:
+		t.Fatal("one code was exchanged twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(p.hold)
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("a callback with the real code: %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if saved != 1 {
+		t.Fatalf("saved %d times", saved)
+	}
+}
+
+// A sign-in that failed at the provider does not block the next: starting
+// again replaces it, and the next callback finishes the new one.
+func TestStartingAgainReplacesAWaitingSignIn(t *testing.T) {
+	p := &pkceProvider{real: "real-code"}
+	m := New(func(*store.Account, string) error { return nil })
+	first, err := m.Start(context.Background(), p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CompleteUnnamed(context.Background(), "denied-at-the-provider"); err == nil {
+		t.Fatal("a failed exchange signed in")
+	}
+	second, err := m.Start(context.Background(), &pkceProvider{state: "second-state", real: "real-code"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err, finished := m.Outcome(first.State, 0); !finished || !errors.Is(err, ErrUnknown) {
+		t.Fatalf("the first sign-in still waits: %v %v", err, finished)
+	}
+	if state, err := m.CompleteUnnamed(context.Background(), "real-code"); err != nil || state != second.State {
+		t.Fatalf("the retry: state %q err %v", state, err)
+	}
+}
+
+// A callback whose code exchanged while the sign-in ended does not say the
+// account was added.
+func TestNoSuccessWithoutASavedAccount(t *testing.T) {
+	p := &pkceProvider{real: "real-code", hold: make(chan struct{}), started: make(chan string, 1)}
+	m := New(func(*store.Account, string) error { return nil })
+	handle, err := m.Start(context.Background(), p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := make(chan error, 1)
+	go func() { _, err := m.CompleteUnnamed(context.Background(), "real-code"); answer <- err }()
+	<-p.started
+	m.Discard(handle.State)
+	close(p.hold)
+	if err := <-answer; err == nil {
+		t.Fatal("a sign-in that ended said the account was added")
 	}
 }

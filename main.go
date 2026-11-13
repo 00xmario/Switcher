@@ -324,7 +324,7 @@ func run(port, desktopRelayPort int) {
 		os.Exit(autostart.AlreadyRunningExit)
 	}
 	// Only this user's programs are served, where the system says whose a
-	// connection is (Linux).
+	// connection is (Linux and macOS).
 	reexec.Keep(bound)
 	bound = localpeer.SameUser(bound)
 	if localpeer.Enforced() {

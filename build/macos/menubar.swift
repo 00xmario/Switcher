@@ -2,6 +2,7 @@
 // per-account usage in a custom-drawn dropdown (cards, toggles, logos).
 // Single-file Swift, compiled with swiftc (no Xcode project).
 import AppKit
+import CryptoKit
 import UserNotifications
 
 let hubURL = URL(string: "http://127.0.0.1:8787")!
@@ -15,6 +16,39 @@ func currentDeviceToken() -> String? {
     let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     return token.count == 64 ? token : nil
     #endif
+}
+
+// signRequest proves the app holds the device token without sending it: it
+// signs the request's method, path, body, time and a one-time nonce with
+// the token (X-Switcher-Proof; the server's internal/server/proof.go). A
+// program that took Switcher's port, another account's say, learns nothing
+// it could use. Sign last, once the URL and body are final.
+func signRequest(_ request: inout URLRequest, token: String) {
+    let seconds = String(Int(Date().timeIntervalSince1970))
+    let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    request.setValue(nil, forHTTPHeaderField: "Authorization")
+    request.setValue("v1.\(seconds).\(nonce).\(requestProof(request, token: token, seconds: seconds, nonce: nonce))",
+                     forHTTPHeaderField: "X-Switcher-Proof")
+}
+
+func requestProof(_ request: URLRequest, token: String, seconds: String, nonce: String) -> String {
+    var target = request.url?.path ?? "/"
+    if let query = request.url?.query { target += "?" + query }
+    let body = SHA256.hash(data: request.httpBody ?? Data()).map { String(format: "%02x", $0) }.joined()
+    let message = "switcher-proof-v1|\(request.httpMethod ?? "GET")|\(target)|\(body)|\(seconds)|\(nonce)"
+    let mac = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: SymmetricKey(data: Data(token.utf8)))
+    return Data(mac).map { String(format: "%02x", $0) }.joined()
+}
+
+// signedBy reports whether a request was signed with token, or, for no
+// token, not signed at all: a 401 for a request signed with a token that
+// has since been rotated is worth one retry.
+func signedBy(_ request: URLRequest, _ token: String?) -> Bool {
+    guard let header = request.value(forHTTPHeaderField: "X-Switcher-Proof") else { return token == nil }
+    guard let token = token else { return false }
+    let parts = header.split(separator: ".").map(String.init)
+    guard parts.count == 4 else { return false }
+    return requestProof(request, token: token, seconds: parts[1], nonce: parts[2]) == parts[3]
 }
 
 // The menu app and server share this local preference file. Consult it at
@@ -1882,7 +1916,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             request.httpBody = data
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        if let token = runtime.deviceToken() { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        if let token = runtime.deviceToken() { signRequest(&request, token: token) }
         return request
     }
 
@@ -1893,7 +1927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         performRequest(request) { [weak self] data, response, _ in
             guard let self = self, !self.quitting, serial == self.stateRequest else { return }
             if (response as? HTTPURLResponse)?.statusCode == 401,
-               request.value(forHTTPHeaderField: "Authorization") != self.runtime.deviceToken().map({ "Bearer " + $0 }) {
+               !signedBy(request, self.runtime.deviceToken()) {
                 self.fetchStateAsync()
                 return
             }
@@ -1966,6 +2000,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         if let url = request.url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             components.queryItems = [URLQueryItem(name: "since", value: liveEtag)]
             request.url = components.url
+            // Signed again: the proof covers the query.
+            if let token = runtime.deviceToken() { signRequest(&request, token: token) }
         }
         performRequest(request) { [weak self] data, response, _ in
             guard let self = self, !self.quitting, generation == self.liveGeneration else { return }
@@ -2151,7 +2187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             performRequest(request) { [weak self] data, response, error in
                 guard let self = self, !self.quitting else { return }
                 if retry, (response as? HTTPURLResponse)?.statusCode == 401,
-                   request.value(forHTTPHeaderField: "Authorization") != self.runtime.deviceToken().map({ "Bearer " + $0 }) {
+                   !signedBy(request, self.runtime.deviceToken()) {
                     attempt(retry: false)
                     return
                 }

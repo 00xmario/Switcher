@@ -730,3 +730,77 @@ func TestPairedDevicesCannotRemoveTheHostsAccounts(t *testing.T) {
 		t.Fatalf("removing an account here: %d %s", w.Code, w.Body.String())
 	}
 }
+
+type resetUsageProvider struct {
+	*resetCreditTestProvider
+	used atomic.Int32
+}
+
+func (p *resetUsageProvider) Usage(context.Context, store.Account) (provider.Usage, error) {
+	return provider.Usage{Available: true, Windows: []provider.UsageWindow{{Label: "Session", UsedPercent: int(p.used.Load())}}}, nil
+}
+
+func (*resetUsageProvider) ListResetCredits(context.Context, store.Account) ([]provider.ResetCredit, error) {
+	return []provider.ResetCredit{{ID: "credit-one", ExpiresAt: time.Now().Add(time.Hour).Unix()}}, nil
+}
+
+func (*resetUsageProvider) ConsumeResetCredit(context.Context, store.Account, string) (string, error) {
+	return "reset", nil
+}
+
+// A banked reset cannot be taken back: a paired device spends one only for
+// an account that is out of usage, while this computer spends them freely.
+func TestPairedDevicesSpendResetsOnlyWhenOutOfUsage(t *testing.T) {
+	st := store.New(t.TempDir())
+	account := store.Account{ID: "fake-a", Provider: "fake", Email: "you@example.com", Token: store.Token{AccessToken: "fixture-access"}}
+	if err := st.Save(account); err != nil {
+		t.Fatal(err)
+	}
+	p := &resetUsageProvider{resetCreditTestProvider: &resetCreditTestProvider{recheckProvider: &recheckProvider{}}}
+	p.used.Store(40)
+	m, err := proxy.New(st, map[string]provider.Provider{"fake": p}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.RefreshUsage(context.Background(), account)
+	api := &API{Store: st, Proxy: m, Providers: map[string]provider.Provider{"fake": p}}
+	mux := http.NewServeMux()
+	api.Register(mux)
+	host, err := remote.NewHost(t.TempDir(), 0, mux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := remote.NewClient(t.TempDir(), "")
+	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Laptop"); err != nil {
+		t.Fatal(err)
+	}
+	through := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	spend := func(h http.Handler, target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{"credit_id":"credit-one"}`)))
+		return w
+	}
+	if w := spend(through, "/api/accounts/fake-a/use-reset"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "out of usage") {
+		t.Fatalf("a paired device spent a reset on an account with usage left: %d %s", w.Code, w.Body.String())
+	}
+	if m.OutOfUsage("fake-a") {
+		t.Fatal("40% used counts as out of usage")
+	}
+	p.used.Store(100)
+	m.RefreshUsage(context.Background(), account)
+	if !m.OutOfUsage("fake-a") {
+		t.Fatal("100% used does not count as out of usage")
+	}
+	if w := spend(through, "/api/accounts/fake-a/use-reset"); w.Code != http.StatusOK {
+		t.Fatalf("a paired device could not spend a reset on an account out of usage: %d %s", w.Code, w.Body.String())
+	}
+}

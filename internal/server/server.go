@@ -846,7 +846,7 @@ func (a *API) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		authenticated = true
 		cookieAuthenticated = true
 	}
-	if token, err := a.Settings.ReadDeviceToken(); err == nil && subtleEqual(r.Header.Get("Authorization"), "Bearer "+token) {
+	if token, err := a.Settings.ReadDeviceToken(); err == nil && deviceAuthorized(r, token) {
 		authenticated = true
 	}
 	if !isLoopbackRequest(r) || (a.Settings.Enabled() && !authenticated) {
@@ -1045,7 +1045,7 @@ func (a *API) handleRotateDeviceToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !authorized {
-		if token, err := a.Settings.ReadDeviceToken(); err == nil && subtleEqual(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), token) {
+		if token, err := a.Settings.ReadDeviceToken(); err == nil && deviceAuthorized(r, token) {
 			authorized = true
 		}
 	}
@@ -1697,6 +1697,13 @@ func (a *API) handleUseReset(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil || body.CreditID == "" || len(body.CreditID) > 256 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose a banked reset from refreshed account state"})
+		return
+	}
+	// A banked reset cannot be taken back. A paired computer spends one only
+	// for an account that is out of usage, where it is what a reset is for:
+	// one lost or turned against its owner cannot waste them all.
+	if _, paired := remote.PairedDevice(r); paired && !a.Proxy.OutOfUsage(id) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a banked reset is spent from another computer only for an account that is out of usage"})
 		return
 	}
 	outcome, err := a.Proxy.UseBankedReset(r.Context(), id, body.CreditID)

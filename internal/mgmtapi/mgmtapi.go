@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"switcher/internal/login"
 	"switcher/internal/proxy"
+	"switcher/internal/remote"
 	"switcher/internal/store"
 )
 
@@ -239,6 +240,14 @@ func (a *API) handleAPICall(w http.ResponseWriter, r *http.Request) {
 	if want := controlPlaneProviders[strings.ToLower(parsed.Hostname())]; want == "" || stored.Provider != want {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "this account does not belong to that provider"})
 		return
+	}
+	// Spending a banked reset cannot be taken back: from a paired computer,
+	// only for an account that is out of usage.
+	if method == http.MethodPost && strings.HasSuffix(parsed.EscapedPath(), "/consume") {
+		if _, paired := remote.PairedDevice(r); paired && !a.Proxy.OutOfUsage(stored.ID) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "a banked reset is spent from another computer only for an account that is out of usage"})
+			return
+		}
 	}
 	account, err := a.Proxy.PrepareAccount(ctx, req.AuthIndex)
 	if err != nil {

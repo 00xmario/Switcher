@@ -3,15 +3,17 @@
 //
 // Switcher's port on 127.0.0.1 is reachable by every account on the
 // computer, and it serves the accounts without a login of its own, as the
-// CLIs need. On Linux the kernel says who owns each socket, so the server
-// takes connections only from the user it runs as, and the command line and
-// tray make sure the port they talk to is that user's Switcher. Other
-// systems do not say, and there this package answers "unknown".
+// CLIs need. Linux's kernel and macOS's socket list say who owns each
+// socket, so the server takes connections only from the user it runs as,
+// and the command line and tray make sure the port they talk to is that
+// user's Switcher. Other systems do not say, and there this package answers
+// "unknown".
 package localpeer
 
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -51,15 +53,18 @@ type socket struct {
 }
 
 // PeerUID is the user that owns the other end of conn, a connection between
-// two addresses of this computer. ok is false when it cannot be told: off
-// Linux, or when the other end is gone.
-func PeerUID(conn net.Conn) (uid uint32, ok bool) {
+// two addresses of this computer. ok is false when it cannot be told: on a
+// system other than Linux and macOS, or when the other end is gone.
+func PeerUID(conn net.Conn) (uid uint32, ok bool) { return peerUIDSince(conn, time.Now()) }
+
+// peerUIDSince is PeerUID for a connection accepted no earlier than since.
+func peerUIDSince(conn net.Conn, since time.Time) (uint32, bool) {
 	local, _ := conn.LocalAddr().(*net.TCPAddr)
 	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
 	if local == nil || remote == nil {
 		return 0, false
 	}
-	return peerUID(conn, local, remote)
+	return peerUID(conn, local, remote, since)
 }
 
 // serverEndUID is the user the other end of a connection this process made
@@ -83,10 +88,17 @@ func ListenerUID(addr *net.TCPAddr) (uid uint32, ok bool) {
 
 // works remembers, per address family, whether this computer says who owns
 // a connection.
+// works remembers, per address family, whether this computer says who owns
+// a connection. A failed self-test is tried again a minute later: a moment
+// in which the system could not answer does not leave the check off for
+// good.
 var works [2]struct {
-	once sync.Once
-	ok   bool
+	sync.Mutex
+	ok      bool
+	checked time.Time
 }
+
+const selfTestAgain = time.Minute
 
 // Works reports whether this computer says who owns a connection: a
 // connection this process makes to itself must come back as its own user.
@@ -101,8 +113,13 @@ func worksFor(v6 bool) bool {
 	if v6 {
 		i = 1
 	}
-	works[i].once.Do(func() { works[i].ok = selfTest(v6) })
-	return works[i].ok
+	w := &works[i]
+	w.Lock()
+	defer w.Unlock()
+	if !w.ok && (w.checked.IsZero() || time.Since(w.checked) >= selfTestAgain) {
+		w.ok, w.checked = selfTest(v6), time.Now()
+	}
+	return w.ok
 }
 
 func selfTest(v6 bool) bool {
@@ -143,10 +160,16 @@ func selfTest(v6 bool) bool {
 func SameUser(ln net.Listener) net.Listener {
 	addr, _ := ln.Addr().(*net.TCPAddr)
 	everyone, root := allowed()
-	if everyone || addr == nil || !worksFor(addr.IP.To4() == nil) {
+	if everyone || addr == nil {
 		return ln
 	}
-	return guard(ln, uint32(os.Getuid()), root, PeerUID)
+	g := guard(ln, uint32(os.Getuid()), root, func(conn net.Conn) (uint32, bool) { return PeerUID(conn) })
+	g.ownerSince = peerUIDSince
+	// Where the system cannot say whose a connection is, everyone's is
+	// taken; the self-test is tried again now and then.
+	v6 := addr.IP.To4() == nil
+	g.enforced = func() bool { return worksFor(v6) }
+	return g
 }
 
 func guard(ln net.Listener, uid uint32, root bool, owner func(net.Conn) (uint32, bool)) *sameUser {
@@ -165,6 +188,12 @@ type sameUser struct {
 	uid   uint32
 	root  bool // root's connections are taken as well
 	owner func(net.Conn) (uint32, bool)
+	// ownerSince, when set, is owner for a connection accepted no earlier
+	// than the time given; enforced, when set, says whether to check at all.
+	ownerSince func(net.Conn, time.Time) (uint32, bool)
+	enforced   func() bool
+	logged     time.Time // the last refusal logged
+	logMu      sync.Mutex
 
 	start   sync.Once
 	closing sync.Once
@@ -174,9 +203,6 @@ type sameUser struct {
 	err     error          // why run ended, read after stopped
 	checks  sync.WaitGroup // lookups in flight
 }
-
-// checksAtOnce bounds how many connections are being looked up at a time.
-const checksAtOnce = 32
 
 // Accept returns the next connection that is this user's. Connections are
 // taken off the port and looked up side by side, a bounded number at a
@@ -231,6 +257,7 @@ func (l *sameUser) run() {
 			return
 		}
 		wait = 0
+		accepted := time.Now()
 		select {
 		case slots <- struct{}{}:
 		case <-l.quit:
@@ -242,9 +269,19 @@ func (l *sameUser) run() {
 		go func() {
 			defer l.checks.Done()
 			defer func() { <-slots }()
-			if uid, ok := l.owner(conn); !ok || (uid != l.uid && !(l.root && uid == 0)) {
-				conn.Close()
-				return
+			if l.enforced == nil || l.enforced() {
+				var uid uint32
+				var ok bool
+				if l.ownerSince != nil {
+					uid, ok = l.ownerSince(conn, accepted)
+				} else {
+					uid, ok = l.owner(conn)
+				}
+				if !ok || (uid != l.uid && !(l.root && uid == 0)) {
+					l.logRefusal(uid, ok)
+					conn.Close()
+					return
+				}
 			}
 			select {
 			case l.taken <- conn:
@@ -253,6 +290,25 @@ func (l *sameUser) run() {
 			}
 		}()
 	}
+}
+
+// logRefusal says, at most once a minute, that a connection was refused,
+// so that someone wondering why a program gets no answer finds out.
+func (l *sameUser) logRefusal(uid uint32, known bool) {
+	l.logMu.Lock()
+	defer l.logMu.Unlock()
+	if time.Since(l.logged) < time.Minute {
+		return
+	}
+	l.logged = time.Now()
+	who := "a program whose user could not be told"
+	if known {
+		who = "another account's program (uid " + strconv.FormatUint(uint64(uid), 10) + ")"
+		if uid == 0 {
+			who = "a program running as root"
+		}
+	}
+	log.Printf("refused a connection to %s from %s; %s=1 lets every account's programs in, %s=root root's", l.Addr(), who, AllowOthersEnv, AllowOthersEnv)
 }
 
 // Transport is an HTTP transport for this user's own programs, the command
@@ -337,7 +393,10 @@ func ownConnection(conn net.Conn) error {
 	if everyone, _ := allowed(); everyone || remote == nil || !remote.IP.IsLoopback() || !worksFor(remote.IP.To4() == nil) {
 		return nil
 	}
-	mine := func(uid uint32) bool { return uid == uint32(os.Getuid()) || uid == 0 }
+	// This user's, or root's only where the user lets root in: on macOS a
+	// launchd socket that any user can set up is held by root.
+	_, root := allowed()
+	mine := func(uid uint32) bool { return uid == uint32(os.Getuid()) || root && uid == 0 }
 	// Whose the port is. It must be told: a listener that cannot be seen is
 	// not known to be this user's.
 	listener, ok := ListenerUID(remote)
@@ -365,6 +424,10 @@ func (e *OtherUserError) Error() string {
 		return "it cannot be told whose program holds port " + strconv.Itoa(e.Port) + " on this computer, so nothing was sent to it (" +
 			AllowOthersEnv + "=1 sends anyway)"
 	}
-	return "port " + strconv.Itoa(e.Port) + " on this computer is held by another user (uid " + strconv.FormatUint(uint64(e.UID), 10) +
-		"), not by your Switcher; nothing was sent to it"
+	who := "another user (uid " + strconv.FormatUint(uint64(e.UID), 10) + ")"
+	if e.UID == 0 {
+		who = "root"
+	}
+	return "port " + strconv.Itoa(e.Port) + " on this computer is held by " + who + ", not by your Switcher; nothing was sent to it (" +
+		AllowOthersEnv + "=root sends to root's)"
 }

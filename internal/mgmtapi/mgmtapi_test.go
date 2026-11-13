@@ -14,6 +14,7 @@ import (
 	"switcher/internal/claudecode"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
+	"switcher/internal/remote"
 	"switcher/internal/store"
 )
 
@@ -79,6 +80,10 @@ func managementFixture(t *testing.T, prov provider.Provider, access string) *API
 	}
 	return &API{Store: st, Proxy: m, ManagementKey: "fixture-key"}
 }
+
+// previousTransport is the transport the tests found, for calls that are not
+// the provider's.
+var previousTransport = http.DefaultTransport
 
 func mockManagementNetwork(t *testing.T, transport managementTransport) {
 	t.Helper()
@@ -317,5 +322,62 @@ func TestAPICallRedirectStaysOnT3CodesEndpoints(t *testing.T) {
 		if response := managementCallWith(api, hop.method, hop.url, data); response.Code != 502 || calls != 1 {
 			t.Errorf("%s %s: redirect to %s was followed: status=%d calls=%d", hop.method, hop.url, hop.location, response.Code, calls)
 		}
+	}
+}
+
+// Spending a banked reset cannot be taken back: through a paired device, the
+// consume call goes out only for an account that is out of usage.
+func TestPairedDevicesConsumeResetsOnlyWhenOutOfUsage(t *testing.T) {
+	api := managementFixture(t, &managementProvider{}, "fresh")
+	mux := http.NewServeMux()
+	api.Register(mux)
+	// As main.go shares it: a paired device's management calls carry the
+	// host's own key.
+	shared := http.NewServeMux()
+	shared.Handle("/v0/management/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer fixture-key")
+		mux.ServeHTTP(w, r)
+	}))
+	host, err := remote.NewHost(t.TempDir(), 0, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := remote.NewClient(t.TempDir(), "laptop-key")
+	if _, err := client.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "Laptop"); err != nil {
+		t.Fatal(err)
+	}
+	through := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	var reached []string
+	mockManagementNetwork(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "chatgpt.com" {
+			reached = append(reached, r.Method+" "+r.URL.Path)
+			return managementResponse(200, ""), nil
+		}
+		return previousTransport.RoundTrip(r)
+	})
+	call := func(target string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(apiCallRequest{AuthIndex: "a", Method: "POST", URL: target, Data: json.RawMessage(`{"credit_id":"c"}`), Header: map[string]string{"Authorization": "Bearer $TOKEN$"}})
+		request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(string(body)))
+		request.Header.Set("Authorization", "Bearer laptop-key")
+		w := httptest.NewRecorder()
+		through.ServeHTTP(w, request)
+		return w
+	}
+	consume := "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+	if w := call(consume); w.Code != http.StatusConflict || len(reached) != 0 {
+		t.Fatalf("a paired device consumed a reset for an account with usage left: %d %s %v", w.Code, w.Body.String(), reached)
+	}
+	// Here, on the host itself, the call goes out as before.
+	if w := managementCallWith(api, "POST", consume, json.RawMessage(`{"credit_id":"c"}`)); w.Code != http.StatusOK || len(reached) != 1 {
+		t.Fatalf("consuming a reset here: %d %s %v", w.Code, w.Body.String(), reached)
 	}
 }

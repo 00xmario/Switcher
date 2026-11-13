@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -166,5 +167,34 @@ func TestProductionKeysAreEd25519(t *testing.T) {
 		if string(r.str()) != "ssh-ed25519" || len(r.str()) != ed25519.PublicKeySize || r.bad || len(r.b) != 0 {
 			t.Fatalf("not an Ed25519 key: %s", encoded)
 		}
+	}
+}
+
+// install.sh trusts the same keys as the app: a release that one takes, the
+// other takes too.
+func TestInstallScriptTrustsTheSameKeys(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(script), "release_signers='")
+	if start < 0 {
+		t.Fatal("install.sh names no release_signers")
+	}
+	rest := string(script)[start+len("release_signers='"):]
+	end := strings.Index(rest, "'")
+	if end < 0 {
+		t.Fatal("release_signers is not closed")
+	}
+	var keys []string
+	for _, line := range strings.Split(rest[:end], "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 5 || fields[0] != "switcher-release" || fields[1] != `namespaces="switcher-release"` || fields[2] != "ssh-ed25519" {
+			t.Fatalf("unexpected allowed_signers line: %q", line)
+		}
+		keys = append(keys, fields[3])
+	}
+	if !slices.Equal(keys, productionKeys) {
+		t.Fatalf("install.sh trusts %v, the app %v", keys, productionKeys)
 	}
 }

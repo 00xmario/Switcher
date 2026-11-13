@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -60,7 +61,7 @@ func TestThisComputerSaysWhoOwnsAConnection(t *testing.T) {
 	}
 	// A pair of addresses nothing is connected between has no owner, even
 	// though a listener is there for one of them.
-	if _, ok := socketUID(addr, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9}); ok {
+	if _, ok := socketUID(addr, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9}, time.Now()); ok {
 		t.Fatal("a listener passed for a connection")
 	}
 }
@@ -374,8 +375,8 @@ func TestTransportRefusesAnotherUsersServer(t *testing.T) {
 	defer func() { lookup = real }()
 	before := hits.Load()
 	// The port is another user's.
-	lookup = func(local, remote *net.TCPAddr) (socket, bool) {
-		found, ok := real(local, remote)
+	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
+		found, ok := real(local, remote, since)
 		if ok && found.listening {
 			found.uid = me() + 1
 		}
@@ -389,8 +390,8 @@ func TestTransportRefusesAnotherUsersServer(t *testing.T) {
 	// The port looks like this user's, but another user's program took the
 	// connection.
 	client.CloseIdleConnections()
-	lookup = func(local, remote *net.TCPAddr) (socket, bool) {
-		found, ok := real(local, remote)
+	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
+		found, ok := real(local, remote, since)
 		if ok && !found.listening {
 			found.uid = me() + 2
 		}
@@ -408,22 +409,28 @@ func TestTransportRefusesAnotherUsersServer(t *testing.T) {
 	}
 	// A listener that cannot be seen is not known to be this user's.
 	client.CloseIdleConnections()
-	lookup = func(local, remote *net.TCPAddr) (socket, bool) { return socket{}, false }
+	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) { return socket{}, false }
 	if _, err = get(); !errors.As(err, &other) || !other.Unknown {
 		t.Fatalf("a port of unknown owner was used: %v", err)
 	}
-	// Root's is fine, and the check can be turned off.
+	// A port held by root is refused too: on macOS any user can have
+	// launchd, which runs as root, hold one. Root is let in on request.
 	client.CloseIdleConnections()
-	lookup = func(local, remote *net.TCPAddr) (socket, bool) {
-		found, ok := real(local, remote)
+	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
+		found, ok := real(local, remote, since)
 		found.uid = 0
 		return found, ok
 	}
+	if _, err := get(); !errors.As(err, &other) || other.UID != 0 || !strings.Contains(err.Error(), "root") {
+		t.Fatalf("root's server was used: %v", err)
+	}
+	t.Setenv(AllowOthersEnv, "root")
+	client.CloseIdleConnections()
 	if _, err := get(); err != nil {
-		t.Fatalf("root's server was refused: %v", err)
+		t.Fatalf("root's server was refused though root is let in: %v", err)
 	}
 	client.CloseIdleConnections()
-	lookup = func(local, remote *net.TCPAddr) (socket, bool) { return socket{}, false }
+	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) { return socket{}, false }
 	t.Setenv(AllowOthersEnv, "1")
 	if _, err := get(); err != nil {
 		t.Fatalf("the check stayed on: %v", err)

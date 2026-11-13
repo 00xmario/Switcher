@@ -26,6 +26,7 @@ test('a sharing Mac shows its addresses, pairing code and paired Macs', async ()
   assert.match(html, /title="Tailscale: click to copy">[\s\S]*?<code>100\.101\.2\.3<\/code>/);
   assert.match(html, /K7QF-M2XP-9DRA/);
   assert.match(html, /Valid for 9:30/);
+  assert.match(html, /on Switcher 1\.30 or earlier takes it on its command line: switcher connect &lt;this Mac&gt; --code K7QF-M2XP-9DRA/);
   assert.match(html, /MacBook Air<\/strong><span class="dim">last used 5 min ago/);
   assert.match(html, /data-remote-action="revoke" data-remote-id="d1"/);
   assert.doesNotMatch(html, /Use another Switcher/, 'a sharing Mac cannot also use another one');

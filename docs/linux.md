@@ -11,7 +11,10 @@ curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh |
 ```
 
 On Linux the script downloads `switcher-server_<version>_linux_<arch>` from
-the latest release, checks its SHA-256, installs it as `~/.local/bin/switcher`,
+the latest release, checks its SHA-256 against the release's signed list of
+checksums (the signature is checked with `ssh-keygen`, so it needs OpenSSH
+8.1 or newer, as every current distribution ships), installs it as
+`~/.local/bin/switcher`,
 turns on **Start at login**, starts Switcher and, in a desktop session, opens
 the tray. The dashboard is at <http://127.0.0.1:8787> (`switcher open`).
 Over SSH, forward it with `ssh -L 8787:127.0.0.1:8787` first.

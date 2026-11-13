@@ -717,10 +717,19 @@ func (h *Host) pair(w http.ResponseWriter, r *http.Request) {
 	source, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if ip := net.ParseIP(source); ip != nil && ip.IsLoopback() {
 		source = ""
+	} else if ip != nil && ip.To4() == nil {
+		// One IPv6 network hands out as many addresses as it likes.
+		source = ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 	}
 	h.mu.Lock()
-	if h.failures == nil {
-		h.failures = map[string]failure{}
+	if h.failures == nil || len(h.failures) > 4096 {
+		kept := map[string]failure{}
+		for k, f := range h.failures {
+			if time.Since(f.since) <= codeTTL && len(kept) < 4096 {
+				kept[k] = f
+			}
+		}
+		h.failures = kept
 	}
 	f := h.failures[source]
 	if time.Since(f.since) > codeTTL {

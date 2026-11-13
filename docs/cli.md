@@ -118,7 +118,7 @@ ssh you@other-mac
 curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh | sh
 
 # Use your main Mac's accounts: no sign-ins needed on this Mac.
-switcher connect studio.local --code K7QF-M2XP    # code from: switcher share code
+switcher connect studio.local --code K7QF-M2XP-9WDH    # code from: switcher share code
 
 # Or, with this Mac on your tailnet (switcher away on, or the Tailscale app):
 switcher discover
