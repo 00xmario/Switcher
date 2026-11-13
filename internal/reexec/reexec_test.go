@@ -41,7 +41,9 @@ func TestListenerSurvivesARestartInPlace(t *testing.T) {
 	}
 	cmd := exec.Command(os.Args[0], "-test.run", "TestListenerSurvivesARestartInPlace")
 	cmd.ExtraFiles = []*os.File{os.NewFile(uintptr(mustDup(t, fd)), "kept")}
-	cmd.Env = append(without(os.Environ()), "REEXEC_TEST_CHILD=1", envName+"=3,"+addr)
+	// The child stands for the next image of one process: it is told the
+	// process id it will have by taking the hand-over as "its own".
+	cmd.Env = append(without(os.Environ()), "REEXEC_TEST_CHILD=1", "REEXEC_TEST_HANDOVER=3,"+addr)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +82,8 @@ func mustDup(t *testing.T, fd int) int {
 // child is the next image: it takes the socket over and answers one
 // connection.
 func child() {
-	value := os.Getenv(envName)
-	_, addr, _ := strings.Cut(value, ",")
+	fd, addr, _ := strings.Cut(os.Getenv("REEXEC_TEST_HANDOVER"), ",")
+	os.Setenv(envName, fmt.Sprintf("%d,%s,%s", os.Getpid(), fd, addr))
 	ln := Inherited(addr)
 	if ln == nil {
 		fmt.Println("nothing inherited")
@@ -101,8 +103,9 @@ func child() {
 	os.Exit(0)
 }
 
-// What is handed over must be this port's listening socket; anything else
-// is closed and not used.
+// What is handed over must be this process's, and this port's listening
+// socket. Anything else is not used, and a descriptor that is not that
+// socket is not touched: it may be something else of this process's.
 func TestInheritedTakesOnlyTheRightSocket(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -114,22 +117,22 @@ func TestInheritedTakesOnlyTheRightSocket(t *testing.T) {
 	kept.Lock()
 	fd := kept.fd
 	kept.Unlock()
+	pid := os.Getpid()
+	other, err := os.CreateTemp(t.TempDir(), "accounts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
 	for name, value := range map[string]string{
-		"another address":  fmt.Sprintf("%d,127.0.0.1:1", mustDup(t, fd)),
-		"not a number":     "x," + addr,
-		"standard input":   "0," + addr,
-		"a closed number":  "987654," + addr,
-		"no address":       fmt.Sprint(mustDup(t, fd)),
-		"an ordinary file": "",
+		"another address":        fmt.Sprintf("%d,%d,127.0.0.1:1", pid, mustDup(t, fd)),
+		"another process":        fmt.Sprintf("%d,%d,%s", pid+1, mustDup(t, fd), addr),
+		"the old form":           fmt.Sprintf("%d,%s", mustDup(t, fd), addr),
+		"not a number":           fmt.Sprintf("%d,x,%s", pid, addr),
+		"standard input":         fmt.Sprintf("%d,0,%s", pid, addr),
+		"a closed number":        fmt.Sprintf("%d,987654,%s", pid, addr),
+		"no address":             fmt.Sprintf("%d,%d", pid, mustDup(t, fd)),
+		"a file of this process": fmt.Sprintf("%d,%d,%s", pid, other.Fd(), addr),
 	} {
-		if name == "an ordinary file" {
-			file, err := os.Open(os.Args[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer file.Close()
-			value = fmt.Sprintf("%d,%s", mustDup(t, int(file.Fd())), addr)
-		}
 		t.Setenv(envName, value)
 		if got := Inherited(addr); got != nil {
 			got.Close()
@@ -139,7 +142,12 @@ func TestInheritedTakesOnlyTheRightSocket(t *testing.T) {
 			t.Errorf("%s: the hand-over stayed in the environment", name)
 		}
 	}
-	t.Setenv(envName, fmt.Sprintf("%d,%s", mustDup(t, fd), addr))
+	// The file named by a stale hand-over is still open and still this
+	// process's to write.
+	if _, err := other.WriteString("still mine"); err != nil {
+		t.Fatalf("a stale hand-over closed another file of this process: %v", err)
+	}
+	t.Setenv(envName, fmt.Sprintf("%d,%d,%s", pid, mustDup(t, fd), addr))
 	got := Inherited(addr)
 	if got == nil || got.Addr().String() != addr {
 		t.Fatal("the right socket was not taken")
@@ -148,7 +156,39 @@ func TestInheritedTakesOnlyTheRightSocket(t *testing.T) {
 	if Inherited(addr) != nil {
 		t.Fatal("a hand-over was read twice")
 	}
-	if entries := without([]string{"A=1", envName + "=3,x", "B=2"}); len(entries) != 2 {
+	if entries := without([]string{"A=1", envName + "=1,3,x", "B=2"}); len(entries) != 2 {
 		t.Fatalf("environment: %v", entries)
+	}
+}
+
+// A restart of the same program hands the socket over; if the program file
+// was replaced meanwhile, it does not: another release may not know it.
+func TestSameProgramIsTheFileThisProcessRuns(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	Keep(ln)
+	kept.Lock()
+	image := kept.image
+	kept.Unlock()
+	self, err := os.Executable()
+	if err != nil || image == nil {
+		t.Fatal("the running program is unknown", err)
+	}
+	same := func(path string) bool {
+		now, err := os.Stat(path)
+		return err == nil && os.SameFile(image, now) && image.ModTime().Equal(now.ModTime()) && image.Size() == now.Size()
+	}
+	if !same(self) {
+		t.Fatal("the running program is not itself")
+	}
+	replaced := t.TempDir() + "/switcher"
+	if err := os.WriteFile(replaced, []byte("another release"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if same(replaced) || same(t.TempDir()+"/missing") {
+		t.Fatal("another file passed for the running program")
 	}
 }

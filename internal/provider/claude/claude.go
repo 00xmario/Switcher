@@ -599,7 +599,7 @@ func accountFromToken(tok oauthToken) (store.Account, error) {
 
 // oauthHTTPClient bounds token and refresh exchanges so a stalled upstream
 // cannot hold the callback request open.
-var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: provider.NoRedirect}
+var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: provider.SameHostRedirect}
 
 // keychainCreds mirrors the JSON the Claude Code CLI stores in the macOS
 // keychain (service "Claude Code-credentials").

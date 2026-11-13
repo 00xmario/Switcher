@@ -154,6 +154,10 @@ type Host struct {
 	// answer still streaming.
 	running    map[string]map[uint64]context.CancelFunc
 	runningSeq uint64
+	// held is how many bytes of request bodies each device's running
+	// requests have sent: the handlers keep a body in memory until they
+	// are done with it.
+	held map[string]int64
 }
 
 // NewHost loads the host state from dir. next serves the routes paired devices
@@ -450,7 +454,7 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONResponse(w, http.StatusOK, hello{Name: h.name, Addresses: append(lan, tailscale...)})
 		return
 	}
-	ctx, done, ok := h.track(context.WithValue(context.WithValue(r.Context(), deviceKey{}, d.Name), deviceIDKey{}, d.ID), d.ID)
+	ctx, charge, done, ok := h.track(context.WithValue(context.WithValue(r.Context(), deviceKey{}, d.Name), deviceIDKey{}, d.ID), d.ID)
 	if errors.Is(context.Cause(ctx), errTooBusy) {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "this device has too many requests running on this Switcher; try again in a moment")
@@ -462,25 +466,57 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
+	r.Body = &chargedBody{ReadCloser: r.Body, charge: charge}
 	h.next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// chargedBody counts what is read of a request's body against its device.
+type chargedBody struct {
+	io.ReadCloser
+	charge func(n int) bool
+}
+
+func (b *chargedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 && !b.charge(n) {
+		return 0, errTooMuch
+	}
+	return n, err
 }
 
 // track ties a request to its device's pairing: its context ends when the
 // device is removed. A device removed since it was authenticated gets no
 // request at all.
-func (h *Host) track(ctx context.Context, id string) (context.Context, func(), bool) {
+//
+// charge counts bytes of the request's body against the device and says
+// whether it may send them: all of a device's running requests together
+// hold at most perDeviceBytes.
+func (h *Host) track(ctx context.Context, id string) (tracked context.Context, charge func(int) bool, done func(), ok bool) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.state.Enabled || !slices.ContainsFunc(h.state.Devices, func(d device) bool { return d.ID == id }) {
 		cancel(nil)
-		return ctx, nil, false
+		return ctx, nil, nil, false
 	}
-	// One device holds only so many requests at once: each may hold a
-	// large body in this computer's memory.
+	// One device holds only so many requests at once.
 	if len(h.running[id]) >= perDeviceRequests {
 		cancel(errTooBusy)
-		return ctx, nil, false
+		return ctx, nil, nil, false
+	}
+	if h.held == nil {
+		h.held = map[string]int64{}
+	}
+	var sent int64
+	charge = func(n int) bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.held[id]+int64(n) > perDeviceBytes {
+			return false
+		}
+		h.held[id] += int64(n)
+		sent += int64(n)
+		return true
 	}
 	if h.running == nil {
 		h.running = map[string]map[uint64]context.CancelFunc{}
@@ -491,7 +527,7 @@ func (h *Host) track(ctx context.Context, id string) (context.Context, func(), b
 	h.runningSeq++
 	seq := h.runningSeq
 	h.running[id][seq] = func() { cancel(nil) }
-	return ctx, func() {
+	return ctx, charge, func() {
 		cancel(nil)
 		h.mu.Lock()
 		if set := h.running[id]; set != nil {
@@ -500,17 +536,28 @@ func (h *Host) track(ctx context.Context, id string) (context.Context, func(), b
 				delete(h.running, id)
 			}
 		}
+		if h.held[id] -= sent; h.held[id] <= 0 {
+			delete(h.held, id)
+		}
+		sent = 0
 		h.mu.Unlock()
 	}, true
 }
 
 // perDeviceRequests is how many requests one paired device may have running
 // at once: plenty for many conversations and agents, with their state
-// polls, and a bound on what a device gone wrong can make this computer
-// hold.
-const perDeviceRequests = 48
+// polls. perDeviceBytes is how much those requests' bodies may hold of this
+// computer's memory together: a few of the largest requests Claude takes at
+// once, or hundreds of ordinary ones. Together they bound what a device
+// gone wrong can make this computer hold.
+const perDeviceRequests = 128
 
-var errTooBusy = errors.New("too many requests running for this device")
+var perDeviceBytes int64 = 256 << 20 // tests lower it
+
+var (
+	errTooBusy = errors.New("too many requests running for this device")
+	errTooMuch = errors.New("this device's running requests hold too much; wait for some to finish")
+)
 
 // endRemovedLocked ends the requests in flight of every device that is no
 // longer paired.

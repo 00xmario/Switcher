@@ -1745,7 +1745,7 @@ func restartSelf() {
 	}
 	log.Printf("settings: restarting in place for the new listener topology")
 	time.Sleep(200 * time.Millisecond)
-	if err := reexec.Exec(current, os.Args, os.Environ()); err != nil {
+	if err := reexec.ExecSame(current, os.Args, os.Environ()); err != nil {
 		log.Printf("settings: restart failed: %v", err)
 	}
 }

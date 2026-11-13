@@ -426,8 +426,9 @@ environment; a terminal-only override needs the CLI command. The first
   takes its port once, at start, and keeps it, also across its own
   restarts after an update or a change of listeners, when the listening
   socket is handed to the next process. On Linux it also serves only
-  the user it runs as: the kernel says whose each local connection is, and
-  another account's are dropped, as are the sign-in callback's; the command
+  the user it runs as, and root: the kernel says whose each local
+  connection is, and another account's are dropped, as are the sign-in
+  callback's; the command
   line and the tray in turn send nothing to a port another account holds.
   `SWITCHER_ALLOW_LOCAL_USERS=1` lifts this, for a container that shares
   the computer's network under its own user. macOS does not say whose a
@@ -487,7 +488,8 @@ environment; a terminal-only override needs the CLI command. The first
   that shared before. Paired Macs get revocable tokens, stored only as
   hashes on the host; account tokens never leave the host. Removing a
   paired Mac also ends what it had running, and one paired Mac holds at
-  most 48 requests at once. A paired Mac in turn treats its
+  most 128 requests at once, with at most 256 MiB of request bodies
+  between them. A paired Mac in turn treats its
   host as another computer: what the host answers is passed on as data
   only, never as a page, a script, a cookie or a redirect, and every name
   and message from it is shown without control characters. See

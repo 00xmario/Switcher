@@ -585,3 +585,60 @@ func TestADeviceHasABoundedNumberOfRequestsRunning(t *testing.T) {
 		t.Fatalf("finished requests are still counted: %d", left)
 	}
 }
+
+// The bodies of one device's running requests hold only so much of the
+// host's memory together; what a request held is given back when it ends.
+func TestADevicesRunningRequestsHoldBoundedMemory(t *testing.T) {
+	was := perDeviceBytes
+	perDeviceBytes = 1 << 20
+	defer func() { perDeviceBytes = was }()
+	read := make(chan struct{}, 4)
+	release := make(chan struct{})
+	host, client := pairedWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "body refused: "+err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		if r.URL.Path == "/codex/hold" {
+			read <- struct{}{}
+			<-release
+		}
+		io.WriteString(w, strconv.Itoa(len(body)))
+	}))
+	handler := client.Middleware(func(*http.Request) map[string]any { return nil }, http.NotFoundHandler())
+	send := func(path string, size int) (int, string) {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(strings.Repeat("x", size))))
+		return w.Code, w.Body.String()
+	}
+	held := make(chan int, 1)
+	go func() { code, _ := send("/codex/hold", 700<<10); held <- code }()
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first request was not read")
+	}
+	// A second large body does not fit beside the first.
+	if code, body := send("/codex/more", 700<<10); code != http.StatusRequestEntityTooLarge || !strings.Contains(body, "too much") {
+		t.Fatalf("a body beyond the device's bound: %d %s", code, body)
+	}
+	// A small one still does.
+	if code, body := send("/codex/small", 1000); code != http.StatusOK || body != "1000" {
+		t.Fatalf("a small request beside a large one: %d %s", code, body)
+	}
+	close(release)
+	if code := <-held; code != http.StatusOK {
+		t.Fatalf("the held request: %d", code)
+	}
+	// What ended gave its share back.
+	if code, body := send("/codex/again", 700<<10); code != http.StatusOK || body != strconv.Itoa(700<<10) {
+		t.Fatalf("after the first ended: %d %s", code, body)
+	}
+	host.mu.Lock()
+	left := len(host.held)
+	host.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("finished requests still hold memory: %v", left)
+	}
+}

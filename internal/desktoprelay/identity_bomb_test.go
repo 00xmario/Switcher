@@ -3,6 +3,8 @@ package desktoprelay
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"io"
 	"net/http/httptest"
 	goruntime "runtime"
 	"testing"
@@ -94,4 +96,55 @@ func TestPackedBodiesAreUnpackedAFewAtATime(t *testing.T) {
 	if len(unpacking) != 0 {
 		t.Fatal("a turn was not given back")
 	}
+	// A paired Mac's requests wait for turns of their own: all of them
+	// taken does not hold this computer's own requests up.
+	for i := 0; i < cap(unpackingPaired); i++ {
+		unpackingPaired <- struct{}{}
+	}
+	own := httptest.NewRequest("POST", "/v1/messages", nil)
+	own.Header.Set("Content-Encoding", "gzip")
+	if identity(own, packed.Bytes()).Model != "m" {
+		t.Fatal("this computer's own packed request was not read")
+	}
+	// A request that was given up on does not wait, or take a turn later.
+	ctx, cancel := context.WithCancel(context.Background())
+	gone := httptest.NewRequest("POST", "/v1/messages", nil).WithContext(ctx)
+	gone.Header.Set("Content-Encoding", "gzip")
+	cancel()
+	answered := make(chan string, 1)
+	go func() { answered <- identityIn(unpackingPaired, gone, packed.Bytes()).Model }()
+	select {
+	case model := <-answered:
+		if model != "" {
+			t.Fatalf("an abandoned request was unpacked: %q", model)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an abandoned request kept waiting for a turn")
+	}
+	for i := 0; i < cap(unpackingPaired); i++ {
+		<-unpackingPaired
+	}
+}
+
+// A request larger than one may be is answered as Anthropic answers it,
+// not by a dropped connection the caller would retry.
+func TestOversizedRequestIsAnsweredNotDropped(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/messages", io.LimitReader(zeros{}, maxRequestBytes+1))
+	body, ok := readRequest(w, r)
+	if ok || body != nil || w.Code != 413 || !bytes.Contains(w.Body.Bytes(), []byte(`"request_too_large"`)) {
+		t.Fatalf("oversized request: ok=%v status=%d body=%s", ok, w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	body, ok = readRequest(w, httptest.NewRequest("POST", "/v1/messages", bytes.NewReader([]byte(`{"model":"m"}`))))
+	if !ok || string(body) != `{"model":"m"}` {
+		t.Fatalf("ordinary request: %v %q", ok, body)
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }

@@ -3,10 +3,14 @@ package localpeer
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,9 +78,6 @@ func TestSocketsOfTheOtherFamilyAreFound(t *testing.T) {
 	v4 := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}
 	if uid, ok := ListenerUID(v4); !ok || uid != me() {
 		t.Fatalf("a listener on every address is not found for 127.0.0.1: %d %v", uid, ok)
-	}
-	if err := OwnServer("127.0.0.1", fmt.Sprint(port)); err != nil {
-		t.Fatalf("own dual-stack server: %v", err)
 	}
 
 	// An IPv6 socket connecting to 127.0.0.1, as Java and .NET clients do.
@@ -151,8 +152,10 @@ func TestGoneSenderIsNotThisUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	if uid, ok := PeerUID(server); ok && uid == me() {
-		t.Fatalf("a connection whose sender left still counts as this user's (uid %d)", uid)
+	// Not this user's, and not root's either, though the kernel reports a
+	// socket nobody holds any more under uid 0: it has no owner at all.
+	if uid, ok := PeerUID(server); ok {
+		t.Fatalf("a connection whose sender left still has an owner (uid %d)", uid)
 	}
 }
 
@@ -301,6 +304,37 @@ func TestRefusingAFloodDoesNotHoldUpThisUser(t *testing.T) {
 	}
 }
 
+// Root's own connections are taken: root reads this user's files anyway.
+func TestSameUserTakesRoot(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded := &sameUser{Listener: ln, uid: me() + 7, owner: func(net.Conn) (uint32, bool) { return 0, true }}
+	defer guarded.Close()
+	client, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	taken := make(chan error, 1)
+	go func() {
+		conn, err := guarded.Accept()
+		if err == nil {
+			conn.Close()
+		}
+		taken <- err
+	}()
+	select {
+	case err := <-taken:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("root's connection was dropped")
+	}
+}
+
 func TestSameUserCanBeTurnedOff(t *testing.T) {
 	t.Setenv(AllowOthersEnv, "1")
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -313,42 +347,248 @@ func TestSameUserCanBeTurnedOff(t *testing.T) {
 	}
 }
 
-// Clients send nothing to a local port another account holds.
-func TestOwnServerRefusesAnotherUsersPort(t *testing.T) {
+// Clients send nothing to a local port another account holds: the check is
+// made on the connection itself, before a byte goes over it.
+func TestTransportRefusesAnotherUsersServer(t *testing.T) {
+	needsKernel(t)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.WriteString(w, "switcher")
+	}))
+	defer srv.Close()
+	client := &http.Client{Transport: Transport(nil), Timeout: 5 * time.Second}
+	get := func() (string, error) {
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return string(body), nil
+	}
+	if body, err := get(); err != nil || body != "switcher" {
+		t.Fatalf("this user's own server: %q %v", body, err)
+	}
+	// "localhost" and the dual-stack spelling reach it too.
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	if resp, err := client.Get("http://localhost:" + port + "/"); err != nil {
+		t.Fatalf("localhost: %v", err)
+	} else {
+		resp.Body.Close()
+	}
+	client.CloseIdleConnections()
+
+	real := lookup
+	defer func() { lookup = real }()
+	before := hits.Load()
+	// The port is another user's.
+	lookup = func(local, remote *net.TCPAddr) (socket, bool) {
+		found, ok := real(local, remote)
+		if ok && found.listening {
+			found.uid = me() + 1
+		}
+		return found, ok
+	}
+	_, err := get()
+	var other *OtherUserError
+	if !errors.As(err, &other) || other.UID != me()+1 || other.Unknown {
+		t.Fatalf("another user's port was used: %v", err)
+	}
+	// The port looks like this user's, but another user's program took the
+	// connection.
+	client.CloseIdleConnections()
+	lookup = func(local, remote *net.TCPAddr) (socket, bool) {
+		found, ok := real(local, remote)
+		if ok && !found.listening {
+			found.uid = me() + 2
+		}
+		return found, ok
+	}
+	// The server end is live once the server has taken the connection.
+	for i := 0; i < 50; i++ {
+		if _, err = get(); err != nil {
+			break
+		}
+		client.CloseIdleConnections()
+	}
+	if !errors.As(err, &other) || other.UID != me()+2 {
+		t.Fatalf("a connection another user's program took was used: %v", err)
+	}
+	// A listener that cannot be seen is not known to be this user's.
+	client.CloseIdleConnections()
+	lookup = func(local, remote *net.TCPAddr) (socket, bool) { return socket{}, false }
+	if _, err = get(); !errors.As(err, &other) || !other.Unknown {
+		t.Fatalf("a port of unknown owner was used: %v", err)
+	}
+	// Root's is fine, and the check can be turned off.
+	client.CloseIdleConnections()
+	lookup = func(local, remote *net.TCPAddr) (socket, bool) {
+		found, ok := real(local, remote)
+		found.uid = 0
+		return found, ok
+	}
+	if _, err := get(); err != nil {
+		t.Fatalf("root's server was refused: %v", err)
+	}
+	client.CloseIdleConnections()
+	lookup = func(local, remote *net.TCPAddr) (socket, bool) { return socket{}, false }
+	t.Setenv(AllowOthersEnv, "1")
+	if _, err := get(); err != nil {
+		t.Fatalf("the check stayed on: %v", err)
+	}
+	if got := hits.Load() - before; got < 2 {
+		t.Fatalf("allowed requests did not reach the server: %d", got)
+	}
+}
+
+// Requests to other computers are not this check's: they go as before.
+func TestTransportLeavesOtherComputersAlone(t *testing.T) {
+	var asked []string
+	base := baseFunc(func(r *http.Request) (*http.Response, error) {
+		asked = append(asked, r.URL.Host)
+		return nil, errors.New("not sent in this test")
+	})
+	transport := Transport(base)
+	for _, target := range []string{"http://192.0.2.1:8787/", "https://example.com/", "http://switcher-host/"} {
+		r, _ := http.NewRequest(http.MethodGet, target, nil)
+		_, _ = transport.RoundTrip(r)
+	}
+	if len(asked) != 3 {
+		t.Fatalf("requests elsewhere did not use the base transport: %v", asked)
+	}
+}
+
+// The kernel finds a socket by its pair of addresses, not by which
+// connection it is. A sender that leaves a request behind and resets its
+// connection frees its port; the next program to connect from that port,
+// this user's own say, must not lend the dead connection its owner.
+func TestADeadConnectionDoesNotTakeTheNextOwnerOfItsPort(t *testing.T) {
 	needsKernel(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	for _, host := range []string{"127.0.0.1", "localhost"} {
-		if err := OwnServer(host, port); err != nil {
-			t.Fatalf("this user's own server at %s was refused: %v", host, err)
+	// A free port to connect from, twice.
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: probe.Addr().(*net.TCPAddr).Port}
+	probe.Close()
+	dial := func() net.Conn {
+		dialer := net.Dialer{LocalAddr: from, Control: func(_, _ string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) { _ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1) })
+		}}
+		conn, err := dialer.Dial("tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
 		}
+		return conn
 	}
-	// Elsewhere, unknown and not listening are not this check's to refuse.
-	for _, target := range [][2]string{{"192.0.2.1", port}, {"example.com", "443"}, {"127.0.0.1", "1"}, {"127.0.0.1", "nonsense"}} {
-		if err := OwnServer(target[0], target[1]); err != nil {
-			t.Fatalf("%v: %v", target, err)
-		}
+	first := dial()
+	fmt.Fprint(first, "POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+	time.Sleep(20 * time.Millisecond)
+	_ = first.(*net.TCPConn).SetLinger(0) // reset, not a tidy close
+	first.Close()
+	time.Sleep(20 * time.Millisecond)
+	dead, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
 	}
-	real := lookup
-	defer func() { lookup = real }()
-	owner := me() + 1
-	lookup = func(local, remote *net.TCPAddr) (socket, bool) { return socket{uid: owner, listening: true}, true }
-	err = OwnServer("127.0.0.1", port)
-	var other *OtherUserError
-	if !errors.As(err, &other) || other.UID != me()+1 {
-		t.Fatalf("another user's port was accepted: %v", err)
+	defer dead.Close()
+	if _, ok := PeerUID(dead); ok {
+		t.Fatal("a reset connection has an owner")
 	}
-	owner = 0
-	if err := OwnServer("127.0.0.1", port); err != nil {
-		t.Fatalf("root's port was refused: %v", err)
+	// This user's next connection comes from the very same port.
+	next := dial()
+	defer next.Close()
+	if uid, ok := PeerUID(dead); ok {
+		t.Fatalf("the dead connection took the owner (uid %d) of the next connection from its port", uid)
 	}
-	owner = me() + 1
-	t.Setenv(AllowOthersEnv, "1")
-	if err := OwnServer("127.0.0.1", port); err != nil {
-		t.Fatalf("the check stayed on: %v", err)
+	// What it left behind can still be read: that is why it must be refused.
+	_ = dead.SetReadDeadline(time.Now().Add(time.Second))
+	left := make([]byte, 64)
+	if n, _ := dead.Read(left); n == 0 {
+		t.Log("nothing was left to read on the dead connection")
+	}
+	// The live connection itself is this user's.
+	live, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	if uid, ok := PeerUID(live); !ok || uid != me() {
+		t.Fatalf("the live connection: %d %v", uid, ok)
+	}
+	// So is one whose sender is done sending but still there to be answered.
+	_ = next.(*net.TCPConn).CloseWrite()
+	time.Sleep(20 * time.Millisecond)
+	if uid, ok := PeerUID(live); !ok || uid != me() {
+		t.Fatalf("a connection whose sender finished sending: %d %v", uid, ok)
 	}
 }
+
+// A socket bound to the loopback interface takes this computer's local
+// connections like any other. It must be found: an unseen listener would
+// pass for nobody's, and its clients would be dropped.
+func TestSocketsBoundToTheLoopbackInterfaceAreFound(t *testing.T) {
+	needsKernel(t)
+	bound := func(_, _ string, c syscall.RawConn) error {
+		var bindErr error
+		if err := c.Control(func(fd uintptr) { bindErr = unix.BindToDevice(int(fd), "lo") }); err != nil {
+			return err
+		}
+		return bindErr
+	}
+	ln, err := (&net.ListenConfig{Control: bound}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("this kernel does not let a program bind to the loopback interface: %v", err)
+	}
+	defer ln.Close()
+	addr := ln.Addr().(*net.TCPAddr)
+	if uid, ok := ListenerUID(addr); !ok || uid != me() {
+		t.Fatalf("a listener bound to the loopback interface is not found: %d %v", uid, ok)
+	}
+	// A plain client reaches it, and both ends are found.
+	client, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if uid, ok := PeerUID(server); !ok || uid != me() {
+		t.Fatalf("its client: %d %v", uid, ok)
+	}
+	if uid, ok := PeerUID(client); !ok || uid != me() {
+		t.Fatalf("its accepted end, asked from the client: %d %v", uid, ok)
+	}
+	// A client bound to the interface, connecting to an ordinary listener.
+	plain, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	loClient, err := (&net.Dialer{Control: bound}).Dial("tcp4", plain.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loClient.Close()
+	accepted, err := plain.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accepted.Close()
+	if uid, ok := PeerUID(accepted); !ok || uid != me() {
+		t.Fatalf("a client bound to the loopback interface: %d %v", uid, ok)
+	}
+}
+
+type baseFunc func(*http.Request) (*http.Response, error)
+
+func (f baseFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

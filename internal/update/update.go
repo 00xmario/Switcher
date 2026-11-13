@@ -66,6 +66,7 @@ type Checker struct {
 	latest          string
 	lastCheck       time.Time // last successful metadata check
 	lastAttempt     time.Time // last metadata check, whatever came of it
+	lastErr         error     // what the last metadata check failed with
 	inFlight        *metadataCall
 	metadataFetch   func(context.Context) (string, error) // fixture hook, set before use
 	metadataTimeout time.Duration                         // fixture timeout, capped at 20s
@@ -135,15 +136,16 @@ const OthersCheckEvery = time.Minute
 
 // CheckUnlessRecent is Check for a request from another computer, such as a
 // paired Mac: it answers from the last check when one ended within every,
-// whatever came of it. Asking in a loop then cannot use up this computer's
+// with that check's own outcome. Asking in a loop then cannot use up this computer's
 // allowance at the release servers, which would keep it from learning of
 // updates.
 func (c *Checker) CheckUnlessRecent(ctx context.Context, every time.Duration) (State, error) {
 	c.mu.Lock()
 	if c.inFlight == nil && !c.lastAttempt.IsZero() && time.Since(c.lastAttempt) < every {
-		state := c.stateLocked()
+		// With what that check came to: a failed one is not "up to date".
+		state, err := c.stateLocked(), c.lastErr
 		c.mu.Unlock()
-		return state, nil
+		return state, err
 	}
 	c.mu.Unlock()
 	return c.Check(ctx)
@@ -244,11 +246,13 @@ func (c *Checker) runCheck(call *metadataCall, fetch func(context.Context) (stri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastAttempt = time.Now()
+	c.lastErr = nil
 	if err == nil {
 		c.latest = tag
 		c.lastCheck = time.Now()
 	} else {
 		err = fmt.Errorf("check for updates: %w", err)
+		c.lastErr = err
 	}
 	call.state, call.err = c.stateLocked(), err
 	c.inFlight = nil

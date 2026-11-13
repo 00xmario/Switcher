@@ -20,16 +20,34 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// envName carries "<descriptor>,<address>" to the next image.
+// envName carries "<process id>,<descriptor>,<address>" to the next image.
+// Replacing the image keeps the process id, so only the image that follows
+// in this very process takes the hand-over: a value that some other process
+// inherited, or that was left in an environment, names a descriptor that is
+// not this process's and is left alone.
 const envName = "SWITCHER_KEPT_LISTENER"
 
 var kept struct {
 	sync.Mutex
-	fd   int // a descriptor of the listening socket, closed on exec until Exec
-	addr string
+	fd    int // a descriptor of the listening socket, closed on exec until Exec
+	addr  string
+	image os.FileInfo // the program file this process runs, as it was at Keep
 }
 
 func init() { kept.fd = -1 }
+
+// runningImage is the program file of this process.
+func runningImage() os.FileInfo {
+	path, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	return info
+}
 
 // Keep remembers ln as the listener to hand to the next image. The copy it
 // holds stays closed to every other program this process starts.
@@ -56,17 +74,38 @@ func Keep(ln net.Listener) {
 		unix.Close(kept.fd)
 	}
 	kept.fd, kept.addr = copyFD, ln.Addr().String()
+	if kept.image == nil {
+		kept.image = runningImage()
+	}
 	kept.Unlock()
 }
 
 // Exec replaces this process with the program at path, as syscall.Exec
-// does, and hands it the kept listener. It returns only on failure.
-func Exec(path string, args, environ []string) error {
+// does, and hands it the kept listener. It returns only on failure. The
+// program must be one that takes the hand-over: a release of Switcher that
+// has it, as an update installs.
+func Exec(path string, args, environ []string) error { return replace(path, args, environ, true) }
+
+// ExecSame is Exec for restarting the program this process already runs.
+// If the file at path is no longer that program, replaced by hand with
+// another release say, the socket is not handed over: a release without
+// the hand-over would hold the port through the descriptor it does not know
+// about and fail to listen on it. The port is then free for a moment
+// instead.
+func ExecSame(path string, args, environ []string) error {
+	kept.Lock()
+	image := kept.image
+	kept.Unlock()
+	now, err := os.Stat(path)
+	return replace(path, args, environ, err == nil && image != nil && os.SameFile(image, now) && image.ModTime().Equal(now.ModTime()) && image.Size() == now.Size())
+}
+
+func replace(path string, args, environ []string, handOver bool) error {
 	kept.Lock()
 	fd, addr := kept.fd, kept.addr
 	kept.Unlock()
 	environ = without(environ)
-	if fd < 0 {
+	if fd < 0 || !handOver {
 		return syscall.Exec(path, args, environ)
 	}
 	// No other program is started while the descriptor is open to one:
@@ -76,7 +115,7 @@ func Exec(path string, args, environ []string) error {
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
 		return syscall.Exec(path, args, environ)
 	}
-	err := syscall.Exec(path, args, append(environ, envName+"="+strconv.Itoa(fd)+","+addr))
+	err := syscall.Exec(path, args, append(environ, envName+"="+strconv.Itoa(os.Getpid())+","+strconv.Itoa(fd)+","+addr))
 	_, _ = unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC)
 	return err
 }
@@ -92,21 +131,31 @@ func without(environ []string) []string {
 	return out
 }
 
-// Inherited is the listener the previous image handed over, if it is one
-// listening on addr; otherwise nil, and whatever was handed over is closed.
-// It reads the hand-over once: nothing this process starts sees it.
+// Inherited is the listener the previous image of this process handed over,
+// if it is one listening on addr; otherwise nil. It reads the hand-over
+// once: nothing this process starts sees it. A descriptor that is not what
+// the hand-over says, a listening TCP socket on addr, is not this
+// function's to touch and is left as it is.
 func Inherited(addr string) net.Listener {
 	value := os.Getenv(envName)
 	if value == "" {
 		return nil
 	}
 	_ = os.Unsetenv(envName)
-	number, want, _ := strings.Cut(value, ",")
-	fd, err := strconv.Atoi(number)
+	parts := strings.SplitN(value, ",", 3)
+	if len(parts) != 3 || parts[0] != strconv.Itoa(os.Getpid()) {
+		return nil
+	}
+	fd, err := strconv.Atoi(parts[1])
 	if err != nil || fd < 3 {
 		return nil
 	}
-	// Closed to the programs this process starts, before anything else.
+	var stat unix.Stat_t
+	if unix.Fstat(fd, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFSOCK {
+		return nil
+	}
+	// From here on it is the socket handed over: closed to the programs
+	// this process starts, whatever comes of it.
 	unix.CloseOnExec(fd)
 	file := os.NewFile(uintptr(fd), "kept-listener")
 	if file == nil {
@@ -114,7 +163,7 @@ func Inherited(addr string) net.Listener {
 	}
 	defer file.Close()
 	listening, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ACCEPTCONN)
-	if err != nil || listening != 1 || want != addr {
+	if err != nil || listening != 1 || parts[2] != addr {
 		return nil
 	}
 	ln, err := net.FileListener(file)

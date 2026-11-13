@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"syscall"
 	"time"
@@ -27,7 +26,9 @@ type client struct {
 func newClient(base string, token func() string) *client {
 	// Switcher's API never redirects. A redirect, as from a paired host's
 	// answer passed on, would repeat the request, token included, elsewhere.
-	return &client{base: base, token: token, http: &http.Client{Timeout: 60 * time.Second,
+	// And nothing goes to another account's program that took Switcher's
+	// port: the transport checks each connection to this computer.
+	return &client{base: base, token: token, http: &http.Client{Timeout: 60 * time.Second, Transport: localpeer.Transport(nil),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
@@ -65,10 +66,6 @@ func (cl *client) callWith(method, path string, body, out any, header http.Heade
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Nothing goes to another account's program that took Switcher's port.
-	if err := localpeer.OwnServer(req.URL.Hostname(), portOf(req.URL)); err != nil {
-		return err
-	}
 	// The device token unlocks this Mac's dashboard; it never goes elsewhere.
 	if cl.token != nil && loopback(req.URL.Hostname()) {
 		if token := cl.token(); token != "" {
@@ -77,6 +74,10 @@ func (cl *client) callWith(method, path string, body, out any, header http.Heade
 	}
 	resp, err := cl.http.Do(req)
 	if err != nil {
+		var other *localpeer.OtherUserError
+		if errors.As(err, &other) {
+			return other
+		}
 		if refused(err) {
 			return errNotRunning
 		}
@@ -125,17 +126,6 @@ func answerError(status int, raw []byte) error {
 		msg = http.StatusText(status)
 	}
 	return &apiError{Status: status, Message: msg, NeedsCode: needsCode}
-}
-
-// portOf is the port a request goes to.
-func portOf(u *url.URL) string {
-	if port := u.Port(); port != "" {
-		return port
-	}
-	if u.Scheme == "https" {
-		return "443"
-	}
-	return "80"
 }
 
 func loopback(host string) bool {

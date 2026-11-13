@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -50,9 +51,9 @@ func (m *Manager) forward(run *runtime, scope string, w http.ResponseWriter, r *
 		relayError(w, http.StatusForbidden, "permission_error", "This Switcher relay profile was revoked", "")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
-	if err != nil {
-		panic(http.ErrAbortHandler)
+	body, ok := readRequest(w, r)
+	if !ok {
+		return
 	}
 	ctx := r.Context()
 	if !model {
@@ -235,9 +236,9 @@ func usageRejected(h http.Header, now time.Time) (time.Time, bool) {
 // the given account's credential. path is the Anthropic path, such as
 // /v1/messages.
 func (m *Manager) ServeAccount(w http.ResponseWriter, r *http.Request, path, account string) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
-	if err != nil {
-		panic(http.ErrAbortHandler)
+	body, ok := readRequest(w, r)
+	if !ok {
+		return
 	}
 	m.serveAccount(w, r, path, body, account, nil)
 }
@@ -247,9 +248,9 @@ func (m *Manager) ServeAccount(w http.ResponseWriter, r *http.Request, path, acc
 // continued on the account it asked for cannot move, so the paired Mac is
 // asked to resend the full conversation instead.
 func (m *Manager) ServeAccountRouted(w http.ResponseWriter, r *http.Request, path, account string, route func(string) string) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
-	if err != nil {
-		panic(http.ErrAbortHandler)
+	body, ok := readRequest(w, r)
+	if !ok {
+		return
 	}
 	m.serveAccount(w, r, path, body, account, route)
 }
@@ -263,7 +264,7 @@ func (m *Manager) serveAccount(w http.ResponseWriter, r *http.Request, path stri
 	message := path == "/v1/messages"
 	thread := ""
 	if message {
-		thread = identity(r, body).Thread
+		thread = identityIn(unpackingPaired, r, body).Thread
 	}
 	if route != nil {
 		if next := route(account); next != "" && next != account {
@@ -496,6 +497,22 @@ func withAccountUUID(body []byte, uuid string) []byte {
 
 func usable(c Credential, account string) bool {
 	return c.AccountID == account && c.AccessToken != ""
+}
+
+// readRequest reads a request's body, up to the size one may have. A larger
+// one is answered as Anthropic answers it, so the caller says so instead of
+// sending it again; a body that breaks off ends the connection.
+func readRequest(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	if err == nil {
+		return body, true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		relayError(w, http.StatusRequestEntityTooLarge, "request_too_large", "Request exceeds the maximum allowed number of bytes", "")
+		return nil, false
+	}
+	panic(http.ErrAbortHandler)
 }
 
 func relayError(w http.ResponseWriter, status int, kind, message, code string) {

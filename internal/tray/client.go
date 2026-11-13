@@ -144,12 +144,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	client := c.HTTP
 	if client == nil {
 		// Switcher's API never redirects; see the command line's client.
-		client = &http.Client{Timeout: 60 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	}
-	// Nothing goes to another account's program that took Switcher's port.
-	if err := ownServer(req.URL); err != nil {
-		return err
+		// And nothing goes to another account's program that took
+		// Switcher's port: the transport checks each connection.
+		client = defaultClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -223,14 +220,6 @@ func (c *Client) Patch(ctx context.Context, path string, body any) error {
 	return c.do(ctx, http.MethodPatch, path, body, nil)
 }
 
-// ownServer refuses a server on this computer that another account runs.
-func ownServer(u *url.URL) error {
-	port := u.Port()
-	if port == "" {
-		port = "80"
-		if u.Scheme == "https" {
-			port = "443"
-		}
-	}
-	return localpeer.OwnServer(u.Hostname(), port)
-}
+// defaultClient is shared, so its connections are reused between requests.
+var defaultClient = &http.Client{Timeout: 60 * time.Second, Transport: localpeer.Transport(nil),
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

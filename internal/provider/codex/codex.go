@@ -268,7 +268,7 @@ func windowLabel(seconds int64) string {
 // upstream's client checks the same way proxied traffic does.
 // oauthClient bounds token and refresh exchanges so a stalled upstream
 // cannot hold the callback request open for minutes.
-var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: provider.NoRedirect}
+var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: provider.SameHostRedirect}
 
 const codexUserAgent = "codex_cli_rs/0.154.0 (Mac OS 26.0.0; arm64)"
 

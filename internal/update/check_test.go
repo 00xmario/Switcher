@@ -461,8 +461,9 @@ func TestOthersChecksAreThrottled(t *testing.T) {
 		t.Fatal("the first check did not run")
 	}
 	for i := 0; i < 20; i++ {
-		if _, err := c.CheckUnlessRecent(context.Background(), time.Minute); err != nil {
-			t.Fatalf("a throttled check failed: %v", err)
+		// Answered from the failed check, as a failure: not "up to date".
+		if _, err := c.CheckUnlessRecent(context.Background(), time.Minute); err == nil || !strings.Contains(err.Error(), "rate limited") {
+			t.Fatalf("a throttled answer hid the failed check: %v", err)
 		}
 		c.refreshForInstall(true)
 	}
