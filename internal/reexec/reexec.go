@@ -100,7 +100,27 @@ func ExecSame(path string, args, environ []string) error {
 	return replace(path, args, environ, err == nil && image != nil && os.SameFile(image, now) && image.ModTime().Equal(now.ModTime()) && image.Size() == now.Size())
 }
 
+// beforeExec runs before this process is replaced: what it keeps in memory
+// only is saved.
+var beforeExec struct {
+	sync.Mutex
+	funcs []func()
+}
+
+// BeforeExec has f run before this process is replaced by Exec or ExecSame.
+func BeforeExec(f func()) {
+	beforeExec.Lock()
+	beforeExec.funcs = append(beforeExec.funcs, f)
+	beforeExec.Unlock()
+}
+
 func replace(path string, args, environ []string, handOver bool) error {
+	beforeExec.Lock()
+	funcs := append([]func(){}, beforeExec.funcs...)
+	beforeExec.Unlock()
+	for _, f := range funcs {
+		f()
+	}
 	kept.Lock()
 	fd, addr := kept.fd, kept.addr
 	kept.Unlock()

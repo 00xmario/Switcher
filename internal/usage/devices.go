@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,12 +15,13 @@ import (
 	"time"
 )
 
-// DeviceKey is the key a computer's ledger is kept under: a hash of its
-// Switcher install's random id. It stays the same when the computer pairs
-// again, so its usage is never counted twice, and the id itself is not
-// passed on to other computers.
-func DeviceKey(install string) string {
-	sum := sha256.Sum256([]byte("switcher-usage|" + install))
+// DeviceKey is the key a computer's ledger is kept under: a hash of the id
+// it sends its usage with (internal/remote's UsageID, made from a secret of
+// its own for this host). It stays the same when the computer pairs again,
+// so its usage is never counted twice, and the id itself is not passed on
+// to other computers.
+func DeviceKey(id string) string {
+	sum := sha256.Sum256([]byte("switcher-usage|" + id))
 	return hex.EncodeToString(sum[:16])
 }
 
@@ -30,24 +32,36 @@ var ErrStoreFull = errors.New("this host keeps the usage of as many computers as
 // maxStoredDevices bounds how many computers' ledgers a host keeps.
 const maxStoredDevices = 32
 
-// storedLedgerLimit bounds a kept ledger's file: what a host reads back.
-const storedLedgerLimit = 16 << 20
+// storedLedgerLimit bounds a kept ledger's file: what a host reads back. It
+// is past the largest upload by the room the file's own fields take.
+const storedLedgerLimit = 17 << 20
 
 // keptLedgerLimit is the largest ledger Put keeps; tests lower it.
 var keptLedgerLimit = storedLedgerLimit
 
+// writeEvery is how often a computer's changed ledger is written to disk at
+// most; in between the latest is kept in memory and written when the time
+// comes. unchangedSave is the same for one whose usage did not change, so
+// the time it was last sent survives a restart.
+const (
+	writeEvery    = 5 * time.Minute
+	unchangedSave = 30 * time.Minute
+)
+
 // DeviceStore keeps, on a host, the ledgers its paired computers send: one
-// per Switcher install, on disk, so a computer that is away still counts.
-// Each pairing has one: a pairing that sends another install's ledger gives
-// up the one it sent before. The install's id is the computer's own secret
-// (the host passes on only its hash), so the pairing that sends it last
-// holds its ledger: a computer that paired again, after an unpairing that
-// never reached the host, keeps its numbers. A ledger counts while its
-// pairing is in place; the owner removing the pairing removes it.
+// per computer, on disk, so a computer that is away still counts. Each
+// pairing has one: a pairing that sends another computer's ledger gives up
+// the one it sent before. A computer's id is made from its own secret (the
+// host passes on only its hash), so the pairing that sends it last holds its
+// ledger: a computer that paired again, after an unpairing that never
+// reached the host, keeps its numbers. A ledger counts while its pairing is
+// in place; the owner removing the pairing removes it.
 type DeviceStore struct {
 	dir     string
 	mu      sync.Mutex
 	devices map[string]*storedLedger
+	version uint64                 // raised by every change, for what is made from the ledgers
+	timers  map[string]*time.Timer // pending writes of changed ledgers
 }
 
 type storedLedger struct {
@@ -57,20 +71,17 @@ type storedLedger struct {
 	UpdatedMs int64   `json:"updated_ms"`
 	Ledger    *Ledger `json:"ledger"`
 
-	sum     [32]byte // of the ledger as sent on, to tell an unchanged one
+	sum     [32]byte // of the ledger's usage, to tell an unchanged one
 	savedMs int64    // when the file was last written
+	dirty   bool     // changed since it was written
 }
 
 // ErrLedgerTooLarge refuses a ledger larger than a host keeps.
 var ErrLedgerTooLarge = errors.New("this computer's usage is larger than a host keeps")
 
-// unchangedSave is how often an unchanged ledger's file is written again,
-// so the time it was last sent survives a restart.
-const unchangedSave = 30 * time.Minute
-
 // OpenDeviceStore reads the ledgers kept in dir.
 func OpenDeviceStore(dir string) *DeviceStore {
-	s := &DeviceStore{dir: dir, devices: map[string]*storedLedger{}}
+	s := &DeviceStore{dir: dir, devices: map[string]*storedLedger{}, timers: map[string]*time.Timer{}}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return s
@@ -126,10 +137,15 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 		return ErrStoreFull
 	}
 	stored := &storedLedger{Key: key, Device: device, Name: plainName(name, maxLedgerName), UpdatedMs: now.UnixMilli(), Ledger: ledger, sum: ledgerSum(ledger)}
-	// Unchanged and saved lately: only the time it was sent changes.
-	if known && old.Device == device && old.Name == stored.Name && old.sum == stored.sum && now.UnixMilli()-old.savedMs < unchangedSave.Milliseconds() {
-		stored.Ledger, stored.savedMs = old.Ledger, old.savedMs
+	s.version++
+	if known && old.Device == device && old.Name == stored.Name && old.sum == stored.sum {
+		// The same usage: only the time it was sent changes, written now and
+		// then.
+		stored.Ledger, stored.savedMs, stored.dirty = old.Ledger, old.savedMs, old.dirty
 		s.devices[key] = stored
+		if now.UnixMilli()-old.savedMs >= unchangedSave.Milliseconds() {
+			return s.writeLocked(key)
+		}
 		return nil
 	}
 	raw, err := json.Marshal(stored)
@@ -137,24 +153,92 @@ func (s *DeviceStore) Put(key, device, name string, ledger *Ledger, paired func(
 		return err
 	}
 	if len(raw) > keptLedgerLimit {
+		s.version--
 		return ErrLedgerTooLarge
+	}
+	raw = nil
+	if known {
+		stored.savedMs = old.savedMs
+	}
+	s.devices[key] = stored
+	// Written at once, or when writeEvery has passed since the last write;
+	// until then the latest is kept here.
+	if wait := time.Duration(stored.savedMs+writeEvery.Milliseconds()-now.UnixMilli()) * time.Millisecond; known && wait > 0 {
+		stored.dirty = true
+		if s.timers[key] == nil {
+			s.timers[key] = time.AfterFunc(wait, func() { s.flushKey(key) })
+		}
+		return nil
+	}
+	return s.writeLocked(key)
+}
+
+// writeLocked writes a kept ledger to its file.
+func (s *DeviceStore) writeLocked(key string) error {
+	d := s.devices[key]
+	if d == nil {
+		return nil
+	}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return err
 	}
 	if err := writePrivateFile(filepath.Join(s.dir, key+".json"), raw); err != nil {
 		return err
 	}
-	stored.savedMs = stored.UpdatedMs
-	s.devices[key] = stored
+	d.savedMs, d.dirty = d.UpdatedMs, false
 	return nil
 }
 
+func (s *DeviceStore) flushKey(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.timers, key)
+	if d := s.devices[key]; d != nil && d.dirty {
+		if err := s.writeLocked(key); err != nil {
+			log.Printf("usage: keeping a computer's usage: %v", err)
+		}
+	}
+}
+
+// Flush writes every ledger kept in memory only, as when Switcher stops.
+func (s *DeviceStore) Flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, d := range s.devices {
+		if d.dirty {
+			if err := s.writeLocked(key); err != nil {
+				log.Printf("usage: keeping a computer's usage: %v", err)
+			}
+		}
+	}
+}
+
+// Version changes whenever a kept ledger, or the time one was sent, does.
+func (s *DeviceStore) Version() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
+}
+
+// ledgerSum tells one ledger's usage from another's: its entries and
+// sessions, not when it was scanned.
 func ledgerSum(l *Ledger) [32]byte {
-	raw, _ := json.Marshal(l)
+	raw, _ := json.Marshal(struct {
+		E []LedgerEntry `json:"e"`
+		S []SessionSpan `json:"s"`
+	}{l.Entries, l.Sessions})
 	return sha256.Sum256(raw)
 }
 
 func (s *DeviceStore) removeLocked(key string) {
 	_ = os.Remove(filepath.Join(s.dir, key+".json"))
 	delete(s.devices, key)
+	if t := s.timers[key]; t != nil {
+		t.Stop()
+		delete(s.timers, key)
+	}
+	s.version++
 }
 
 // Ledgers are the kept ledgers of computers still paired, for adding up;

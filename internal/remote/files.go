@@ -81,11 +81,17 @@ func writePrivate(path string, b []byte) error {
 
 // hostCertificate loads or creates the host's long-lived certificate. Clients
 // pin its fingerprint, so it is never regenerated for a changed address.
-func hostCertificate(dir string) (tls.Certificate, string, error) {
+// created says it was made now.
+func hostCertificate(dir string) (tls.Certificate, string, bool, error) {
 	certPath, keyPath := filepath.Join(dir, "host-cert.pem"), filepath.Join(dir, "host-key.pem")
 	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		return cert, fingerprint(cert.Certificate[0]), nil
+		return cert, fingerprint(cert.Certificate[0]), false, nil
 	}
+	cert, fp, err := createCertificate(dir, certPath, keyPath)
+	return cert, fp, err == nil, err
+}
+
+func createCertificate(dir, certPath, keyPath string) (tls.Certificate, string, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, "", err

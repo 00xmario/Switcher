@@ -202,7 +202,9 @@ func TestDeviceStoreKeepsEachComputersLedger(t *testing.T) {
 	if err := store.Put(keyB, "dev-b", "Mini", ledger(20), isPaired, now); err != nil {
 		t.Fatal(err)
 	}
-	// Kept on disk, privately, and read back after a restart.
+	// Kept on disk, privately, and read back after a restart (Switcher
+	// writes what it kept in memory only as it stops).
+	store.Flush()
 	reopened := OpenDeviceStore(dir)
 	if got := counted(reopened); len(got) != 2 || got["MacBook"] != 12 || got["Mini"] != 20 {
 		t.Fatalf("after a restart: %v", got)
@@ -439,5 +441,53 @@ func TestOwnLedgerIsKeptWholeAndBounded(t *testing.T) {
 	}
 	if got := boundedSum(Totals{Output: maxLedgerTotal}, Totals{Output: maxLedgerTotal}); got.Output != maxLedgerTotal {
 		t.Fatalf("a sum past the bound: %d", got.Output)
+	}
+}
+
+// A changed ledger is written at once the first time and then at most every
+// few minutes, the latest kept in memory meanwhile; a rescan that found no
+// new usage is no change.
+func TestChangedLedgersAreWrittenNowAndThen(t *testing.T) {
+	dir := t.TempDir()
+	store := OpenDeviceStore(dir)
+	now := time.Now()
+	paired := func(string) bool { return true }
+	key := DeviceKey("a")
+	ledger := func(tokens int64, scanned int64) *Ledger {
+		return &Ledger{Entries: []LedgerEntry{entryAt(now, "claude", "m", tokens, 1)}, ScannedAtMs: scanned}
+	}
+	onDisk := func() int64 {
+		var stored struct {
+			Ledger *Ledger `json:"ledger"`
+		}
+		raw, _ := os.ReadFile(filepath.Join(dir, key+".json"))
+		if json.Unmarshal(raw, &stored) != nil || stored.Ledger == nil || len(stored.Ledger.Entries) == 0 {
+			return -1
+		}
+		return stored.Ledger.Entries[0].Totals.Output
+	}
+	v := store.Version()
+	if err := store.Put(key, "dev", "x", ledger(1, 1), paired, now); err != nil || onDisk() != 1 {
+		t.Fatalf("the first ledger: %v, on disk %d", err, onDisk())
+	}
+	if store.Version() == v {
+		t.Fatal("a kept ledger did not change the version")
+	}
+	if err := store.Put(key, "dev", "x", ledger(2, 2), paired, now.Add(time.Minute)); err != nil || onDisk() != 1 {
+		t.Fatalf("a change a minute later was written at once: %v, on disk %d", err, onDisk())
+	}
+	if got := store.Ledgers(paired)[0].Ledger.Entries[0].Totals.Output; got != 2 {
+		t.Fatalf("the latest is not what counts: %d", got)
+	}
+	store.Flush()
+	if onDisk() != 2 {
+		t.Fatalf("after a flush: %d", onDisk())
+	}
+	if err := store.Put(key, "dev", "x", ledger(3, 3), paired, now.Add(writeEvery+time.Minute)); err != nil || onDisk() != 3 {
+		t.Fatalf("a change after the wait: %v, on disk %d", err, onDisk())
+	}
+	// Scanned again, the same usage: no change.
+	if ledgerSum(ledger(3, 3)) != ledgerSum(ledger(3, 99)) {
+		t.Fatal("the time of the scan counts as a change")
 	}
 }

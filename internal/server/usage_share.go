@@ -7,12 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +91,17 @@ func (u *usageUploaders) begin(device string, now time.Time) bool {
 	return true
 }
 
+// prune forgets pairings that are not sending and may send again.
+func (u *usageUploaders) prune(now time.Time) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for device, s := range u.state {
+		if !s.busy && now.Sub(s.last) >= usageUploadEvery {
+			delete(u.state, device)
+		}
+	}
+}
+
 func (u *usageUploaders) end(device string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -110,6 +119,9 @@ func (a *API) handleUsageDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.usageUploaders.begin(device, time.Now()) {
+		// Told apart from a host too busy to take it: this computer's usage
+		// is current enough.
+		w.Header().Set(remote.UsageRecentHeader, "recent")
 		w.Header().Set("Retry-After", "60")
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "this computer sent its usage a moment ago; it sends it again shortly"})
 		return
@@ -154,11 +166,39 @@ func (a *API) hostingUsage() bool { return a.RemoteHost != nil && a.RemoteHost.E
 
 // usageAnswer is the last answer to GET /api/tokens/ledgers, kept while
 // nothing in it changed: every paired computer asking is given the same
-// bytes, made once.
+// bytes. A new one re-encodes only the ledgers that changed, and keeps the
+// encoding of those that fit the answer, the size alone of the others.
 type usageAnswer struct {
-	mu   sync.Mutex
-	sig  string
-	body []byte
+	once    sync.Once
+	lock    chan struct{} // held while the answer is made; a request may stop waiting
+	version uint64
+	own     *usage.Ledger
+	ownAt   time.Time
+	key     string
+	name    string
+	ownPart []byte
+	parts   map[string]answerPart
+	body    []byte
+}
+
+type answerPart struct {
+	updatedMs int64
+	name      string
+	size      int
+	raw       []byte // nil for one that did not fit, or was not kept
+}
+
+func (u *usageAnswer) init() { u.once.Do(func() { u.lock = make(chan struct{}, 1) }) }
+
+// drop forgets the answer, unless one is being made.
+func (u *usageAnswer) drop() {
+	u.init()
+	select {
+	case u.lock <- struct{}{}:
+		u.body, u.ownPart, u.parts, u.own = nil, nil, nil, nil
+		<-u.lock
+	default:
+	}
 }
 
 // handleUsageLedgers gives a paired computer every computer's ledger: this
@@ -169,60 +209,116 @@ func (a *API) handleUsageLedgers(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body := a.usageLedgersAnswer()
+	body, err := a.usageLedgersAnswer(r.Context())
+	if err != nil {
+		return // the computer asking has gone
+	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(usageIOWait))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write(body)
 }
 
-func (a *API) usageLedgersAnswer() []byte {
+func (a *API) usageLedgersAnswer(ctx context.Context) ([]byte, error) {
+	u := &a.usageAnswer
+	u.init()
+	select {
+	case u.lock <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-u.lock }()
+	// Read while the answer is held: an answer is never made from what is
+	// older than the one before it.
 	devices := a.UsageDevices.Ledgers(a.RemoteHost.Paired)
+	version := a.UsageDevices.Version()
 	own, at := a.Usage.OwnLedger()
+	key, name, _ := a.UsageIdentity()
+	ownSame := u.own == own && u.ownAt.Equal(at) && u.key == key && u.name == name
+	if u.body != nil && u.version == version && ownSame {
+		return u.body, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if own == nil {
 		go a.Usage.Rescan()
-	}
-	key, name, _ := a.UsageIdentity()
-	var sig strings.Builder
-	fmt.Fprintf(&sig, "%p|%d|%s|%s", own, at.UnixNano(), key, name)
-	for _, d := range devices {
-		fmt.Fprintf(&sig, "|%s:%d:%s", d.Key, d.UpdatedMs, d.Name)
-	}
-	a.usageAnswer.mu.Lock()
-	defer a.usageAnswer.mu.Unlock()
-	if a.usageAnswer.body != nil && a.usageAnswer.sig == sig.String() {
-		return a.usageAnswer.body
-	}
-	type encoded struct{ raw []byte }
-	var parts []encoded
-	for _, d := range devices {
-		if raw, err := json.Marshal(d); err == nil {
-			parts = append(parts, encoded{raw})
+		u.ownPart = nil
+	} else if !ownSame || u.ownPart == nil {
+		raw, err := json.Marshal(usage.DeviceLedger{Key: key, Name: name, Host: true, UpdatedMs: at.UnixMilli(), Ledger: own.ForSending()})
+		if err != nil {
+			raw = nil
 		}
+		u.ownPart = raw
+	}
+	// Each computer's encoding, made again only when it changed; at most an
+	// answer's worth of them is held at a time.
+	parts := make(map[string]answerPart, len(devices))
+	byKey := make(map[string]usage.DeviceLedger, len(devices))
+	held := 0
+	for _, d := range devices {
+		byKey[d.Key] = d
+		p, ok := u.parts[d.Key]
+		if !ok || p.updatedMs != d.UpdatedMs || p.name != d.Name {
+			raw, err := json.Marshal(d)
+			if err != nil {
+				continue
+			}
+			p = answerPart{updatedMs: d.UpdatedMs, name: d.Name, size: len(raw)}
+			if held+len(raw) <= usageAnswerLimit {
+				p.raw = raw
+			}
+		}
+		held += len(p.raw)
+		parts[d.Key] = p
+	}
+	keys := make([]string, 0, len(parts))
+	for k := range parts {
+		keys = append(keys, k)
 	}
 	// A large ledger is the one left out, not the ones it would crowd out.
-	sort.SliceStable(parts, func(i, j int) bool { return len(parts[i].raw) < len(parts[j].raw) })
-	if own != nil {
-		if raw, err := json.Marshal(usage.DeviceLedger{Key: key, Name: name, Host: true, UpdatedMs: at.UnixMilli(), Ledger: own.ForSending()}); err == nil {
-			parts = append([]encoded{{raw}}, parts...)
+	sort.Slice(keys, func(i, j int) bool {
+		if parts[keys[i]].size != parts[keys[j]].size {
+			return parts[keys[i]].size < parts[keys[j]].size
 		}
-	}
+		return keys[i] < keys[j]
+	})
 	var out bytes.Buffer
 	out.WriteString(`{"devices":[`)
 	written := 0
-	for _, p := range parts {
-		if out.Len()+len(p.raw)+3 > usageAnswerLimit {
-			continue
-		}
+	add := func(raw []byte) {
 		if written > 0 {
 			out.WriteByte(',')
 		}
-		out.Write(p.raw)
+		out.Write(raw)
 		written++
 	}
+	room := usageAnswerLimit - len(`{"devices":[]}`+"\n")
+	if u.ownPart != nil && len(u.ownPart) <= room {
+		add(u.ownPart)
+		room -= len(u.ownPart) + 1
+	}
+	for _, k := range keys {
+		p := parts[k]
+		if p.size+1 > room {
+			p.raw = nil
+			parts[k] = p
+			continue
+		}
+		if p.raw == nil {
+			raw, err := json.Marshal(byKey[k])
+			if err != nil {
+				continue
+			}
+			p.raw = raw
+			parts[k] = p
+		}
+		add(p.raw)
+		room -= p.size + 1
+	}
 	out.WriteString("]}\n")
-	a.usageAnswer.sig, a.usageAnswer.body = sig.String(), out.Bytes()
-	return a.usageAnswer.body
+	u.version, u.own, u.ownAt, u.key, u.name, u.parts, u.body = version, own, at, key, name, parts, out.Bytes()
+	return u.body, nil
 }
 
 // thisUsageKey stands in for this computer's key when it has no usage id.
@@ -316,6 +412,8 @@ func (a *API) usageWaitLocked(every time.Duration) time.Duration {
 	switch err := a.usageShare.err; {
 	case err == nil:
 		return every
+	case errors.Is(err, remote.ErrUsageSentRecently):
+		return usageRetry
 	case errors.Is(err, remote.ErrNoUsageSharing) || errors.Is(err, remote.ErrUsageRefused):
 		return usageRefusedRetry
 	default:
@@ -331,6 +429,12 @@ func (a *API) RunUsageSharing(ctx context.Context) {
 	tick := time.NewTicker(usageTick)
 	defer tick.Stop()
 	for {
+		// What a host keeps for its paired computers goes when it stops
+		// sharing, and as they finish sending.
+		if !a.hostingUsage() {
+			a.usageAnswer.drop()
+		}
+		a.usageUploaders.prune(time.Now())
 		pairing := ""
 		if a.RemoteClient != nil && a.RemoteClient.Paired() {
 			pairing = a.RemoteClient.PairingID()
@@ -366,7 +470,7 @@ func (a *API) usageSharing() map[string]any {
 		out["updated_ms"] = at.UnixMilli()
 	}
 	a.usageShare.mu.Lock()
-	if err := a.usageShare.err; err != nil {
+	if err := a.usageShare.err; err != nil && !errors.Is(err, remote.ErrUsageSentRecently) {
 		out["error"] = err.Error()
 		switch {
 		case errors.Is(err, remote.ErrNoUsageSharing):

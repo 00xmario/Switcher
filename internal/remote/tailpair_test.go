@@ -427,8 +427,13 @@ func TestPairingWithoutACodeFollowsTheSettingAndSharing(t *testing.T) {
 // after the update and offers it once; one that starts sharing now has it
 // on. Either answer to the offer is remembered.
 func TestAHostThatSharedBeforeUpgradesWithPairingWithoutACodeOff(t *testing.T) {
+	// A host that shared before: its certificate, which its paired devices
+	// know, and its state.
 	before := func(f map[string]any) string {
 		dir := t.TempDir()
+		if _, _, _, err := hostCertificate(dir); err != nil {
+			t.Fatal(err)
+		}
 		if err := writeJSON(filepath.Join(dir, "host.json"), f); err != nil {
 			t.Fatal(err)
 		}

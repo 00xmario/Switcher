@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -787,5 +788,66 @@ func TestUsageIDIsPerHostAndSecret(t *testing.T) {
 	info, err := os.Stat(filepath.Join(c.Dir(), "usage-secret.json"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("the secret's file: %v %v", info, err)
+	}
+}
+
+type answerTransport func(*http.Request) *http.Response
+
+func (f answerTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r), nil }
+
+// A host that kept this computer's usage a moment ago says so apart from one
+// too busy to take it: only the first is current enough.
+func TestTooSoonIsToldApartFromBusy(t *testing.T) {
+	c := NewClient(t.TempDir(), "")
+	cfg := &clientFile{Token: "t"}
+	answer := func(recent bool) error {
+		req, _ := http.NewRequest(http.MethodPut, "https://switcher-host/api/tokens/device", strings.NewReader("{}"))
+		return c.usageCall(req, nil, cfg, answerTransport(func(*http.Request) *http.Response {
+			h := http.Header{}
+			if recent {
+				h.Set(UsageRecentHeader, "recent")
+			}
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: h, Body: io.NopCloser(strings.NewReader(`{}`))}
+		}))
+	}
+	if err := answer(true); !errors.Is(err, errUsageTooSoon) {
+		t.Fatalf("sent a moment ago: %v", err)
+	}
+	if err := answer(false); err == nil || errors.Is(err, errUsageTooSoon) {
+		t.Fatalf("a busy host: %v", err)
+	}
+}
+
+// A new certificate is one no paired device knows: their pairings go.
+func TestANewCertificateEndsThePairings(t *testing.T) {
+	dir := t.TempDir()
+	h, err := NewHost(dir, 0, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Quiet = true
+	if err := h.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	code, err := h.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewClient(t.TempDir(), "").Connect(context.Background(), "127.0.0.1", h.Status().Port, code.Code, "Laptop"); err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+	if again, err := NewHost(dir, 0, http.NotFoundHandler()); err != nil || len(again.Status().Devices) != 1 {
+		t.Fatalf("a restart with the same certificate lost the pairing: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "host-cert.pem")); err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewHost(dir, 0, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(again.Status().Devices); n != 0 {
+		t.Fatalf("%d pairings kept past a new certificate", n)
 	}
 }

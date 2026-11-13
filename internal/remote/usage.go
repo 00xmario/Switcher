@@ -136,12 +136,12 @@ func (c *Client) SyncUsage(ctx context.Context, own *usage.Ledger) error {
 	// The pairing and the host it names, taken together: an id for one host
 	// is not sent to another.
 	c.mu.Lock()
-	if c.cfg == nil {
-		c.mu.Unlock()
+	cfg, transport := c.cfg, c.transport
+	c.mu.Unlock()
+	if cfg == nil || transport == nil {
 		return nil
 	}
-	pairing, fingerprint := c.cfg.DeviceID+"|"+c.cfg.Fingerprint, c.cfg.Fingerprint
-	c.mu.Unlock()
+	pairing, fingerprint := cfg.DeviceID+"|"+cfg.Fingerprint, cfg.Fingerprint
 	id, err := c.usageIDFor(fingerprint)
 	if err != nil {
 		return err
@@ -154,8 +154,9 @@ func (c *Client) SyncUsage(ctx context.Context, own *usage.Ledger) error {
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, "https://switcher-host/api/tokens/device", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	sent := c.usageCall(req, nil)
-	if errors.Is(sent, errUsageTooSoon) {
+	sent := c.usageCall(req, nil, cfg, transport)
+	recent := errors.Is(sent, errUsageTooSoon)
+	if recent {
 		sent = nil
 	}
 	if errors.Is(sent, ErrUsageRejected) {
@@ -169,7 +170,7 @@ func (c *Client) SyncUsage(ctx context.Context, own *usage.Ledger) error {
 	var answer struct {
 		Devices usage.DeviceLedgers `json:"devices"`
 	}
-	if err := c.usageCall(req, &answer); err != nil {
+	if err := c.usageCall(req, &answer, cfg, transport); err != nil {
 		if errors.Is(err, ErrUsageRejected) {
 			c.forgetUsageOf(pairing)
 		}
@@ -192,6 +193,9 @@ func (c *Client) SyncUsage(ctx context.Context, own *usage.Ledger) error {
 	}
 	c.usage.ledgers, c.usage.at, c.usage.loaded = kept, now, true
 	_ = writeCompactJSON(c.usagePath(), usageFile{At: now, Ledgers: kept})
+	if recent {
+		return ErrUsageSentRecently
+	}
 	return sent
 }
 
@@ -225,11 +229,24 @@ type usageFile struct {
 // ago: what it has is current enough.
 var errUsageTooSoon = errors.New("sent a moment ago")
 
+// UsageRecentHeader marks the host's answer to usage sent too soon after the
+// last, apart from a host too busy to take it.
+const UsageRecentHeader = "Switcher-Usage"
+
+// ErrUsageSentRecently says the exchange went well but the host kept this
+// computer's usage from a moment ago: it is sent again shortly.
+var ErrUsageSentRecently = errors.New("this computer's usage was sent a moment ago")
+
 // errUnreachable wraps an exchange that never reached the host.
 var errUnreachable = errors.New("could not reach the host")
 
-func (c *Client) usageCall(req *http.Request, out any) error {
-	resp, err := c.send(req, true)
+// usageCall makes one request of an exchange through the pairing it
+// started with: what it sends never goes to a host this computer paired with
+// since.
+func (c *Client) usageCall(req *http.Request, out any, cfg *clientFile, transport http.RoundTripper) error {
+	req.URL.Scheme, req.URL.Host, req.Host = "https", "switcher-host", "switcher-host"
+	req.Header.Set(DeviceHeader, cfg.Token)
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errUnreachable, err)
 	}
@@ -239,7 +256,7 @@ func (c *Client) usageCall(req *http.Request, out any) error {
 		return ErrUsageRejected
 	case resp.StatusCode == http.StatusNotFound:
 		return ErrNoUsageSharing
-	case resp.StatusCode == http.StatusTooManyRequests && req.Method == http.MethodPut:
+	case resp.StatusCode == http.StatusTooManyRequests && req.Method == http.MethodPut && resp.Header.Get(UsageRecentHeader) == "recent":
 		return errUsageTooSoon
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode/100 == 5:
 		return fmt.Errorf("the host is busy (%d); trying again soon", resp.StatusCode)

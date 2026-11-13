@@ -172,7 +172,7 @@ type Host struct {
 // NewHost loads the host state from dir. next serves the routes paired devices
 // may use; it must apply no further authentication.
 func NewHost(dir string, port int, next http.Handler) (*Host, error) {
-	cert, fp, err := hostCertificate(dir)
+	cert, fp, created, err := hostCertificate(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +180,15 @@ func NewHost(dir string, port int, next http.Handler) (*Host, error) {
 		system: newSystemTailscale(), ownTailnet: localTailnetIPs}
 	if err := readJSON(h.path(), &h.state); err != nil && !errors.Is(err, io.EOF) && !isNotExist(err) {
 		return nil, err
+	}
+	// A new certificate is one no paired device knows: none of them can
+	// reach this host again, so their pairings go, and each pairs anew.
+	if created && len(h.state.Devices) > 0 {
+		log.Printf("sharing: this computer's certificate was made anew; its %d paired devices must pair again", len(h.state.Devices))
+		h.state.Devices = nil
+		if err := writeJSON(h.path(), h.state); err != nil {
+			return nil, err
+		}
 	}
 	// Kept with the next change to the file; until then every start
 	// decides the same.

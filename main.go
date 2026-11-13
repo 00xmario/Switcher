@@ -497,6 +497,9 @@ func run(port, desktopRelayPort int) {
 		// the login service not to restart it.
 		Quit: func() { _ = syscall.Kill(os.Getpid(), syscall.SIGTERM) },
 	}
+	// The paired computers' latest usage, kept in memory only, is written
+	// before an update or a change of listeners replaces this process.
+	reexec.BeforeExec(api.UsageDevices.Flush)
 	// Usage added up across a host and the computers that use it: this
 	// computer's own, and the others' as the host keeps them.
 	usageService.SetIdentity(api.UsageIdentity)
@@ -705,6 +708,8 @@ func run(port, desktopRelayPort int) {
 	case <-shutdown.Done():
 	case serveErr = <-serveErrors:
 	}
+	// The paired computers' latest usage, kept in memory only, is written.
+	api.UsageDevices.Flush()
 	if desktopRelay != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := desktopRelay.Close(closeCtx); err != nil {

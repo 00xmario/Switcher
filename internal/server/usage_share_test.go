@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -379,8 +380,15 @@ func TestTheUsageAnswerIsSharedAndFair(t *testing.T) {
 	was := usageAnswerLimit
 	usageAnswerLimit = 64 << 10
 	t.Cleanup(func() { usageAnswerLimit = was })
-	first := hostAPI.usageLedgersAnswer()
-	second := hostAPI.usageLedgersAnswer()
+	answerNow := func() []byte {
+		body, err := hostAPI.usageLedgersAnswer(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	first := answerNow()
+	second := answerNow()
 	if &first[0] != &second[0] {
 		t.Fatal("the same answer was made twice")
 	}
@@ -401,7 +409,63 @@ func TestTheUsageAnswerIsSharedAndFair(t *testing.T) {
 	if err := hostAPI.UsageDevices.Put(smallKey, deviceNamed(t, host, "Small"), "Small", ledger(6), host.Paired, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if third := hostAPI.usageLedgersAnswer(); &third[0] == &first[0] {
+	if third := answerNow(); &third[0] == &first[0] {
 		t.Fatal("a changed answer was not made again")
+	}
+}
+
+// Usage sent again within the minute is kept from the last time: the
+// exchange still brings everyone's, says nothing went wrong, and comes back
+// in a minute rather than five.
+func TestUsageSentAgainSoonIsNoFailure(t *testing.T) {
+	hostAPI, _ := usageComputer(t, "k12", 100)
+	hostAPI.UsageDevices = usage.OpenDeviceStore(filepath.Join(t.TempDir(), "usage-devices"))
+	mux := http.NewServeMux()
+	hostAPI.Register(mux)
+	host, err := remote.NewHost(t.TempDir(), 0, mux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.Quiet = true
+	t.Cleanup(host.Close)
+	hostAPI.RemoteHost = host
+	if err := host.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	laptopAPI, laptopUsage := usageComputer(t, "MacBook", 20)
+	code, err := host.NewPairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	laptopAPI.RemoteClient = remote.NewClient(t.TempDir(), "")
+	if _, err := laptopAPI.RemoteClient.Connect(context.Background(), "127.0.0.1", host.Status().Port, code.Code, "MacBook"); err != nil {
+		t.Fatal(err)
+	}
+	laptopAPI.syncUsage(context.Background())
+	laptopAPI.syncUsage(context.Background())
+	laptopAPI.usageShare.mu.Lock()
+	err, wait := laptopAPI.usageShare.err, laptopAPI.usageWaitLocked(usageSyncEvery)
+	laptopAPI.usageShare.mu.Unlock()
+	if !errors.Is(err, remote.ErrUsageSentRecently) || wait != usageRetry {
+		t.Fatalf("sent again at once: %v, next in %v", err, wait)
+	}
+	if sharing := laptopAPI.usageSharing(); sharing["error"] != nil {
+		t.Fatalf("shown as a failure: %v", sharing)
+	}
+	if s := laptopUsage.Get(30); s.TotalTokens != 120 {
+		t.Fatalf("the others' usage did not come: %d", s.TotalTokens)
+	}
+}
+
+// A request that stops waiting for the answer being made makes none.
+func TestAnAnswerIsNotMadeForWhoeverLeft(t *testing.T) {
+	a := &API{}
+	a.usageAnswer.init()
+	a.usageAnswer.lock <- struct{}{}
+	defer func() { <-a.usageAnswer.lock }()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := a.usageLedgersAnswer(ctx); err == nil {
+		t.Fatal("an answer was made after the request left")
 	}
 }
