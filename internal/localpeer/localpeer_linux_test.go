@@ -1,6 +1,7 @@
 package localpeer
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -162,4 +163,12 @@ func TestNetlinkFailuresAreClassified(t *testing.T) {
 			t.Errorf("%v: %v, want %v", err, got, want)
 		}
 	}
+}
+
+// describeLookup says what the kernel answers about the other end of conn.
+func describeLookup(conn net.Conn) string {
+	local, _ := conn.LocalAddr().(*net.TCPAddr)
+	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
+	found, err := kernelQuery(remote, local)
+	return fmt.Sprintf("kernel: %+v, %v; still connected here: %v", found, err, stillConnected(conn))
 }

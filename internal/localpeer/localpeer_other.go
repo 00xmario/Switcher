@@ -18,3 +18,5 @@ func listenerUID(addr *net.TCPAddr) (uint32, bool) { return 0, false }
 func connectedUID(local, remote *net.TCPAddr) (uint32, bool) { return 0, false }
 
 func queryFailure(local, remote *net.TCPAddr) error { return errUnsupported }
+
+func otherEndOpen(conn net.Conn) bool { return false }

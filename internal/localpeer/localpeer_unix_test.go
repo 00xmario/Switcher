@@ -407,11 +407,12 @@ func TestTransportRefusesAnotherUsersServer(t *testing.T) {
 	if !errors.As(err, &other) || other.UID != me()+2 {
 		t.Fatalf("a connection another user's program took was used: %v", err)
 	}
-	// A listener that cannot be seen is not known to be this user's.
+	// A listener the system does not show is no other account's as far as
+	// anyone can tell: this user is never kept from their own Switcher.
 	client.CloseIdleConnections()
 	lookup = func(local, remote *net.TCPAddr, since time.Time) (socket, bool) { return socket{}, false }
-	if _, err = get(); !errors.As(err, &other) || !other.Unknown {
-		t.Fatalf("a port of unknown owner was used: %v", err)
+	if _, err = get(); err != nil {
+		t.Fatalf("a port the system does not show was refused: %v", err)
 	}
 	// A port held by root is refused too: on macOS any user can have
 	// launchd, which runs as root, hold one. Root is let in on request.
@@ -601,10 +602,12 @@ func TestASelfTestThatCannotBeMadeLeavesTheCheckOn(t *testing.T) {
 	}
 }
 
-// While the self-test is unanswered, a connection whose owner cannot be
-// told is refused, by the server and by the command line alike; only on a
-// system known not to answer is it taken.
-func TestUnknownOwnersAreRefusedUntilTheSystemIsKnownNotToAnswer(t *testing.T) {
+// A connection whose owner the system does not show is served while it is
+// open, by the server and the command line alike, whatever the self-test
+// found: the check never turns this user's own programs away. It makes the
+// self-test again instead. (One whose sender is gone is refused: see
+// TestGoneSenderIsNotThisUser.)
+func TestOpenConnectionsWhoseOwnerIsUnseenAreServed(t *testing.T) {
 	real := lookup
 	defer func() { lookup = real }()
 	lookup = func(*net.TCPAddr, *net.TCPAddr, time.Time) (socket, bool) { return socket{}, false }
@@ -635,17 +638,34 @@ func TestUnknownOwnersAreRefusedUntilTheSystemIsKnownNotToAnswer(t *testing.T) {
 		case c := <-taken:
 			c.Close()
 			return true, checked
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(time.Second):
 			return false, checked
 		}
 	}
-	setSupport(t, unanswered)
-	if served, err := try(); served || err == nil {
-		t.Fatalf("with the self-test unanswered: served=%v, the command line's check: %v", served, err)
+	for _, state := range []support{working, unanswered, unsupported} {
+		setSupport(t, state)
+		if served, err := try(); !served || err != nil {
+			t.Fatalf("self-test %v: served=%v, the command line's check: %v", state, served, err)
+		}
 	}
-	setSupport(t, unsupported)
-	if served, err := try(); !served || err != nil {
-		t.Fatalf("on a system known not to answer: served=%v, the command line's check: %v", served, err)
+	// On a system found working, it is tested again (at most once a
+	// minute).
+	setSupport(t, working)
+	works[0].Lock()
+	works[0].checked = time.Now().Add(-2 * selfTestAgain)
+	works[0].Unlock()
+	run := runSelfTest
+	defer func() { runSelfTest = run }()
+	tested := make(chan bool, 4)
+	runSelfTest = func(bool) support { tested <- true; return working }
+	if served, _ := try(); !served {
+		t.Fatal("not served")
+	}
+	try()
+	select {
+	case <-tested:
+	case <-time.After(time.Second):
+		t.Fatal("the self-test was not made again after an unseen connection")
 	}
 }
 

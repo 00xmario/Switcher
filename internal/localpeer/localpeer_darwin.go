@@ -24,11 +24,13 @@ func readPCBs() ([]pcb, bool) {
 func readPCBsFor() ([]pcb, error) {
 	var raw []byte
 	var err error
-	// The list can grow between asking for its size and reading it.
-	for range 6 {
+	// The list can grow between asking for its size and reading it: tried
+	// again, a moment later each time.
+	for try := range 8 {
 		if raw, err = unix.SysctlRaw("net.inet.tcp.pcblist_n"); err != unix.ENOMEM {
 			break
 		}
+		time.Sleep(time.Duration(try) * time.Millisecond)
 	}
 	switch {
 	case err == unix.ENOMEM:
@@ -99,20 +101,32 @@ func kernelLookup(local, remote *net.TCPAddr, since time.Time) (socket, bool) {
 // stillConnected reports whether this end of conn has not been reset or
 // closed: connected, or connected with the other end done sending.
 func stillConnected(conn net.Conn) bool {
+	state, ok := tcpState(conn)
+	return ok && (state == tcpsEstablished || state == tcpsCloseWait)
+}
+
+// otherEndOpen reports whether the other end of conn has not closed it.
+func otherEndOpen(conn net.Conn) bool {
+	state, ok := tcpState(conn)
+	return ok && state == tcpsEstablished
+}
+
+func tcpState(conn net.Conn) (int32, bool) {
 	raw, ok := conn.(syscall.Conn)
 	if !ok {
-		return false
+		return 0, false
 	}
 	control, err := raw.SyscallConn()
 	if err != nil {
-		return false
+		return 0, false
 	}
-	open := false
+	var state int32
+	known := false
 	if err := control.Control(func(fd uintptr) {
 		info, err := unix.GetsockoptTCPConnectionInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_CONNECTION_INFO)
-		open = err == nil && (info.State == tcpsEstablished || info.State == tcpsCloseWait)
+		state, known = int32(info.State), err == nil
 	}); err != nil {
-		return false
+		return 0, false
 	}
-	return open
+	return state, known
 }

@@ -169,20 +169,32 @@ func diagAddr(ip net.IP) (family uint8, addr [16]byte, ok bool) {
 // stillConnected reports whether this end of conn has not been reset or
 // closed: connected, or connected with the other end done sending.
 func stillConnected(conn net.Conn) bool {
+	state, ok := tcpState(conn)
+	return ok && (state == 1 || state == 8) // ESTABLISHED, CLOSE_WAIT
+}
+
+// otherEndOpen reports whether the other end of conn has not closed it.
+func otherEndOpen(conn net.Conn) bool {
+	state, ok := tcpState(conn)
+	return ok && state == 1 // ESTABLISHED
+}
+
+func tcpState(conn net.Conn) (uint8, bool) {
 	raw, ok := conn.(syscall.Conn)
 	if !ok {
-		return false
+		return 0, false
 	}
 	control, err := raw.SyscallConn()
 	if err != nil {
-		return false
+		return 0, false
 	}
-	open := false
+	var state uint8
+	known := false
 	if err := control.Control(func(fd uintptr) {
 		info, err := unix.GetsockoptTCPInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_INFO)
-		open = err == nil && (info.State == 1 || info.State == 8) // ESTABLISHED, CLOSE_WAIT
+		state, known = info.State, err == nil
 	}); err != nil {
-		return false
+		return 0, false
 	}
-	return open
+	return state, known
 }

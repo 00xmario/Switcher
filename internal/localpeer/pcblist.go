@@ -65,10 +65,13 @@ var bsdConnected = map[int32]bool{
 type pcb struct {
 	localPort, foreignPort uint16
 	localAddr, foreignAddr net.IP
-	uid                    uint32
-	noFDRef                bool
-	state                  int32
-	haveSocket, haveTCP    bool
+	// local4, foreign4: the same read as IPv4 addresses, for an IPv6 socket
+	// that also carries the IPv4 mark: either reading may be the one used.
+	local4, foreign4    net.IP
+	uid                 uint32
+	noFDRef             bool
+	state               int32
+	haveSocket, haveTCP bool
 }
 
 // parsePCBs reads the records of the list. Anything it does not expect
@@ -108,6 +111,8 @@ func parsePCBs(raw []byte) ([]pcb, bool) {
 				localPort:   binary.BigEndian.Uint16(record[inpcbLocalPort:]),
 				foreignAddr: pcbAddr(record[inpcbForeignAddr:inpcbForeignAddr+16], vflag),
 				localAddr:   pcbAddr(record[inpcbLocalAddr:inpcbLocalAddr+16], vflag),
+				foreign4:    pcbAddr4(record[inpcbForeignAddr:inpcbForeignAddr+16], vflag),
+				local4:      pcbAddr4(record[inpcbLocalAddr:inpcbLocalAddr+16], vflag),
 			})
 		case xsoSocket:
 			if size < socketMinSize || last == nil || last.haveSocket {
@@ -143,6 +148,20 @@ func pcbAddr(b []byte, vflag byte) net.IP {
 	return nil
 }
 
+// pcbAddr4 is, for an IPv6 socket that also carries the IPv4 mark (one
+// that connected to an IPv4 address may), the address read as IPv4.
+func pcbAddr4(b []byte, vflag byte) net.IP {
+	if vflag&inpIPv6 != 0 && vflag&inpIPv4 != 0 {
+		return net.IPv4(b[12], b[13], b[14], b[15]).To16()
+	}
+	return nil
+}
+
+// is reports whether a socket's address, as either reading, is ip.
+func is(ip, addr, addr4 net.IP) bool {
+	return ip.Equal(addr) || addr4 != nil && ip.Equal(addr4)
+}
+
 // matchPCB finds in the list, as the Linux kernel's own lookup does, the
 // socket whose own address is local and whose other end is remote; with a
 // zero remote port, the socket listening at local.
@@ -155,7 +174,7 @@ func matchPCB(pcbs []pcb, local, remote *net.TCPAddr) (socket, bool) {
 	var found []pcb
 	for _, p := range pcbs {
 		if p.haveSocket && p.haveTCP && p.state != tcpsListen && p.localPort == uint16(local.Port) && p.foreignPort == uint16(remote.Port) &&
-			want.Equal(p.localAddr) && other.Equal(p.foreignAddr) {
+			is(want, p.localAddr, p.local4) && is(other, p.foreignAddr, p.foreign4) {
 			found = append(found, p)
 		}
 	}
@@ -186,7 +205,7 @@ func listenerAt(pcbs []pcb, addr net.IP, port uint16) (socket, bool) {
 			continue
 		}
 		switch {
-		case addr.Equal(p.localAddr):
+		case is(addr, p.localAddr, p.local4):
 			exact = append(exact, p)
 		case p.localAddr != nil && p.localAddr.IsUnspecified():
 			any = append(any, p)

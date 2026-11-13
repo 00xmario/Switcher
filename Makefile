@@ -33,12 +33,14 @@ verify: verify-common
 		"$$tmp/switcher-layout-test"
 	$(MAKE) --no-print-directory cross-build
 	$(MAKE) --no-print-directory cgo-build
+	sh build/e2e-local.sh
 	git diff --check HEAD^ HEAD
 	git diff --cached --check
 	git diff --check
 
 verify-linux: verify-common
 	$(MAKE) --no-print-directory cross-build
+	sh build/e2e-local.sh
 	git diff --check HEAD^ HEAD
 	git diff --cached --check
 	git diff --check

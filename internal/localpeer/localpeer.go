@@ -11,13 +11,18 @@
 package localpeer
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -167,7 +172,10 @@ var (
 	whyNoAnswer = queryFailure
 )
 
-// selfTest makes a connection to itself and asks whose its ends are.
+// selfTest has another process of this user connect to it, as every real
+// client is, and asks whose its listener and that connection are. A system
+// that shows only this process's own sockets says nothing about the clients:
+// the test finds that out, and the check stands aside.
 func selfTest(v6 bool) support {
 	network, address := "tcp4", "127.0.0.1:0"
 	from := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
@@ -193,32 +201,87 @@ func selfTest(v6 bool) support {
 	} else if uid != me {
 		return unsupported
 	}
-	client, err := net.DialTimeout(network, addr.String(), selfTestWait)
+	server, stop, err := connectFromProbe(ln, addr, deadline)
 	if err != nil {
 		return unanswered
 	}
-	defer client.Close()
-	// Any account may connect to the test's port: only the test's own
-	// connection is asked about, the others are closed.
-	var server net.Conn
-	for server == nil {
-		conn, err := ln.Accept()
-		if err != nil {
-			return unanswered
-		}
-		if sameAddr(conn.RemoteAddr(), client.LocalAddr()) {
-			server = conn
-		} else {
-			conn.Close()
-		}
-	}
+	defer stop()
 	defer server.Close()
 	if uid, ok := PeerUID(server); !ok {
-		return failed(client.LocalAddr().(*net.TCPAddr), addr)
+		return failed(server.RemoteAddr().(*net.TCPAddr), addr)
 	} else if uid != me {
 		return unsupported
 	}
 	return working
+}
+
+// connectFromProbe starts this program again as the probe (see probeEnv),
+// and returns this end of its connection: the one that says the probe's
+// token. Any account may connect to the test's port; the others are closed.
+func connectFromProbe(ln net.Listener, addr *net.TCPAddr, deadline time.Time) (net.Conn, func(), error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, nil, err
+	}
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, nil, err
+	}
+	token := hex.EncodeToString(raw)
+	cmd := exec.Command(exe)
+	cmd.Env = append(withoutProbe(os.Environ()), probeEnv+"="+addr.String()+","+token)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	stop := func() { stdin.Close(); _ = cmd.Wait() }
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			stop()
+			return nil, nil, err
+		}
+		readBy := time.Now().Add(selfTestWait / 4)
+		if deadline.Before(readBy) {
+			readBy = deadline
+		}
+		_ = conn.SetReadDeadline(readBy)
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		_ = conn.SetReadDeadline(time.Time{})
+		if strings.TrimSpace(line) == token {
+			return conn, stop, nil
+		}
+		conn.Close()
+	}
+}
+
+func withoutProbe(environ []string) []string {
+	out := environ[:0:0]
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, probeEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// doubt is told of a connection still open whose owner could not be told,
+// on a system the self-test found working: it is made again, at most once a
+// minute, in case the system no longer shows every socket.
+func doubt(v6 bool) {
+	i := 0
+	if v6 {
+		i = 1
+	}
+	w := &works[i]
+	w.Lock()
+	defer w.Unlock()
+	if w.state == working && time.Since(w.checked) >= selfTestAgain {
+		w.state = untested
+	}
 }
 
 // failed is what a lookup of one of the self-test's own sockets failing
@@ -249,10 +312,12 @@ func SameUser(ln net.Listener) net.Listener {
 	}
 	g := guard(ln, uint32(os.Getuid()), root, func(conn net.Conn) (uint32, bool) { return PeerUID(conn) })
 	g.ownerSince = peerUIDSince
+	g.otherEndOpen = otherEndOpen
 	// Where the system is known not to say whose a connection is, everyone's
 	// is taken; the self-test is tried again now and then.
 	v6 := addr.IP.To4() == nil
 	g.enforced = func() bool { return worksFor(v6) }
+	g.doubt = func() { doubt(v6) }
 	return g
 }
 
@@ -272,12 +337,17 @@ type sameUser struct {
 	uid   uint32
 	root  bool // root's connections are taken as well
 	owner func(net.Conn) (uint32, bool)
+	// otherEndOpen says whether the other end of a connection has not closed
+	// it; doubt is told of one served though its owner could not be told.
+	otherEndOpen func(net.Conn) bool
+	doubt        func()
 	// ownerSince, when set, is owner for a connection accepted no earlier
 	// than the time given; enforced, when set, says whether to check at all.
-	ownerSince func(net.Conn, time.Time) (uint32, bool)
-	enforced   func() bool
-	logged     time.Time // the last refusal logged
-	logMu      sync.Mutex
+	ownerSince   func(net.Conn, time.Time) (uint32, bool)
+	enforced     func() bool
+	logged       time.Time // the last refusal logged
+	unseenLogged time.Time // the last connection served unseen, logged
+	logMu        sync.Mutex
 
 	start   sync.Once
 	closing sync.Once
@@ -361,8 +431,27 @@ func (l *sameUser) run() {
 				} else {
 					uid, ok = l.owner(conn)
 				}
-				if !ok || (uid != l.uid && !(l.root && uid == 0)) {
-					l.logRefusal(uid, ok)
+				switch {
+				case ok && (uid == l.uid || l.root && uid == 0):
+				case ok:
+					// Another account's, as the system says.
+					l.logRefusal(uid, true)
+					conn.Close()
+					return
+				case l.otherEndOpen != nil && l.otherEndOpen(conn):
+					// Still open from the other end: a client waiting for its
+					// answer, whose socket this system did not show. It is
+					// served: a system that does not show every socket must
+					// never turn this user's own programs away. The
+					// self-test is made again.
+					l.logUnseen()
+					if l.doubt != nil {
+						l.doubt()
+					}
+				default:
+					// Gone already: its request would be served with
+					// nobody to tell whose it was.
+					l.logRefusal(0, false)
 					conn.Close()
 					return
 				}
@@ -374,6 +463,18 @@ func (l *sameUser) run() {
 			}
 		}()
 	}
+}
+
+// logUnseen says, at most once a minute, that a connection was served
+// though the system did not show whose it was.
+func (l *sameUser) logUnseen() {
+	l.logMu.Lock()
+	defer l.logMu.Unlock()
+	if time.Since(l.unseenLogged) < time.Minute {
+		return
+	}
+	l.unseenLogged = time.Now()
+	log.Printf("served a connection to %s whose program this system did not show; checking again whether it shows every program's connections", l.Addr())
 }
 
 // logRefusal says, at most once a minute, that a connection was refused,
@@ -482,11 +583,19 @@ func ownConnection(conn net.Conn) error {
 	// launchd socket that any user can set up is held by root.
 	_, root := allowed()
 	mine := func(uid uint32) bool { return uid == uint32(os.Getuid()) || root && uid == 0 }
-	// Whose the port is. It must be told: a listener that cannot be seen is
-	// not known to be this user's.
-	listener, ok := ListenerUID(remote)
-	if !ok || !mine(listener) {
-		return &OtherUserError{Port: remote.Port, UID: listener, Unknown: !ok}
+	// Whose the port is. Only a definite answer naming another account
+	// stops the request: one the system does not give, asked a few times,
+	// never keeps this user from their own Switcher (the device token is
+	// never sent; see internal/deviceproof).
+	for try := 0; ; try++ {
+		listener, ok := ListenerUID(remote)
+		if ok && !mine(listener) {
+			return &OtherUserError{Port: remote.Port, UID: listener}
+		}
+		if ok || try == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	// And whose this very connection's other end is. Before the server has
 	// taken it, the kernel shows it under the listener's owner.

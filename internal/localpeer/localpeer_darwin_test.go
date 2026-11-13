@@ -111,3 +111,22 @@ func dumpRecords(raw []byte, ports map[uint16]bool) string {
 	fmt.Fprintf(&out, "records by kind: %v\n", kinds)
 	return out.String()
 }
+
+// describeLookup prints what the socket list holds about both ends of conn.
+func describeLookup(conn net.Conn) string {
+	local, _ := conn.LocalAddr().(*net.TCPAddr)
+	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
+	var out strings.Builder
+	raw, err := unix.SysctlRaw("net.inet.tcp.pcblist_n")
+	pcbs, parsed := parsePCBs(raw)
+	fmt.Fprintf(&out, "list: %d bytes, err=%v, parsed=%v (%d sockets); still connected here: %v\n", len(raw), err, parsed, len(pcbs), stillConnected(conn))
+	found, ok := matchPCB(pcbs, remote, local)
+	fmt.Fprintf(&out, "match for the other end: %+v ok=%v\n", found, ok)
+	for _, p := range pcbs {
+		if p.localPort == uint16(local.Port) || p.foreignPort == uint16(local.Port) || p.localPort == uint16(remote.Port) || p.foreignPort == uint16(remote.Port) {
+			fmt.Fprintf(&out, "  pcb %s:%d -> %s:%d uid=%d state=%d socket=%v tcp=%v nofdref=%v\n", p.localAddr, p.localPort, p.foreignAddr, p.foreignPort, p.uid, p.state, p.haveSocket, p.haveTCP, p.noFDRef)
+		}
+	}
+	out.WriteString(dumpRecords(raw, map[uint16]bool{uint16(local.Port): true, uint16(remote.Port): true}))
+	return out.String()
+}
