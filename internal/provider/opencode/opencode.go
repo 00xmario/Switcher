@@ -164,7 +164,7 @@ func fetchUsage(ctx context.Context, key string) (usageSnapshot, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return usageSnapshot{}, fmt.Errorf("%w: %w", provider.ErrUsageUnavailable, err)
 	}

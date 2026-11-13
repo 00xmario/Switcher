@@ -376,7 +376,7 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 	if err := p.ApplyAuth(req, a); err != nil {
 		return provider.Usage{}, provider.ErrUsageUnavailable
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return provider.Usage{}, provider.ErrUsageUnavailable
 	}
@@ -556,7 +556,7 @@ func tokenRequest(ctx context.Context, target string, body []byte) (oauthToken, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("anthropic-beta", oauthBeta)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return oauthToken{}, fmt.Errorf("token request: %w", err)
 	}
@@ -760,7 +760,7 @@ func (p *Provider) fetchProfile(ctx context.Context, accessToken string) (claude
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("anthropic-beta", oauthBeta)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return claudeProfile{}, err
 	}

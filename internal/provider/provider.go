@@ -131,6 +131,18 @@ var ErrUnsupported = errors.New("unsupported flow for this provider")
 // one client so the timeout policy has a single home.
 var OAuthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: SameHostRedirect}
 
+// Client is the HTTP client for requests that carry an account's
+// credential: http.DefaultClient as it is at the call (tests swap its
+// transport), following a redirect only on the host the request went to.
+// The standard client would follow one anywhere, resending a 307's body,
+// with a refresh token or a sign-in code in it, and headers it does not
+// know to drop, such as ChatGPT-Account-Id.
+func Client() *http.Client {
+	c := *http.DefaultClient
+	c.CheckRedirect = SameHostRedirect
+	return &c
+}
+
 // SameHostRedirect keeps a sign-in or usage request with the host it was
 // sent to. A followed 307 or 308 repeats the request's body, a refresh
 // token or a sign-in code, at the new address: on the same host over the

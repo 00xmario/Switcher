@@ -321,7 +321,7 @@ func (p *Provider) ListResetCredits(ctx context.Context, a store.Account) ([]pro
 	}
 	req.Header.Set("User-Agent", codexUserAgent)
 	req.Header.Set("originator", "codex_cli_rs")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("list reset credits: %w", err)
 	}
@@ -388,7 +388,7 @@ func (p *Provider) ConsumeResetCredit(ctx context.Context, a store.Account, cred
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", codexUserAgent)
 	req.Header.Set("originator", "codex_cli_rs")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("consume reset credit: %w", err)
 	}
