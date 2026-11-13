@@ -11,7 +11,10 @@
 # that would point it elsewhere are cleared.
 set -eu
 
-work=$(mktemp -d)
+# Its real path: on a Mac the temporary folder is reached through the /var
+# symlink, which the Desktop relay's store refuses, as it would any home
+# reached through one.
+work=$(cd "$(mktemp -d)" && pwd -P)
 pid=
 cleanup() {
 	[ -z "$pid" ] || kill "$pid" 2>/dev/null || true
