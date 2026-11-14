@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"switcher/internal/claudesync"
@@ -32,7 +33,9 @@ func (a *API) handleClaudeSync(w http.ResponseWriter, r *http.Request) {
 	if a.syncClaudeForTest != nil {
 		run = a.syncClaudeForTest
 	}
-	result, err := run(r.Context(), labels)
+	// Sync has its own deadline. Once authorized, the request's read deadline
+	// or a disconnected client must not interrupt the desktop file merge.
+	result, err := run(context.WithoutCancel(r.Context()), labels)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, claudesync.ErrNoAccounts) || errors.Is(err, claudesync.ErrBusy) {
