@@ -90,6 +90,8 @@ verify-common:
 	node web/account-cards_test.mjs
 	node --check web/phone.js
 	node web/phone_test.mjs
+	node --check web/phone-views.js
+	node web/phone-views_test.mjs
 	node --check web/panel.js
 	node web/panel_test.mjs
 	node --check web/load-card.js

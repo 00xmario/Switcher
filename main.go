@@ -628,7 +628,8 @@ func run(port, desktopRelayPort int) {
 			api.Phone = phoneAccess
 			machine := remote.MachineName()
 			phoneServer := &http.Server{Handler: &phone.Handler{Access: phoneAccess, Key: tailnet.PhoneKey,
-				Inner: remoteClient.Middleware(api.LocalStateFields, mux), Static: static, Mac: func() string { return machine }},
+				Inner: remoteClient.Middleware(api.LocalStateFields, mux), Static: static, Mac: func() string { return machine },
+				Version: func() string { return version }},
 				ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
 			go phoneServer.Serve(phoneListener)
 			tailnet.ServePhone(phoneListener.Addr().String(), phoneAccess.Enabled)

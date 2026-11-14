@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -60,6 +61,10 @@ type Handler struct {
 	Static fs.FS
 	// Mac names this Mac on the page.
 	Mac func() string
+	// Version is this Switcher's version. The page carries the version that
+	// served it and offers to update itself when the server's differs: an
+	// app on a phone's Home Screen has no reload of its own.
+	Version func() string
 
 	once       sync.Once
 	restricted http.Handler
@@ -71,6 +76,9 @@ type Handler struct {
 var apiRoutes = []string{
 	"GET /api/state",
 	"POST /api/usage/refresh",
+	"GET /api/tokens",
+	"POST /api/tokens/refresh",
+	"GET /api/system/apps",
 	"POST /api/accounts/{id}/activate",
 	"POST /api/accounts/{id}/refresh",
 	"POST /api/accounts/{id}/use-reset",
@@ -92,6 +100,9 @@ var assets = map[string]string{
 	"/phone.js":         "phone.js",
 	"/phone.css":        "phone.css",
 	"/account-cards.js": "account-cards.js",
+	"/phone-views.js":   "phone-views.js",
+	"/load-card.js":     "load-card.js",
+	"/load-page.js":     "load-page.js",
 	"/brand.js":         "brand.js",
 	"/favicon.png":      "favicon.png",
 }
@@ -180,6 +191,25 @@ func (h *Handler) authenticated(w http.ResponseWriter, r *http.Request, id Ident
 		h.state(w, r)
 	case path == "/api/usage/refresh" && method == http.MethodPost:
 		h.forward(w, r, http.MethodPost, "/api/usage/refresh", nil)
+	case path == "/api/tokens" && method == http.MethodGet:
+		// What the coding tools spent, over one of the periods the page
+		// offers.
+		days := r.URL.Query().Get("days")
+		switch days {
+		case "1", "7", "30", "90":
+		case "":
+			days = "30"
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "choose 1, 7, 30 or 90 days"})
+			return
+		}
+		h.read(w, r, "/api/tokens?days="+days, []string{"scanning", "stale", "days", "summary", "sharing"})
+	case path == "/api/tokens/refresh" && method == http.MethodPost:
+		h.forward(w, r, http.MethodPost, "/api/tokens/refresh", nil)
+	case path == "/api/system/apps" && method == http.MethodGet:
+		// How busy the computer doing the work is, and its apps by name.
+		h.read(w, r, "/api/system/apps", []string{"machine", "remote", "platform", "available", "reason", "cpu", "cores",
+			"memory", "memory_used", "memory_total", "gpu", "apps", "processes", "gpu_apps", "apps_unavailable"})
 	case path == "/api/logout" && method == http.MethodPost:
 		_ = h.Access.Revoke(device.ID)
 		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
@@ -221,6 +251,9 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request, id Identity) {
 	out := map[string]any{"enabled": true, "paired": false, "device": id.Device, "platform": runtime.GOOS}
 	if h.Mac != nil {
 		out["mac"] = h.Mac()
+	}
+	if h.Version != nil {
+		out["version"] = h.Version()
 	}
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		if device, csrf, ok := h.Access.Session(id, cookie.Value); ok {
@@ -307,6 +340,24 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// read answers a fixed read of Switcher's API with only the named fields
+// of its answer, and the same status (a scan still running is 202).
+func (h *Handler) read(w http.ResponseWriter, r *http.Request, path string, keep []string) {
+	status, body := h.call(r, http.MethodGet, path, nil)
+	var full map[string]json.RawMessage
+	if (status != http.StatusOK && status != http.StatusAccepted) || json.Unmarshal(body, &full) != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Switcher could not read that"})
+		return
+	}
+	out := map[string]json.RawMessage{}
+	for _, key := range keep {
+		if v, ok := full[key]; ok {
+			out[key] = v
+		}
+	}
+	writeJSON(w, status, out)
+}
+
 // forward sends one fixed request to Switcher's API and answers with its
 // status and a short summary.
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, method, path string, body []byte) {
@@ -347,6 +398,10 @@ func (h *Handler) asset(w http.ResponseWriter, r *http.Request, name string) {
 	if err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	if name == "phone.html" && h.Version != nil {
+		content = bytes.Replace(content, []byte(`<meta name="switcher-version" content="">`),
+			[]byte(`<meta name="switcher-version" content="`+html.EscapeString(h.Version())+`">`), 1)
 	}
 	types := map[string]string{".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
 		".css": "text/css; charset=utf-8", ".png": "image/png"}

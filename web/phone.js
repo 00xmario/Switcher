@@ -1,12 +1,15 @@
 // Switcher on your phone. Served only through the Tailscale add-on to the
 // owner's devices, and only to phones approved on the Mac. The page can read
-// accounts and usage, refresh them, switch accounts and spend banked resets.
+// accounts, what the coding tools spent and how busy the computer is,
+// refresh them, switch accounts and spend banked resets.
 //
 // It draws accounts the way the menu bar panel does, with the account cards
 // it shares with the Linux tray's panel (account-cards.js).
 import { switcherMark, playMark } from './brand.js';
 import * as cards from './account-cards.js';
 import { PROVIDERS, OUTCOMES, esc } from './account-cards.js';
+import { update as updateRings } from './load-card.js';
+import { tabsHTML, usageHTML, loadViewHTML, updateHTML, TABS, PERIODS } from './phone-views.js';
 
 export { duration, esc, windowHTML } from './account-cards.js';
 
@@ -65,7 +68,14 @@ export function messageHTML(title, text) {
 
 /* ---------- the page ---------- */
 
-const app = { csrf: '', state: null, pairing: null, timer: 0, mac: '', device: '', busy: false, platform: '' };
+const app = {
+  csrf: '', state: null, pairing: null, timer: 0, mac: '', device: '', busy: false, platform: '', paired: false,
+  tab: 'accounts', tabTimer: 0, usage: { days: 30, metric: 'cost', answer: null }, load: null,
+  // The version of Switcher that served this page, and a newer one the
+  // server runs now: an app on the Home Screen cannot be reloaded by hand.
+  pageVersion: '', newVersion: '', versionTimer: 0,
+};
+const LOAD_MS = 3000;
 // What the computer running Switcher is called: a Linux one is no Mac.
 const yourMac = () => app.platform === 'linux' ? 'your computer' : 'your Mac';
 const theMac = () => app.platform === 'linux' ? 'the computer' : 'the Mac';
@@ -89,7 +99,24 @@ async function api(path, { method = 'GET', body } = {}) {
 const $ = id => document.getElementById(id);
 
 function show(html) {
-  $('view').innerHTML = html;
+  $('view').innerHTML = (app.newVersion ? updateHTML(app.newVersion) : '') + html;
+}
+
+// render draws the signed-in page: the tabs and the one that is open.
+function render() {
+  let body;
+  if (app.tab === 'usage') body = usageHTML(app.usage.answer, app.usage);
+  else if (app.tab === 'load') body = loadViewHTML(app.load, app.mac || 'This computer');
+  else body = app.state ? stateHTML(app.state) + footerHTML(app.device) : '<p class="empty"><span class="spinner" aria-hidden="true"></span>Loading…</p>';
+  show(tabsHTML(app.tab) + `<div class="tab-body" role="tabpanel">${body}</div>`);
+  $('refresh').hidden = app.tab === 'load';
+}
+
+function remember(key, value) {
+  try { localStorage.setItem(`switcher-phone-${key}`, String(value)); } catch { /* private mode: not kept */ }
+}
+function recall(key) {
+  try { return localStorage.getItem(`switcher-phone-${key}`); } catch { return null; }
 }
 
 function toast(text) {
@@ -126,16 +153,20 @@ function schedule(fn, ms) {
 function handleError(error) {
   if (error.status === 401) {
     app.state = null;
+    app.paired = false;
+    clearTimeout(app.tabTimer);
     $('refresh').hidden = true;
     show(pairHTML(null));
     return;
   }
   if (error.status === 503 && error.body?.enabled === false) {
+    app.paired = false;
+    clearTimeout(app.tabTimer);
     $('refresh').hidden = true;
     show(messageHTML('Phone access is off', `Turn it on in Switcher on ${yourMac()}, under Settings → Phone.`));
     return;
   }
-  if (app.state) {
+  if (app.paired) {
     toast(error.message || 'Switcher did not answer');
     return;
   }
@@ -145,12 +176,85 @@ function handleError(error) {
 async function loadState() {
   try {
     app.state = await api('/api/state');
-    $('refresh').hidden = false;
-    if (!app.busy) show(stateHTML(app.state) + footerHTML(app.device));
-    schedule(loadState, document.visibilityState === 'visible' ? 15000 : 60000);
+    app.paired = true;
+    if (!app.busy && app.tab === 'accounts') render();
+    schedule(loadState, document.visibilityState === 'visible' && app.tab === 'accounts' ? 15000 : 60000);
   } catch (error) {
     handleError(error);
   }
+}
+
+// loadUsage reads what the tools spent; while Switcher is still reading
+// their logs it asks again shortly.
+async function loadUsage() {
+  clearTimeout(app.tabTimer);
+  const days = app.usage.days;
+  try {
+    const answer = await api(`/api/tokens?days=${days}`);
+    if (app.tab !== 'usage' || app.usage.days !== days) return;
+    app.usage.answer = answer;
+    if (!app.busy) render();
+    app.tabTimer = setTimeout(loadUsage, answer.scanning ? 2500 : 60000);
+  } catch (error) {
+    if (error.status === 401 || error.status === 503) return handleError(error);
+    if (app.tab !== 'usage') return;
+    app.usage.answer = { error: error.message || 'Switcher did not answer' };
+    render();
+    app.tabTimer = setTimeout(loadUsage, 15000);
+  }
+}
+
+// loadLoad reads the load every few seconds while the Load tab is open; the
+// rings ease to each new reading instead of being drawn again.
+async function loadLoad() {
+  clearTimeout(app.tabTimer);
+  try {
+    const view = await api('/api/system/apps');
+    if (app.tab !== 'load') return;
+    const shape = app.load ? `${app.load.available}` : '';
+    app.load = view;
+    const root = $('view');
+    if (shape === `${view.available}` && updateRings(root, view)) {
+      const fresh = document.createElement('div');
+      fresh.innerHTML = loadViewHTML(view, app.mac || 'This computer');
+      const next = fresh.querySelector('.block'), current = root.querySelector('.tab-body .block');
+      if (next && current) current.replaceWith(next);
+    } else if (!app.busy) {
+      render();
+    }
+  } catch (error) {
+    if (error.status === 401 || error.status === 503) return handleError(error);
+    if (app.tab === 'load' && !app.load) { app.load = { available: false, reason: 'unreachable', machine: app.mac }; render(); }
+  }
+  if (app.tab === 'load' && document.visibilityState === 'visible') app.tabTimer = setTimeout(loadLoad, LOAD_MS);
+}
+
+function openTab(tab) {
+  if (!TABS.some(([id]) => id === tab)) tab = 'accounts';
+  app.tab = tab;
+  remember('tab', tab);
+  clearTimeout(app.tabTimer);
+  render();
+  if (tab === 'usage') loadUsage();
+  else if (tab === 'load') loadLoad();
+  else loadState();
+}
+
+// checkVersion asks which Switcher serves this phone now; a newer one than
+// the one that served the page shows the update bar.
+async function checkVersion() {
+  clearTimeout(app.versionTimer);
+  try {
+    const session = await api('/api/session');
+    const now = session.version || '';
+    if (!app.pageVersion) app.pageVersion = now;
+    if (now && now !== app.pageVersion && now !== app.newVersion) {
+      app.newVersion = now;
+      if (app.paired) render();
+      else $('view').insertAdjacentHTML('afterbegin', updateHTML(now));
+    }
+  } catch { /* asked again below */ }
+  app.versionTimer = setTimeout(checkVersion, 60000);
 }
 
 async function poll() {
@@ -161,7 +265,8 @@ async function poll() {
       app.pairing = null;
       playMark($('top-mark'));
       toast('This phone is approved');
-      await loadState();
+      app.paired = true;
+      openTab(app.tab);
       return;
     }
     if (answer.status === 'expired') {
@@ -191,15 +296,26 @@ async function startPairing() {
 
 async function boot() {
   $('top-mark').innerHTML = switcherMark({ tile: true, size: 34, id: 'top-mark-svg' });
+  app.pageVersion = document.querySelector('meta[name="switcher-version"]')?.content || '';
+  const tab = recall('tab');
+  if (TABS.some(([id]) => id === tab)) app.tab = tab;
+  const days = Number(recall('days'));
+  if (PERIODS.some(([d]) => d === days)) app.usage.days = days;
+  if (recall('metric') === 'tokens') app.usage.metric = 'tokens';
   try {
     const session = await api('/api/session');
     app.mac = session.mac || '';
     app.platform = session.platform || '';
     app.device = session.device || '';
+    if (!app.pageVersion) app.pageVersion = session.version || '';
+    clearTimeout(app.versionTimer);
+    app.versionTimer = setTimeout(checkVersion, 60000);
     $('top-mac').textContent = app.mac ? `on ${app.mac}` : `on ${yourMac()}`;
     if (session.paired) {
       app.csrf = session.csrf;
-      await loadState();
+      app.paired = true;
+      if (app.tab !== 'accounts') loadState();
+      openTab(app.tab);
     } else {
       show(pairHTML(null));
     }
@@ -221,6 +337,7 @@ async function act(button, run) {
   } finally {
     app.busy = false;
     await loadState();
+    if (app.tab !== 'accounts') render();
   }
 }
 
@@ -232,7 +349,20 @@ if (typeof document !== 'undefined') {
   document.addEventListener('click', event => {
     const target = event.target.closest('button');
     if (!target) return;
-    if (target.id === 'pair-start') startPairing();
+    if (target.id === 'update-page') { target.disabled = true; location.reload(); }
+    else if (target.dataset.tab) openTab(target.dataset.tab);
+    else if (target.dataset.days) {
+      app.usage.days = Number(target.dataset.days);
+      app.usage.answer = null;
+      remember('days', app.usage.days);
+      render();
+      loadUsage();
+    } else if (target.dataset.metric) {
+      app.usage.metric = target.dataset.metric === 'tokens' ? 'tokens' : 'cost';
+      remember('metric', app.usage.metric);
+      render();
+    }
+    else if (target.id === 'pair-start') startPairing();
     else if (target.id === 'retry') boot();
     else if (target.id === 'sign-out') {
       confirmSheet('Sign this phone out?', `To use Switcher here again, you approve this phone on ${yourMac()} once more.`, 'Sign out', { danger: true }).then(async ok => {
@@ -241,12 +371,19 @@ if (typeof document !== 'undefined') {
           await api('/api/logout', { method: 'POST' });
         } catch { /* signed out either way below */ }
         clearTimeout(app.timer);
+        clearTimeout(app.tabTimer);
         app.state = null;
+        app.paired = false;
         $('refresh').hidden = true;
         show(pairHTML(null));
       });
     }
-    else if (target.id === 'refresh') {
+    else if (target.id === 'refresh' && app.tab === 'usage') {
+      target.disabled = true;
+      api('/api/tokens/refresh', { method: 'POST' })
+        .then(() => { toast('Reading the sessions again'); setTimeout(loadUsage, 1500); }, error => toast(error.message || 'That did not work'))
+        .finally(() => { target.disabled = false; });
+    } else if (target.id === 'refresh') {
       act(target, async () => {
         await api('/api/usage/refresh', { method: 'POST' });
         toast('Refreshing usage');
@@ -274,7 +411,12 @@ if (typeof document !== 'undefined') {
     }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && app.state) loadState();
+    if (document.visibilityState !== 'visible') return;
+    checkVersion();
+    if (!app.paired) return;
+    if (app.tab === 'accounts') loadState();
+    else if (app.tab === 'usage') loadUsage();
+    else loadLoad();
   });
   boot();
 }

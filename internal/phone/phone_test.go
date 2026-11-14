@@ -47,6 +47,21 @@ func newHarness(t *testing.T) *harness {
 		x.mu.Lock()
 		x.calls = append(x.calls, call{r.Method, r.URL.Path, r.RemoteAddr, string(body)})
 		x.mu.Unlock()
+		switch r.URL.Path {
+		case "/api/tokens":
+			if r.URL.Query().Get("days") == "7" {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"scanning":true,"days":7}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"scanning":false,"stale":false,"days":30,"summary":{"total_cost_usd":12.5,"total_tokens":1000},
+				"sharing":{"host":"k12"},"debug_paths":["/Users/me/.claude"]}`))
+			return
+		case "/api/system/apps":
+			_, _ = w.Write([]byte(`{"machine":"k12","available":true,"cpu":23,"memory":61,"apps":[{"name":"node","processes":3,"cpu":12.5,"memory":1024}],
+				"processes":200,"gpu_apps":false,"pids":[1,2,3]}`))
+			return
+		}
 		if r.URL.Path == "/api/state" {
 			_, _ = w.Write([]byte(`{"active":{"codex":"codex-a"},"version":"1.0.1","hub_management_key":"SECRET-KEY",
 				"desktop_relay":{"on":true},"claude_code":{"x":1},"update":{},
@@ -59,7 +74,7 @@ func newHarness(t *testing.T) *harness {
 	})
 	x.h = &Handler{Access: x.access, Key: func() string { return key }, Inner: inner,
 		Static: fstest.MapFS{"phone.html": {Data: []byte("<html>phone</html>")}, "phone.js": {Data: []byte("js")}},
-		Mac:    func() string { return "Mac" }}
+		Mac:    func() string { return "Mac" }, Version: func() string { return "1.33.0" }}
 	return x
 }
 
@@ -256,6 +271,9 @@ func TestOnlyTheFixedActionsAreReachable(t *testing.T) {
 		{http.MethodPost, "/api/phone/approve"},
 		{http.MethodGet, "/v0/management/auth-files"},
 		{http.MethodPost, "/codex/v1/responses"},
+		{http.MethodGet, "/api/system"},
+		{http.MethodGet, "/api/tokens/ledgers"},
+		{http.MethodPost, "/api/tokens"},
 		{http.MethodGet, "/app.js"},
 		{http.MethodGet, "/index.html"},
 	} {
@@ -430,7 +448,7 @@ func TestThePageGetsEveryModuleItImports(t *testing.T) {
 		served[name] = true
 	}
 	imports := regexp.MustCompile(`(?m)^\s*(?:import|export)\b[^'"]*from\s+'\./([^']+)'`)
-	for _, script := range []string{"phone.js", "account-cards.js"} {
+	for _, script := range []string{"phone.js", "account-cards.js", "phone-views.js", "load-card.js", "load-page.js"} {
 		if !served[script] {
 			t.Fatalf("%s is not served", script)
 		}
@@ -443,5 +461,73 @@ func TestThePageGetsEveryModuleItImports(t *testing.T) {
 				t.Errorf("%s imports %s, which the phone listener does not serve", script, m[1])
 			}
 		}
+	}
+}
+
+// An approved phone reads what the coding tools spent and how busy the
+// computer is, only the fields its page draws, and only for the periods it
+// offers.
+func TestApprovedPhoneReadsUsageAndLoad(t *testing.T) {
+	x := newHarness(t)
+	session, csrf := x.pair(myPhone)
+	jar := []*http.Cookie{session}
+
+	w := x.do(http.MethodGet, "/api/tokens?days=30", myPhone, jar, nil, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total_cost_usd":12.5`) || !strings.Contains(w.Body.String(), `"sharing"`) {
+		t.Fatalf("usage: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "debug_paths") {
+		t.Fatalf("usage passes on fields the page does not draw: %s", w.Body.String())
+	}
+	if w := x.do(http.MethodGet, "/api/tokens?days=7", myPhone, jar, nil, ""); w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"scanning":true`) {
+		t.Fatalf("a scan still running: %d %s", w.Code, w.Body.String())
+	}
+	for _, days := range []string{"2", "365", "30x", "-1"} {
+		if w := x.do(http.MethodGet, "/api/tokens?days="+days, myPhone, jar, nil, ""); w.Code != http.StatusBadRequest {
+			t.Errorf("days=%s: %d", days, w.Code)
+		}
+	}
+
+	w = x.do(http.MethodGet, "/api/system/apps", myPhone, jar, nil, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"node"`) || strings.Contains(w.Body.String(), "pids") {
+		t.Fatalf("load: %d %s", w.Code, w.Body.String())
+	}
+	if w := x.do(http.MethodPost, "/api/tokens/refresh", myPhone, jar, http.Header{csrfHeader: {csrf}}, ""); w.Code != http.StatusOK {
+		t.Fatalf("usage refresh: %d", w.Code)
+	}
+	if w := x.do(http.MethodPost, "/api/tokens/refresh", myPhone, jar, nil, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("usage refresh without CSRF: %d", w.Code)
+	}
+	for _, c := range x.calls {
+		if c.remote != innerAddr {
+			t.Fatalf("inner request from %q", c.remote)
+		}
+	}
+
+	// Without a session, none of it.
+	for _, path := range []string{"/api/tokens", "/api/system/apps"} {
+		if w := x.do(http.MethodGet, path, myPhone, nil, nil, ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s without a session: %d", path, w.Code)
+		}
+	}
+}
+
+// The page carries the version that served it, and the session says the
+// version serving now, so the page can offer to update itself.
+func TestThePageKnowsItsVersion(t *testing.T) {
+	x := newHarness(t)
+	x.h.Static = fstest.MapFS{"phone.html": {Data: []byte(`<head><meta name="switcher-version" content=""></head>`)}}
+	w := x.do(http.MethodGet, "/", myPhone, nil, nil, "")
+	if !strings.Contains(w.Body.String(), `<meta name="switcher-version" content="1.33.0">`) {
+		t.Fatalf("page: %s", w.Body.String())
+	}
+	x.h.Version = func() string { return `1"><script>` }
+	w = x.do(http.MethodGet, "/", myPhone, nil, nil, "")
+	if strings.Contains(w.Body.String(), "<script>") {
+		t.Fatalf("version not escaped: %s", w.Body.String())
+	}
+	x.h.Version = func() string { return "1.33.0" }
+	if got := decode(t, x.do(http.MethodGet, "/api/session", myPhone, nil, nil, ""))["version"]; got != "1.33.0" {
+		t.Fatalf("session version %v", got)
 	}
 }

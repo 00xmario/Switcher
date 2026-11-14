@@ -5,7 +5,14 @@ Open Switcher on your phone wherever you are. You can:
 - see every account's usage;
 - refresh it;
 - switch accounts, Claude included;
-- spend a banked Codex reset.
+- spend a banked Codex reset;
+- see what the coding tools spent (Usage: cost and tokens by tool, computer
+  and model, over 24 hours, 7 or 30 days), as on the dashboard;
+- see how busy the computer doing the work is and which apps use it (Load).
+
+Added to the Home Screen, the page has no reload of its own: when Switcher
+has been updated, a bar offers **Update**, which loads the new version of
+the page.
 
 The phone reaches your Mac over Tailscale only, at an address with a real
 HTTPS certificate. No port is opened on your router, and the page cannot be
@@ -83,6 +90,9 @@ actions:
 
 - read accounts and usage;
 - refresh usage;
+- read what the coding tools spent, over 1, 7, 30 or 90 days, and read them
+  again;
+- read the load and the apps using the computer, by program name only;
 - use an account, including a Claude account, which also switches Claude
   Code's login on the Mac;
 - spend a banked reset;
