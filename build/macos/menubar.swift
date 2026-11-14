@@ -1715,7 +1715,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         } else {
             statusItem?.button?.title = "⇄"
         }
-        statusItem?.button?.toolTip = "Switcher"
+        // No tooltip on the mark: one that comes up as the menu opens is
+        // drawn where the pointer has moved to, inside the menu, and the
+        // menu's tracking keeps it from being taken down, so it stays on the
+        // screen after the menu closes. VoiceOver reads the label instead.
+        statusItem?.button?.setAccessibilityLabel("Switcher")
         refreshStatusIcon()
         menu.autoenablesItems = false
         statusItem?.menu = menu
@@ -1744,7 +1748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         guard badge != statusBadge else { return }
         statusBadge = badge
         guard let button = statusItem?.button else { return }
-        button.toolTip = badge.map { $0.isEmpty ? "Switcher · Update available" : "Switcher · \($0) available" } ?? "Switcher"
+        button.setAccessibilityLabel(badge.map { $0.isEmpty ? "Switcher, update available" : "Switcher, \($0) available" } ?? "Switcher")
         guard let mark = statusMark else { return }
         let image = badge == nil ? mark : badgedStatusImage(mark)
         image.accessibilityDescription = badge == nil ? "Switcher" : "Switcher, update available"
