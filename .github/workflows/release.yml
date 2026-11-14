@@ -64,15 +64,15 @@ jobs:
       - name: Verify the native Keychain writer
         run: build/macos/keychain-test.sh
 
-  release:
+  # Builds every file of the release. It can write nothing: the installer's
+  # disk image is made with a third-party tool (dmgbuild, pinned by hash),
+  # so no build step shares a job with the release's write access or with
+  # the attestation's signing identity.
+  build:
     needs: [verify-linux, verify-mac]
     runs-on: macos-15
-    # Writes the draft release, and GitHub's attestations of where each file
-    # was built, which build/release-sign.sh checks before it signs.
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
@@ -179,6 +179,15 @@ jobs:
             sleep 5
           done
 
+      # What people download: Install Switcher.app, which carries the same
+      # Switcher.app as the DMG above, behind a window that explains the one
+      # step macOS asks for.
+      - name: Build the installer disk image
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          build/macos/installer/build.sh "$VERSION" build/Switcher.app dist/Install-Switcher.dmg
+
       - name: Checksum DMG
         run: |
           set -euo pipefail
@@ -186,6 +195,32 @@ jobs:
           # Releases before 1.31 check the DMG against this.
           cd dist
           shasum -a 256 "Switcher_${VERSION}.dmg" | tee "Switcher_${VERSION}.dmg.sha256"
+          shasum -a 256 Install-Switcher.dmg | tee Install-Switcher.dmg.sha256
+
+      - name: Hand the files to the release job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-files
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    # Writes the draft release, and GitHub's attestations of where each file
+    # was built, which build/release-sign.sh checks before it signs. It runs
+    # only GitHub's own actions and tools.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Take the files from the build job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-files
+          path: dist
 
       # One list of every file's checksum. The release is signed by signing
       # this list, away from GitHub (build/release-sign.sh); updaters and

@@ -69,7 +69,7 @@ chmod 0600 "$work"/dl/*
 
 # Exactly the files the workflow makes; a signature or list of an earlier
 # attempt is replaced below.
-artifacts="Switcher_$version.dmg"
+artifacts="Switcher_$version.dmg Install-Switcher.dmg"
 for target in darwin_arm64 darwin_amd64 linux_amd64 linux_arm64; do
 	artifacts="$artifacts switcher-server_${version}_$target switcher-tailnet_${version}_$target"
 done
