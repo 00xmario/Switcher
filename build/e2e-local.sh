@@ -19,6 +19,7 @@ tmp=$(mktemp -d) || exit 1
 work=$(cd "$tmp" && pwd -P) || exit 1
 pid=
 cleanup() {
+	trap '' INT TERM HUP # a second signal does not cut the cleanup short
 	[ -z "$pid" ] || kill "$pid" 2>/dev/null || true
 	[ -z "$pid" ] || wait "$pid" 2>/dev/null || true
 	rm -rf "$tmp"

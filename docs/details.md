@@ -442,12 +442,14 @@ environment; a terminal-only override needs the CLI command. The first
   socket it carries, it is not one of this computer's own clients (a
   connection whose address a NAT rule rewrote, a sender that reset it) and
   is refused; on a Mac, where a system once showed no client's socket and
-  turned every one away, it is served if it comes from a loopback address,
-  is still unshown and open when asked again 20 ms later, and its client's
-  address is held by a program (none of another account's that the system
-  shows), as a live client's is and a vanished one's is not, so the check
+  turned every one away, it is served if it comes from a loopback address
+  and is still unshown and open when asked again 20 ms later, so the check
   never locks you out of your own Switcher, and Switcher checks again
-  whether the system shows every program's connections. `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`)
+  whether the system shows every program's connections. On a Mac that shows
+  no client's socket, the check cannot tell your programs from another
+  account's (before 1.31 nothing was checked on a Mac); one that vanished
+  without Switcher being told, if another account can make one, would have
+  its request served, though never its answer read. `SWITCHER_ALLOW_LOCAL_USERS=1` (or `true`, `yes`, `on`)
   lifts the check, for a container that shares the computer's network under
   its own user; `=root` lets only root's programs in as well; any other
   value leaves it on. A separate process of yours connects to Switcher, as

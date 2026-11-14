@@ -5,10 +5,7 @@ package localpeer
 import (
 	"net"
 	"runtime"
-	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // lookup asks for the socket whose own address is local and whose other
@@ -70,36 +67,6 @@ func socketPeer(local, remote *net.TCPAddr, since time.Time) (uint32, peerKind) 
 
 // fdlessIsFound: see socketPeer.
 const fdlessIsFound = runtime.GOOS == "darwin"
-
-// portHeld reports whether some socket on this computer holds addr, the
-// address a client connected from: this process cannot take it then. A
-// client whose socket the system does not show still holds its address; a
-// connection whose client is gone without this end being told (its socket
-// torn down, its reset never delivered) holds none. Any error but success
-// counts as held, so nothing is refused for a test that could not be made.
-func portHeld(addr *net.TCPAddr) bool {
-	family, sa := unix.AF_INET, unix.Sockaddr(nil)
-	if v4 := addr.IP.To4(); v4 != nil {
-		s := &unix.SockaddrInet4{Port: addr.Port}
-		copy(s.Addr[:], v4)
-		sa = s
-	} else {
-		s := &unix.SockaddrInet6{Port: addr.Port}
-		copy(s.Addr[:], addr.IP.To16())
-		family, sa = unix.AF_INET6, s
-	}
-	syscall.ForkLock.RLock()
-	fd, err := unix.Socket(family, unix.SOCK_STREAM, 0)
-	if err == nil {
-		unix.CloseOnExec(fd)
-	}
-	syscall.ForkLock.RUnlock()
-	if err != nil {
-		return true
-	}
-	defer unix.Close(fd)
-	return unix.Bind(fd, sa) != nil
-}
 
 // peerOf is what the system shows of the other end of conn. The kernel finds
 // a socket by its pair of addresses, not by which connection it is: once

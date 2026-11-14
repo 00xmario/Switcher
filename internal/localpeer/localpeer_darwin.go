@@ -46,23 +46,6 @@ func readPCBsFor() ([]pcb, error) {
 	return pcbs, nil
 }
 
-// portHolders are the accounts of the sockets the list shows bound to addr,
-// in any state, read no earlier than since.
-func portHolders(addr *net.TCPAddr, since time.Time) []uint32 {
-	pcbs, ok := pcbsSince(since)
-	if !ok {
-		return nil
-	}
-	want := addr.IP.To16()
-	var uids []uint32
-	for _, p := range pcbs {
-		if p.haveSocket && p.localPort == uint16(addr.Port) && is(want, p.localAddr, p.local4) {
-			uids = append(uids, p.uid)
-		}
-	}
-	return uids
-}
-
 // queryFailure says why a lookup fails: see selfTest.
 func queryFailure(local, remote *net.TCPAddr) error {
 	pcbs, err := readPCBsFor()

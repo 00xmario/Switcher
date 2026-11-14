@@ -77,10 +77,6 @@ func kernelLookup(local, remote *net.TCPAddr, _ time.Time) (socket, bool) {
 	return found, err == nil
 }
 
-// portHolders: not asked on Linux, where a connection the kernel does not
-// show is refused (see serveUnseen).
-func portHolders(addr *net.TCPAddr, since time.Time) []uint32 { return nil }
-
 // queryFailure says why a lookup fails: see selfTest.
 func queryFailure(local, remote *net.TCPAddr) error {
 	_, err := kernelQuery(local, remote)
