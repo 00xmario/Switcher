@@ -54,11 +54,13 @@ func newHarness(t *testing.T) *harness {
 				_, _ = w.Write([]byte(`{"scanning":true,"days":7}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"scanning":false,"stale":false,"days":30,"summary":{"total_cost_usd":12.5,"total_tokens":1000},
-				"sharing":{"host":"k12"},"debug_paths":["/Users/me/.claude"]}`))
+			_, _ = w.Write([]byte(`{"scanning":false,"stale":false,"days":30,"summary":{"total_cost_usd":12.5,"total_tokens":1000,
+				"time_zone":"Europe/Amsterdam","scan_ms":12,"devices":[{"name":"k12","host":true,"tokens":5,"updated_ms":99}],
+				"providers":[{"provider":"claude","cost_usd":12.5,"secret":"x"}]},
+				"sharing":{"host":"k12","error":"dial tcp 100.64.0.1:8788"},"debug_paths":["/Users/me/.claude"]}`))
 			return
 		case "/api/system/apps":
-			_, _ = w.Write([]byte(`{"machine":"k12","available":true,"cpu":23,"memory":61,"apps":[{"name":"node","processes":3,"cpu":12.5,"memory":1024}],
+			_, _ = w.Write([]byte(`{"machine":"k12","available":true,"cpu":23,"memory":61,"apps":[{"name":"node","processes":3,"cpu":12.5,"memory":1024,"gpu_memory":5}],
 				"processes":200,"gpu_apps":false,"pids":[1,2,3]}`))
 			return
 		}
@@ -473,11 +475,14 @@ func TestApprovedPhoneReadsUsageAndLoad(t *testing.T) {
 	jar := []*http.Cookie{session}
 
 	w := x.do(http.MethodGet, "/api/tokens?days=30", myPhone, jar, nil, "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total_cost_usd":12.5`) || !strings.Contains(w.Body.String(), `"sharing"`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total_cost_usd":12.5`) || !strings.Contains(w.Body.String(), `"name":"k12"`) ||
+		!strings.Contains(w.Body.String(), `"provider":"claude"`) {
 		t.Fatalf("usage: %d %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "debug_paths") {
-		t.Fatalf("usage passes on fields the page does not draw: %s", w.Body.String())
+	for _, field := range []string{"debug_paths", "sharing", "100.64", "time_zone", "scan_ms", "updated_ms", "secret"} {
+		if strings.Contains(w.Body.String(), field) {
+			t.Fatalf("usage passes on %q, which the page does not draw: %s", field, w.Body.String())
+		}
 	}
 	if w := x.do(http.MethodGet, "/api/tokens?days=7", myPhone, jar, nil, ""); w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"scanning":true`) {
 		t.Fatalf("a scan still running: %d %s", w.Code, w.Body.String())
@@ -489,7 +494,8 @@ func TestApprovedPhoneReadsUsageAndLoad(t *testing.T) {
 	}
 
 	w = x.do(http.MethodGet, "/api/system/apps", myPhone, jar, nil, "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"node"`) || strings.Contains(w.Body.String(), "pids") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"node"`) || strings.Contains(w.Body.String(), "pids") ||
+		strings.Contains(w.Body.String(), "gpu_memory") {
 		t.Fatalf("load: %d %s", w.Code, w.Body.String())
 	}
 	if w := x.do(http.MethodPost, "/api/tokens/refresh", myPhone, jar, http.Header{csrfHeader: {csrf}}, ""); w.Code != http.StatusOK {

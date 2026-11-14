@@ -203,13 +203,12 @@ func (h *Handler) authenticated(w http.ResponseWriter, r *http.Request, id Ident
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "choose 1, 7, 30 or 90 days"})
 			return
 		}
-		h.read(w, r, "/api/tokens?days="+days, []string{"scanning", "stale", "days", "summary", "sharing"})
+		h.tokens(w, r, days)
 	case path == "/api/tokens/refresh" && method == http.MethodPost:
 		h.forward(w, r, http.MethodPost, "/api/tokens/refresh", nil)
 	case path == "/api/system/apps" && method == http.MethodGet:
 		// How busy the computer doing the work is, and its apps by name.
-		h.read(w, r, "/api/system/apps", []string{"machine", "remote", "platform", "available", "reason", "cpu", "cores",
-			"memory", "memory_used", "memory_total", "gpu", "apps", "processes", "gpu_apps", "apps_unavailable"})
+		h.load(w, r)
 	case path == "/api/logout" && method == http.MethodPost:
 		_ = h.Access.Revoke(device.ID)
 		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
@@ -340,21 +339,84 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// read answers a fixed read of Switcher's API with only the named fields
-// of its answer, and the same status (a scan still running is 202).
-func (h *Handler) read(w http.ResponseWriter, r *http.Request, path string, keep []string) {
+// read makes a fixed read of Switcher's API and answers its decoded body
+// and status (a scan still running is 202), or answers the phone itself
+// when there is nothing to pass on.
+func (h *Handler) read(w http.ResponseWriter, r *http.Request, path string) (map[string]json.RawMessage, int, bool) {
 	status, body := h.call(r, http.MethodGet, path, nil)
 	var full map[string]json.RawMessage
 	if (status != http.StatusOK && status != http.StatusAccepted) || json.Unmarshal(body, &full) != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Switcher could not read that"})
-		return
+		return nil, 0, false
 	}
+	return full, status, true
+}
+
+// pick keeps the named fields of a JSON object.
+func pick(raw json.RawMessage, keys ...string) map[string]json.RawMessage {
+	var full map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &full)
 	out := map[string]json.RawMessage{}
-	for _, key := range keep {
+	for _, key := range keys {
 		if v, ok := full[key]; ok {
 			out[key] = v
 		}
 	}
+	return out
+}
+
+// pickEach keeps the named fields of every object in a JSON list.
+func pickEach(raw json.RawMessage, keys ...string) []map[string]json.RawMessage {
+	var list []json.RawMessage
+	_ = json.Unmarshal(raw, &list)
+	out := make([]map[string]json.RawMessage, 0, len(list))
+	for _, item := range list {
+		out = append(out, pick(item, keys...))
+	}
+	return out
+}
+
+// tokens answers what the coding tools spent: the totals and breakdowns
+// the page draws, and nothing about how or where they were read.
+func (h *Handler) tokens(w http.ResponseWriter, r *http.Request, days string) {
+	full, status, ok := h.read(w, r, "/api/tokens?days="+days)
+	if !ok {
+		return
+	}
+	out := map[string]any{"scanning": full["scanning"], "stale": full["stale"]}
+	if raw := full["summary"]; len(raw) > 0 && string(raw) != "null" {
+		var src map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &src)
+		summary := map[string]any{}
+		for k, v := range pick(raw, "total_cost_usd", "total_tokens", "sessions", "unpriced_share", "cache_savings_usd", "totals") {
+			summary[k] = v
+		}
+		summary["providers"] = pickEach(src["providers"], "provider", "sessions", "cost_usd", "tokens", "cost_share", "token_share")
+		summary["models"] = pickEach(src["models"], "provider", "model", "cost_usd", "tokens", "unpriced")
+		summary["days"] = pickEach(src["days"], "day", "providers")
+		if _, ok := src["devices"]; ok {
+			summary["devices"] = pickEach(src["devices"], "name", "host", "this", "cost_usd", "tokens")
+		}
+		out["summary"] = summary
+	}
+	writeJSON(w, status, out)
+}
+
+// load answers how busy the computer doing the work is and its leading
+// apps, by name, processor and memory.
+func (h *Handler) load(w http.ResponseWriter, r *http.Request) {
+	full, status, ok := h.read(w, r, "/api/system/apps")
+	if !ok {
+		return
+	}
+	out := map[string]any{}
+	for _, key := range []string{"machine", "remote", "platform", "available", "reason", "cpu", "cores",
+		"memory", "memory_used", "memory_total", "gpu", "processes", "apps_unavailable"} {
+		if v, ok := full[key]; ok {
+			out[key] = v
+		}
+	}
+	out["apps"] = pickEach(full["apps"], "name", "processes", "cpu", "memory")
 	writeJSON(w, status, out)
 }
 

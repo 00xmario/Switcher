@@ -187,34 +187,42 @@ async function loadState() {
 // loadUsage reads what the tools spent; while Switcher is still reading
 // their logs it asks again shortly.
 async function loadUsage() {
+  if (app.tab !== 'usage') return;
   clearTimeout(app.tabTimer);
   const days = app.usage.days;
+  let again = 60000;
   try {
     const answer = await api(`/api/tokens?days=${days}`);
     if (app.tab !== 'usage' || app.usage.days !== days) return;
     app.usage.answer = answer;
     if (!app.busy) render();
-    app.tabTimer = setTimeout(loadUsage, answer.scanning ? 2500 : 60000);
+    if (answer.scanning) again = 2500;
   } catch (error) {
     if (error.status === 401 || error.status === 503) return handleError(error);
     if (app.tab !== 'usage') return;
     app.usage.answer = { error: error.message || 'Switcher did not answer' };
-    render();
-    app.tabTimer = setTimeout(loadUsage, 15000);
+    if (!app.busy) render();
+    again = 15000;
   }
+  // Hidden, the page waits: becoming visible reads again.
+  if (app.tab === 'usage' && document.visibilityState === 'visible') app.tabTimer = setTimeout(loadUsage, again);
 }
 
 // loadLoad reads the load every few seconds while the Load tab is open; the
 // rings ease to each new reading instead of being drawn again.
 async function loadLoad() {
+  if (app.tab !== 'load') return;
   clearTimeout(app.tabTimer);
   try {
     const view = await api('/api/system/apps');
     if (app.tab !== 'load') return;
-    const shape = app.load ? `${app.load.available}` : '';
+    // Rings ease in place only while the card says the same thing around
+    // them: the same computer, reachable or not for the same reason.
+    const shape = v => v ? JSON.stringify([v.available, v.remote, v.machine, v.reason]) : '';
+    const same = shape(app.load) === shape(view);
     app.load = view;
     const root = $('view');
-    if (shape === `${view.available}` && updateRings(root, view)) {
+    if (same && view.available && updateRings(root, view)) {
       const fresh = document.createElement('div');
       fresh.innerHTML = loadViewHTML(view, app.mac || 'This computer');
       const next = fresh.querySelector('.block'), current = root.querySelector('.tab-body .block');
@@ -224,7 +232,11 @@ async function loadLoad() {
     }
   } catch (error) {
     if (error.status === 401 || error.status === 503) return handleError(error);
-    if (app.tab === 'load' && !app.load) { app.load = { available: false, reason: 'unreachable', machine: app.mac }; render(); }
+    // No reading: say so rather than leave old rings looking live.
+    if (app.tab === 'load' && app.load?.reason !== 'unreachable') {
+      app.load = { available: false, reason: 'unreachable', machine: app.mac };
+      if (!app.busy) render();
+    }
   }
   if (app.tab === 'load' && document.visibilityState === 'visible') app.tabTimer = setTimeout(loadLoad, LOAD_MS);
 }
@@ -234,7 +246,7 @@ function openTab(tab) {
   app.tab = tab;
   remember('tab', tab);
   clearTimeout(app.tabTimer);
-  render();
+  if (!app.busy) render();
   if (tab === 'usage') loadUsage();
   else if (tab === 'load') loadLoad();
   else loadState();
@@ -248,10 +260,14 @@ async function checkVersion() {
     const session = await api('/api/session');
     const now = session.version || '';
     if (!app.pageVersion) app.pageVersion = now;
-    if (now && now !== app.pageVersion && now !== app.newVersion) {
-      app.newVersion = now;
-      if (app.paired) render();
-      else $('view').insertAdjacentHTML('afterbegin', updateHTML(now));
+    const offer = now && now !== app.pageVersion ? now : '';
+    if (offer !== app.newVersion) {
+      app.newVersion = offer;
+      if (app.paired && !app.busy) render();
+      else if (!app.paired) {
+        document.querySelector('.update')?.remove();
+        if (offer) $('view').insertAdjacentHTML('afterbegin', updateHTML(offer));
+      }
     }
   } catch { /* asked again below */ }
   app.versionTimer = setTimeout(checkVersion, 60000);
@@ -337,7 +353,7 @@ async function act(button, run) {
   } finally {
     app.busy = false;
     await loadState();
-    if (app.tab !== 'accounts') render();
+    if (app.paired && app.tab !== 'accounts') render();
   }
 }
 
@@ -355,12 +371,12 @@ if (typeof document !== 'undefined') {
       app.usage.days = Number(target.dataset.days);
       app.usage.answer = null;
       remember('days', app.usage.days);
-      render();
+      if (!app.busy) render();
       loadUsage();
     } else if (target.dataset.metric) {
       app.usage.metric = target.dataset.metric === 'tokens' ? 'tokens' : 'cost';
       remember('metric', app.usage.metric);
-      render();
+      if (!app.busy) render();
     }
     else if (target.id === 'pair-start') startPairing();
     else if (target.id === 'retry') boot();
@@ -381,7 +397,11 @@ if (typeof document !== 'undefined') {
     else if (target.id === 'refresh' && app.tab === 'usage') {
       target.disabled = true;
       api('/api/tokens/refresh', { method: 'POST' })
-        .then(() => { toast('Reading the sessions again'); setTimeout(loadUsage, 1500); }, error => toast(error.message || 'That did not work'))
+        .then(() => {
+          toast('Reading the sessions again');
+          clearTimeout(app.tabTimer);
+          app.tabTimer = setTimeout(loadUsage, 1500);
+        }, error => toast(error.message || 'That did not work'))
         .finally(() => { target.disabled = false; });
     } else if (target.id === 'refresh') {
       act(target, async () => {
