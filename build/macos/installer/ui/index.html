@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Everything the installer shows ships inside it: nothing loads from the
+     network, and no script or style comes from anywhere but this folder. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Install Switcher</title>
+<link rel="stylesheet" href="installer.css">
+<script src="installer.js" defer></script>
+</head>
+<body class="is-loading">
+<div class="backdrop" aria-hidden="true">
+  <div class="aurora aurora-a"></div>
+  <div class="aurora aurora-b"></div>
+  <div class="aurora aurora-c"></div>
+  <div class="grid"></div>
+  <canvas class="sparks"></canvas>
+</div>
+
+<main class="stage">
+
+  <!-- Welcome -->
+  <section class="screen screen-welcome" data-screen="welcome" aria-labelledby="welcome-title">
+    <div class="orbit" aria-hidden="true">
+      <svg class="orbit-lines back" viewBox="-260 -110 520 220"><path d="M-215 0A215 64 0 0 1 215 0"/><path class="dashed" d="M-152 0A152 45 0 0 1 152 0"/></svg>
+      <div class="hero-mark" data-mark="hero"></div>
+      <div class="pulse"></div>
+      <svg class="orbit-lines front" viewBox="-260 -110 520 220"><path d="M215 0A215 64 0 0 1 -215 0"/><path class="dashed" d="M152 0A152 45 0 0 1 -152 0"/></svg>
+      <span class="chip" data-orbit="0"><img src="logos/claude.svg" alt=""></span>
+      <span class="chip" data-orbit="0"><img src="logos/gemini.svg" alt=""></span>
+      <span class="chip" data-orbit="0"><img src="logos/copilot.svg" alt=""></span>
+      <span class="chip" data-orbit="1"><img src="logos/codex.svg" alt=""></span>
+      <span class="chip" data-orbit="1"><img src="logos/grok.svg" alt=""></span>
+      <span class="chip" data-orbit="1"><img src="logos/opencode.svg" alt=""></span>
+    </div>
+    <p class="eyebrow enter" data-vars="--i:1" data-welcome-eyebrow>Welcome</p>
+    <h1 id="welcome-title" class="enter" data-vars="--i:2">Switcher</h1>
+    <p class="lede enter" data-vars="--i:3">All your AI subscriptions in one place.</p>
+    <p class="sub enter" data-vars="--i:4">Switch Claude Code, Codex and Claude Desktop between your accounts in one click, and never get stuck at a limit.</p>
+    <div class="actions enter" data-vars="--i:5">
+      <button class="primary big" data-go="tour" data-welcome-go>Get started<span class="arrow" aria-hidden="true">→</span></button>
+    </div>
+    <p class="fineprint enter" data-vars="--i:6" data-welcome-fine>Free and open source · macOS 13 or later</p>
+  </section>
+
+  <!-- Tour -->
+  <section class="screen screen-tour" data-screen="tour" aria-label="What you can do with Switcher">
+    <div class="tour-slides">
+
+      <article class="slide" data-slide="switch">
+        <div class="slide-copy">
+          <p class="eyebrow">One click</p>
+          <h2>Switch accounts in one click</h2>
+          <p>Pick an account and Claude Code, Codex and Claude Desktop use it. Running sessions follow along within seconds, so you never log out or edit a config file.</p>
+          <p class="where"><span>Menu bar</span><span>Dashboard</span><code>switcher use</code></p>
+        </div>
+        <div class="slide-art art-switch" aria-hidden="true">
+          <div class="mini-menu">
+            <div class="mm-head"><span data-mark="mini"></span><b>Switcher</b><i></i></div>
+            <div class="mm-section"><img src="logos/claude.svg" alt=""><b>Claude</b></div>
+            <div class="mm-account mm-a">
+              <span class="avatar">W</span><span class="who"><b>Work</b><small>Max</small></span>
+              <span class="bars"><i data-vars="--v:.58"></i><small>58% left</small></span>
+              <span class="tick">✓</span>
+            </div>
+            <div class="mm-account mm-b">
+              <span class="avatar">P</span><span class="who"><b>Personal</b><small>Pro</small></span>
+              <span class="bars"><i data-vars="--v:.81"></i><small>81% left</small></span>
+              <span class="tick">✓</span>
+            </div>
+            <div class="mm-tools">
+              <span class="tool t1">Claude Code</span><span class="tool t2">Claude Desktop</span><span class="tool t3">Codex</span>
+            </div>
+          </div>
+          <svg class="cursor" viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.6L10 19z" fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/></svg>
+          <span class="click-ring"></span>
+        </div>
+      </article>
+
+      <article class="slide" data-slide="limits">
+        <div class="slide-copy">
+          <p class="eyebrow">Hands-free</p>
+          <h2>Never stuck at a limit</h2>
+          <p>When an account runs out, Switcher moves your tools to the one with the most usage left. Give an account a limit, say 10%, and it keeps that share for the Claude and ChatGPT apps.</p>
+          <p class="where"><span>Automatic</span><span>Usage limits</span><span>Banked resets</span></p>
+        </div>
+        <div class="slide-art art-limits" aria-hidden="true">
+          <div class="toast"><span class="dot"></span><span>Claude moved to <b>Personal</b>: Work reached its 10% limit</span></div>
+          <div class="acct acct-work">
+            <div class="acct-top"><span class="avatar">W</span><b>Work</b><span class="badges"><span class="badge in-use">In use</span><span class="badge at-limit">At its 10% limit</span></span></div>
+            <div class="meter"><span class="fill"></span><span class="limit-mark"><em>10%</em></span></div>
+            <div class="acct-foot"><span>Weekly</span><span class="count" data-from="34" data-to="10">34% left</span></div>
+          </div>
+          <div class="hop"><svg viewBox="0 0 40 40"><path d="M20 6v24m-8-8 8 8 8-8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <div class="acct acct-personal">
+            <div class="acct-top"><span class="avatar">P</span><b>Personal</b><span class="badge now">Now in use</span></div>
+            <div class="meter"><span class="fill"></span></div>
+            <div class="acct-foot"><span>Weekly</span><span>81% left</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="slide" data-slide="quota">
+        <div class="slide-copy">
+          <p class="eyebrow">At a glance</p>
+          <h2>Every quota in view</h2>
+          <p>Session, weekly and per-model windows for every account, with countdowns to each reset. Usage from all your Macs adds up in one place, and Switcher can tell you when a window resets.</p>
+          <p class="where"><span>Claude</span><span>Codex</span><span>Gemini</span><span>Grok</span><span>Copilot</span></p>
+        </div>
+        <div class="slide-art art-quota" aria-hidden="true">
+          <div class="gauges">
+            <div class="gauge" data-vars="--v:.81"><svg viewBox="0 0 100 100"><circle class="g-track" cx="50" cy="50" r="40"/><circle class="g-fill" cx="50" cy="50" r="40" pathLength="100"/></svg><b data-count="81">81</b><span>Session</span><small>resets in <em data-clock="2h 41m">2h 41m</em></small></div>
+            <div class="gauge" data-vars="--v:.58"><svg viewBox="0 0 100 100"><circle class="g-track" cx="50" cy="50" r="40"/><circle class="g-fill" cx="50" cy="50" r="40" pathLength="100"/></svg><b data-count="58">58</b><span>Weekly</span><small>resets in 3d 2h</small></div>
+            <div class="gauge" data-vars="--v:.71"><svg viewBox="0 0 100 100"><circle class="g-track" cx="50" cy="50" r="40"/><circle class="g-fill" cx="50" cy="50" r="40" pathLength="100"/></svg><b data-count="71">71</b><span>Fable</span><small>resets in 3d 2h</small></div>
+          </div>
+          <div class="quota-rows">
+            <div class="qrow"><img src="logos/claude.svg" alt=""><b>Claude</b><span class="qbar" data-vars="--v:.58"></span><small>58% left</small></div>
+            <div class="qrow"><img src="logos/codex.svg" alt=""><b>Codex</b><span class="qbar" data-vars="--v:.53"></span><small>53% left</small></div>
+            <div class="qrow"><img src="logos/gemini.svg" alt=""><b>Gemini</b><span class="qbar" data-vars="--v:.92"></span><small>92% left</small></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="slide" data-slide="share">
+        <div class="slide-copy">
+          <p class="eyebrow">Everywhere</p>
+          <h2>One host for all your Macs</h2>
+          <p>Make one computer the host: a Mac, or a Linux server that is always on. Your other Macs pair with a code once and use its accounts, at home or anywhere with Tailscale.</p>
+          <p class="where"><span>Pair with a code</span><span>Tailscale</span><span>Your phone</span></p>
+        </div>
+        <div class="slide-art art-share" aria-hidden="true">
+          <svg class="links" viewBox="0 0 420 320">
+            <defs><linearGradient id="link-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d4f76e"/><stop offset=".5" stop-color="#43dc8d"/><stop offset="1" stop-color="#10a89a"/></linearGradient></defs>
+            <path id="l1" class="link" d="M210 160 C150 150 110 110 78 72"/>
+            <path id="l2" class="link" d="M210 160 C270 150 310 110 342 72"/>
+            <path id="l3" class="link" d="M210 160 C210 200 210 230 210 262"/>
+            <circle class="packet" r="4"><animateMotion dur="2.4s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#l1"/></animateMotion></circle>
+            <circle class="packet" r="4"><animateMotion dur="2.4s" begin=".8s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear"><mpath href="#l2"/></animateMotion></circle>
+            <circle class="packet" r="4"><animateMotion dur="2.4s" begin="1.6s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#l3"/></animateMotion></circle>
+          </svg>
+          <div class="node host"><span data-mark="host"></span><b>Host</b><small>keeps the accounts</small></div>
+          <div class="node n1"><svg viewBox="0 0 32 24"><rect x="5" y="2" width="22" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M1 21h30" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><b>MacBook Air</b><small class="paired">Paired</small></div>
+          <div class="node n2"><svg viewBox="0 0 32 24"><rect x="3" y="1" width="26" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 23h8M16 18v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><b>Studio</b><small class="code"><span>4F7·K2Q</span></small></div>
+          <div class="node n3"><svg viewBox="0 0 32 24"><rect x="10" y="1" width="12" height="22" rx="3" fill="none" stroke="currentColor" stroke-width="2"/></svg><b>iPhone</b><small class="paired">Over Tailscale</small></div>
+        </div>
+      </article>
+
+      <article class="slide" data-slide="agents">
+        <div class="slide-copy">
+          <p class="eyebrow">For your agents</p>
+          <h2>Your agents can run it</h2>
+          <p>The <code>switcher</code> command does everything the menu does. A skill teaches Claude Code, Codex and other agents to use it, so you can just ask: “which account am I on?” or “keep 10% on my work account”.</p>
+          <p class="where"><code>switcher status</code><code>switcher limit</code><span>Agent skill</span></p>
+        </div>
+        <div class="slide-art art-agents" aria-hidden="true">
+          <div class="term">
+            <div class="term-bar"><i></i><i></i><i></i><span>Terminal</span></div>
+            <div class="term-body">
+              <p class="ln l1"><span class="ps">$</span> <span class="type" data-vars="--n:15">switcher status</span></p>
+              <p class="ln l2 out"><b>Claude</b>  Personal  <em>81% left</em></p>
+              <p class="ln l3 out"><b>Codex</b>   Work      <em>53% left</em></p>
+              <p class="ln l4"><span class="ps agent">›</span> <span class="type" data-vars="--n:28">keep 10% on my work account</span></p>
+              <p class="ln l5 out"><span class="bullet">⏺</span> switcher limit work 10</p>
+              <p class="ln l6 out dim">  Work now keeps 10% for the chat apps.</p>
+              <p class="ln l7"><span class="ps">$</span> <span class="caret"></span></p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+    </div>
+    <footer class="tour-foot">
+      <div class="segments" role="tablist" aria-label="Tour"></div>
+      <div class="tour-actions">
+        <button class="ghost" data-go="setup" data-skip>Skip tour</button>
+        <button class="primary" data-next>Next<span class="arrow" aria-hidden="true">→</span></button>
+      </div>
+    </footer>
+  </section>
+
+  <!-- Setup -->
+  <section class="screen screen-setup" data-screen="setup" aria-labelledby="setup-title">
+    <div class="flight" aria-hidden="true">
+      <div class="flight-app" data-mark="tile"></div>
+      <div class="flight-path"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="folder">
+        <svg viewBox="0 0 64 52"><defs><linearGradient id="fold-g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6cc4ff"/><stop offset="1" stop-color="#2f8de4"/></linearGradient><linearGradient id="fold-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4aa8f2"/><stop offset="1" stop-color="#1f74cc"/></linearGradient></defs><path d="M3 9a4 4 0 0 1 4-4h15l5 5h30a4 4 0 0 1 4 4v4H3z" fill="url(#fold-b)"/><rect x="3" y="14" width="58" height="35" rx="4" fill="url(#fold-g)"/><path d="M26 42l6-16 6 16m-10-5h8" fill="none" stroke="#1d5fa8" stroke-opacity=".55" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <small data-dest-name>Applications</small>
+      </div>
+    </div>
+    <h2 id="setup-title" data-setup-title>Ready to install Switcher</h2>
+    <p class="sub" data-setup-sub>It goes into Applications and lives in your menu bar.</p>
+    <div class="options" role="group" aria-label="Options">
+      <label class="option" data-option="login">
+        <span class="opt-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v9m6.4-5.4a8 8 0 1 1-12.8 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+        <span class="opt-text"><b>Open at login</b><small>Keeps Switcher in your menu bar after a restart.</small></span>
+        <span class="switch"><input type="checkbox" name="login" checked><span class="switch-visual"></span></span>
+      </label>
+      <label class="option" data-option="cli">
+        <span class="opt-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7l5 5-5 5m8 0h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="opt-text"><b>Add the <code>switcher</code> command</b><small>Use Switcher from Terminal, and let scripts drive it.</small></span>
+        <span class="switch"><input type="checkbox" name="cli" checked><span class="switch-visual"></span></span>
+      </label>
+      <label class="option" data-option="skill">
+        <span class="opt-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor"/></svg></span>
+        <span class="opt-text"><b>Teach your AI agents</b><small>Adds the Switcher skill for Claude Code, Codex and others.</small></span>
+        <span class="switch"><input type="checkbox" name="skill" checked><span class="switch-visual"></span></span>
+      </label>
+    </div>
+    <button class="why-link" data-why><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 9v5M10 6.2v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Why did macOS ask before opening this?</button>
+    <div class="actions">
+      <button class="ghost" data-go="tour" data-back>Back</button>
+      <button class="primary big" data-install>Install Switcher</button>
+      <button class="secondary big" data-open-app hidden>Open Switcher</button>
+    </div>
+  </section>
+
+  <!-- Installing -->
+  <section class="screen screen-install" data-screen="install" aria-labelledby="install-title">
+    <div class="install-grid">
+      <div class="progress-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100">
+          <defs>
+            <linearGradient id="pm-g" gradientUnits="userSpaceOnUse" x1="30" y1="22" x2="62" y2="80"><stop offset="0" stop-color="#d4f76e"/><stop offset=".5" stop-color="#43dc8d"/><stop offset="1" stop-color="#10a89a"/></linearGradient>
+            <linearGradient id="pm-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22332b"/><stop offset="1" stop-color="#0a120e"/></linearGradient>
+            <radialGradient id="pm-sh" cx=".28" cy=".02" r="1"><stop offset="0" stop-color="#fff" stop-opacity=".14"/><stop offset=".55" stop-color="#fff" stop-opacity="0"/></radialGradient>
+            <mask id="pm-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><rect width="100" height="100" fill="#fff"/><circle class="pm-hole" cx="32" cy="72" r="13.4" fill="#000"/></mask>
+            <filter id="pm-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4"/></filter>
+          </defs>
+          <rect width="100" height="100" rx="23" fill="url(#pm-bg)"/>
+          <rect width="100" height="100" rx="23" fill="url(#pm-sh)"/>
+          <rect x="1" y="1" width="98" height="98" rx="22" fill="none" stroke="#fff" stroke-opacity=".1" stroke-width="2"/>
+          <g transform="translate(50 50) scale(1.05) translate(-52.9 -47.1)">
+            <g mask="url(#pm-cut)">
+              <path class="pm-track" d="M68 28H44A11 11 0 0 0 44 50H56A11 11 0 0 1 56 72H32"/>
+              <path class="pm-fill pm-blur" d="M68 28H44A11 11 0 0 0 44 50H56A11 11 0 0 1 56 72H32" filter="url(#pm-glow)"/>
+              <path class="pm-fill" d="M68 28H44A11 11 0 0 0 44 50H56A11 11 0 0 1 56 72H32"/>
+            </g>
+            <circle class="pm-knob" cx="32" cy="72" r="11"/>
+          </g>
+        </svg>
+        <p class="pm-percent"><b data-percent>0</b>%</p>
+      </div>
+      <div class="install-side">
+        <h2 id="install-title" data-install-title>Installing Switcher</h2>
+        <p class="sub" data-install-detail>Getting ready…</p>
+        <ol class="steps" data-steps></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- Done -->
+  <section class="screen screen-done" data-screen="done" aria-labelledby="done-title">
+    <canvas class="confetti" aria-hidden="true"></canvas>
+    <div class="menubar" aria-hidden="true">
+      <span class="mb-apple"></span><span class="mb-menus"><b>Finder</b><i>File</i><i>Edit</i><i>View</i></span>
+      <span class="mb-right"><span class="mb-sw"><span data-mark="mono"></span><span class="mb-ping"></span></span><span class="mb-ic wifi"></span><span class="mb-ic batt"></span><span class="mb-time">9:41</span></span>
+      <span class="mb-arrow"><svg viewBox="0 0 40 60"><path d="M20 56V8m-12 12 12-12 12 12" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg><em>It lives up here</em></span>
+    </div>
+    <div class="done-mark" data-mark="done"></div>
+    <h2 id="done-title" data-done-title>Switcher is ready</h2>
+    <p class="sub" data-done-sub>It lives in your menu bar.</p>
+    <ul class="done-notes" data-done-notes></ul>
+    <div class="actions">
+      <button class="secondary big" data-open-dashboard>Open dashboard</button>
+      <button class="primary big" data-finish>Done</button>
+    </div>
+  </section>
+
+  <!-- Something went wrong -->
+  <section class="screen screen-error" data-screen="error" aria-labelledby="error-title">
+    <div class="off-mark" data-mark="off" aria-hidden="true"></div>
+    <h2 id="error-title" data-error-title>Switcher was not installed</h2>
+    <p class="sub" data-error-message></p>
+    <p class="calm" data-error-calm>Nothing on your Mac was changed.</p>
+    <details class="error-detail"><summary>Details</summary><pre data-error-detail></pre></details>
+    <div class="actions">
+      <button class="ghost" data-quit>Quit</button>
+      <button class="secondary" data-copy-detail>Copy details</button>
+      <button class="primary big" data-retry>Try again</button>
+    </div>
+  </section>
+
+  <!-- A newer Switcher is already here -->
+  <section class="screen screen-newer" data-screen="newer" aria-labelledby="newer-title">
+    <div class="hero-mark small" data-mark="newer" aria-hidden="true"></div>
+    <h2 id="newer-title">You already have a newer Switcher</h2>
+    <p class="sub" data-newer-sub></p>
+    <p class="calm">Nothing was changed. Switcher updates itself from its menu.</p>
+    <div class="actions">
+      <button class="ghost" data-quit>Quit</button>
+      <button class="primary big" data-open-app>Open Switcher</button>
+    </div>
+  </section>
+</main>
+
+<!-- Why macOS asked -->
+<div class="sheet" data-sheet hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="why-title">
+    <div class="why-art" aria-hidden="true">
+      <span class="why-shield"><svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 12l2.4 2.4 4.6-4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    </div>
+    <h3 id="why-title">Why macOS asked first</h3>
+    <p>macOS opens a downloaded app with a simple “Open” only when its developer is in Apple's Developer Program, $99 a year, and has each build notarized, scanned by Apple. Switcher is free and open source and isn't, so macOS wanted you to approve it in System Settings.</p>
+    <p><b>Open Anyway</b> let this installer run, once. It changed no settings on your Mac.</p>
+    <p><b>You won't be asked again.</b> The installer removes macOS's download flag from the Switcher it installs, and new versions arrive through Switcher's own updater, which macOS does not flag.</p>
+    <div class="trust">
+      <div><b>Open source</b><small>Every line is on GitHub.</small></div>
+      <div><b>Built in public</b><small>GitHub builds each release and attests to where every file came from.</small></div>
+      <div><b>Signed releases</b><small>The updater and the install script check Switcher's own signature.</small></div>
+    </div>
+    <div class="actions">
+      <button class="ghost" data-open-repo>Switcher on GitHub</button>
+      <button class="primary" data-close-sheet>Got it</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

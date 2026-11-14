@@ -30,7 +30,8 @@ verify: verify-common
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 		swiftc -parse-as-library -D SWITCHER_LAYOUT_TEST build/macos/menubar.swift \
 			build/macos/menubar_layout_test.swift -o "$$tmp/switcher-layout-test"; \
-		"$$tmp/switcher-layout-test"
+		"$$tmp/switcher-layout-test"; \
+		swiftc -parse-as-library -typecheck build/macos/installer/installer.swift
 	$(MAKE) --no-print-directory cross-build
 	$(MAKE) --no-print-directory cgo-build
 	sh build/e2e-local.sh
@@ -102,6 +103,7 @@ verify-common:
 	node --check web/live-state.js
 	node web/live-state_test.mjs
 	node web/qr_test.mjs
+	node --check build/macos/installer/ui/installer.js
 	node --check web/toggles.js
 	node web/toggles_test.mjs
 	cd cmd/switcher-tailnet && test -z "$$(gofmt -l .)" && go vet . && go test . && go build -o /dev/null .

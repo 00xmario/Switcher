@@ -40,3 +40,168 @@ jobs:
           go-version-file: go.mod
       - name: Verify on Linux
         run: make verify-linux
+
+  # Install Switcher.app and Install-Switcher.dmg, built as the release
+  # builds them, then used: installs into scratch folders from a copy marked
+  # as a browser download, every screen drawn by WebKit, and the disk image
+  # opened in Finder as a downloaded one would be. The pictures are kept as
+  # an artifact for review.
+  installer:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Build Switcher.app
+        run: |
+          set -euo pipefail
+          VERSION=$(cat VERSION)
+          APP=build/Switcher.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp build/macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          cp build/macos/logos/*.svg build/macos/MenubarTemplate*.png "$APP/Contents/Resources/"
+          cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/ThirdPartyNotices.md"
+          sed "s/VERSION_TOKEN/${VERSION}/g" build/macos/Info.plist > "$APP/Contents/Info.plist"
+          CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/SwitcherServer" .
+          swiftc -parse-as-library -O -target arm64-apple-macos13.0 -o "$APP/Contents/MacOS/Switcher" build/macos/menubar.swift
+          codesign --force --deep -s - "$APP"
+      - name: Build the installer and its disk image
+        id: build
+        run: |
+          mkdir -p dist
+          build/macos/installer/build.sh "$(cat VERSION)" build/Switcher.app dist/Install-Switcher.dmg "build/Install Switcher.app"
+      - name: Install with it, in scratch folders
+        timeout-minutes: 10
+        run: build/macos/installer/test.sh "build/Install Switcher.app"
+      # The window itself, through WebKit and its bridge, on this scratch
+      # Mac: it installs into the runner's /Applications, and Switcher must
+      # then run, answer with this version and carry no download flag.
+      - name: Install with the window
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          mkdir -p shots/gui
+          "build/Install Switcher.app/Contents/MacOS/InstallSwitcher" --autotest "$PWD/shots/gui" &
+          pid=$!
+          for i in $(seq 1 150); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          if kill "$pid" 2>/dev/null; then echo "the installer window did not finish" >&2; exit 1; fi
+          cat shots/gui/result.json
+          grep -q '"ok" : true' shots/gui/result.json
+          grep -q '"running" : true' shots/gui/result.json
+          /Applications/Switcher.app/Contents/MacOS/SwitcherServer status --json | tee shots/gui/status.json
+          grep -q "\"version\":\"$(cat VERSION)\"" shots/gui/status.json
+          pgrep -fl /Applications/Switcher.app/Contents/MacOS/Switcher
+          if xattr -r -l /Applications/Switcher.app | grep -q com.apple.quarantine; then echo "the installed app is flagged" >&2; exit 1; fi
+          sleep 2
+          screencapture -x shots/gui/screen.png || true
+          # Again, over the Switcher that now runs: the window must stop the
+          # real menu bar app and server, and start the new ones.
+          old=$(pgrep -f '^/Applications/Switcher.app/Contents/MacOS/' | sort | tr '\n' ' ')
+          echo "running before: $old"
+          mkdir -p shots/gui-again
+          "build/Install Switcher.app/Contents/MacOS/InstallSwitcher" --autotest "$PWD/shots/gui-again" &
+          pid=$!
+          for i in $(seq 1 150); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          if kill "$pid" 2>/dev/null; then echo "the second install did not finish" >&2; exit 1; fi
+          cat shots/gui-again/result.json
+          grep -q '"ok" : true' shots/gui-again/result.json
+          grep -q '"running" : true' shots/gui-again/result.json
+          now=$(pgrep -f '^/Applications/Switcher.app/Contents/MacOS/' | sort | tr '\n' ' ')
+          echo "running after: $now"
+          for p in $old; do
+            if kill -0 "$p" 2>/dev/null; then echo "process $p of the Switcher that ran before still runs" >&2; exit 1; fi
+          done
+          test -n "$now"
+          pkill -TERM -f '^/Applications/Switcher.app/Contents/MacOS/' || true
+      - name: Show crash reports
+        if: ${{ failure() }}
+        run: |
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/InstallSwitcher* 2>/dev/null | head -n 3); do echo "== $f"; head -c 9000 "$f"; echo; done
+      # Every screen as WebKit draws it, for review.
+      - name: Draw every screen
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          "build/Install Switcher.app/Contents/MacOS/InstallSwitcher" --snapshot shots/screens
+          test "$(ls shots/screens/*.png | wc -l)" -ge 13
+      - name: Show crash reports of the screens
+        if: ${{ failure() }}
+        run: |
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/InstallSwitcher* 2>/dev/null | head -n 3); do echo "== $f"; head -c 9000 "$f"; echo; done
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-pictures
+          path: shots
+      - name: Keep the disk image for the download check
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-dmg
+          path: dist/Install-Switcher.dmg
+          retention-days: 3
+
+  # Install-Switcher.dmg as people get it: on a Mac that never built it,
+  # flagged as a browser download, opened in Finder. Its window must show
+  # the instructions, macOS must refuse the installer until approved, and
+  # the Privacy & Security link must open System Settings.
+  installer-download:
+    needs: installer
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: installer-dmg
+          path: ${{ runner.temp }}/download
+      - name: Open the disk image as a download would
+        run: |
+          set +e
+          mkdir -p shots
+          # A command that waits on a dialog must not hold the job.
+          t() { "$@" & p=$!; ( sleep 25; kill -9 $p 2>/dev/null ) & w=$!; wait $p; r=$?; kill $w 2>/dev/null; return $r; }
+          dmg="$RUNNER_TEMP/download/Install-Switcher.dmg"
+          sw_vers | tee shots/sw_vers.txt
+          spctl --status | tee shots/gatekeeper.txt
+          xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;$(uuidgen)" "$dmg"
+          t open "$dmg"; sleep 10
+          ls -la "/Volumes/Install Switcher" | tee shots/volume.txt
+          t screencapture -x shots/0-window-soon.png
+          # Finder draws the window first and its background a moment later.
+          sleep 10
+          t screencapture -x shots/1-window.png
+          t spctl --assess --type execute -vv "/Volumes/Install Switcher/Install Switcher.app" > shots/spctl.txt 2>&1
+          cat shots/spctl.txt
+          t open "/Volumes/Install Switcher/Install Switcher.app"; sleep 4
+          t screencapture -x shots/2-blocked.png
+          t open "/Volumes/Install Switcher/Privacy & Security"; sleep 6
+          t screencapture -x shots/3-settings.png
+          pgrep -x "System Settings" > shots/settings-pid.txt
+          set -e
+          echo "window brightness after 10s: $(swift build/macos/installer/dmg/brightness.swift shots/0-window-soon.png 230 200 890 600)"
+          bright=$(swift build/macos/installer/dmg/brightness.swift shots/1-window.png 230 200 890 600)
+          echo "window brightness after 20s: $bright"
+          grep -q "Install Switcher.app" shots/volume.txt
+          grep -q "Privacy & Security -> /System/Library/PreferencePanes/Security.prefPane" shots/volume.txt
+          # Finder drew the dark background with its instructions, not a
+          # plain white window (the window sits at 200,160 on this screen).
+          awk -v b="$bright" 'BEGIN { exit !(b < 0.35) }'
+          if grep -q "assessments enabled" shots/gatekeeper.txt; then grep -q "rejected" shots/spctl.txt; fi
+          test -s shots/settings-pid.txt
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: download-${{ matrix.os }}
+          path: shots

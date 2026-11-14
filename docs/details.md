@@ -558,13 +558,47 @@ environment; a terminal-only override needs the CLI command. The first
   download, and does not replace a newer installed version with an older
   release unless `SWITCHER_TAG` asks for one. The
   release pipeline builds only from commits on main, after the Linux and
-  macOS checks pass, with its actions pinned to commits; it attests where
-  each file was built and leaves the release a draft, unseen by updaters.
+  macOS checks pass, with its actions pinned to commits. The files are built
+  in a job that can write nothing; a separate job, which runs only GitHub's
+  own actions and tools, lists their checksums, attests where each file was
+  built and leaves the release a draft, unseen by updaters.
   `build/release-sign.sh` signs only a draft built from the commit you
   tagged on main: it builds the Linux binaries and Tailscale add-ons again
   and requires them identical, checks every file's attestation that the
   Release workflow built it from that commit on GitHub's own runners, and
   writes the list of checksums itself.
+- **The installer.** `Install-Switcher.dmg` holds Install Switcher.app and
+  a link to System Settings' Privacy & Security, behind a window that
+  explains the one step macOS asks for: neither the installer nor Switcher
+  is notarized, so macOS has you approve the installer once, before it runs
+  (Open Anyway). The installer carries the release's Switcher.app
+  unchanged; its own ad hoc seal covers it. It copies the app beside the
+  destination with `ditto --noqtn`, clears `com.apple.quarantine` from
+  every file of that copy and fails if any keeps it, and checks the copy's
+  version, `codesign --verify --deep --strict` and that its server reports
+  the same version. It then swaps the copy in by rename while the old
+  Switcher keeps running, as the updater does, so a failure leaves the old
+  app in place and running, and none is kept after it. Only then does it
+  stop every running Switcher of this user, from any copy, found by the
+  executable the kernel runs rather than by command line, with SIGTERM and
+  after ten seconds SIGKILL, and start the new one. It never downgrades:
+  when copies sit in both Applications folders the newest is the one
+  updated, and a newer installed Switcher is left alone. An app called
+  Switcher.app that is not Switcher is never replaced. Where Switcher
+  already sits in a folder this user cannot change, macOS asks for an
+  administrator password, which the installer never sees. The installer's
+  window shows pages from inside the app only: a content security policy
+  allows no network and no script but its own, every navigation away from
+  them and every new window is refused, and only messages from its own page
+  are acted on. The `switcher` command, the agent skill and starting
+  Switcher are the same steps as `install.sh`, through the installed app's
+  own commands; the login item is the one Switcher's menu writes. Nothing
+  checks a browser download of `Install-Switcher.dmg` for you. To check one
+  yourself, download the release's `SHA256SUMS` and `SHA256SUMS.sig`, save
+  the `release_signers` lines from `install.sh` to a file, run
+  `ssh-keygen -Y verify -f that-file -I switcher-release -n switcher-release -s SHA256SUMS.sig < SHA256SUMS`,
+  and compare `shasum -a 256 Install-Switcher.dmg` with its line in
+  `SHA256SUMS`.
 - The command line prints text from other computers (a host's accounts, a
   paired device's name, a Switcher found on the network) without terminal
   control characters.

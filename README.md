@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/00xmario/switcher/releases/latest"><strong>Download for macOS</strong></a>
+  <a href="https://github.com/00xmario/switcher/releases/latest/download/Install-Switcher.dmg"><strong>Download for macOS</strong></a>
   &nbsp;·&nbsp; <a href="docs/linux.md">Linux</a>
   &nbsp;·&nbsp; <a href="#command-line">Command line</a>
   &nbsp;·&nbsp; <a href="docs/phone.md">On your phone</a>
@@ -178,6 +178,33 @@ and a six-digit code; only phones you approve on the Mac get in.
 
 ## Install
 
+**On a Mac**, download
+[Install Switcher](https://github.com/00xmario/switcher/releases/latest/download/Install-Switcher.dmg),
+open it, and do what its window shows:
+
+1. Double-click **Install Switcher**. macOS says it can't check the app:
+   close that message without clicking **Move to Trash** (on macOS 15 and
+   later, click **Done**).
+2. Double-click **Privacy & Security** beside it, scroll down, click
+   **Open Anyway** and confirm with your password (an administrator's, on
+   a standard account).
+
+The installer opens, shows what Switcher does, puts it in Applications,
+adds the `switcher` command, teaches your AI agents to use it if you like
+(`~/.agents/skills/switcher`), opens it at login if you like, and starts
+it in the menu bar. Running it again updates or repairs an install, and it
+never replaces a newer Switcher.
+
+Why the extra step: macOS opens a downloaded app with a plain "Open" only
+when its developer is in Apple's Developer Program ($99 a year) and has
+each build notarized. Switcher is free and open source and is signed ad hoc
+instead, so macOS has you approve the installer in System Settings, once.
+The installer removes the download flag from the Switcher it installs, and
+updates arrive through Switcher's own updater, which macOS does not flag,
+so it does not ask again.
+
+**From Terminal**, or over SSH:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh | sh
 ```
@@ -185,13 +212,12 @@ curl -fsSL https://raw.githubusercontent.com/00xmario/switcher/main/install.sh |
 The script installs the latest release into Applications, adds the
 `switcher` command, on a first install adds the skill that teaches AI agents,
 Claude Code included, to use Switcher (`~/.agents/skills/switcher`;
-`SWITCHER_SKILL=0` skips it) and starts Switcher. It works over SSH too.
+`SWITCHER_SKILL=0` skips it) and starts Switcher. A download with `curl` is
+not flagged, so macOS does not ask.
 
-Or download `Switcher_<version>.dmg` from
-[Releases](https://github.com/00xmario/switcher/releases/latest) and drag
-Switcher into Applications. Switcher is signed ad hoc rather than with a paid
-Developer ID, so macOS may block the first launch of a browser download;
-clear the flag once with:
+Each release also carries `Switcher_<version>.dmg`, the app on its own,
+which the updater and the script use. Dragged into Applications from a
+browser download, it needs the flag cleared once:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Switcher.app
@@ -302,6 +328,15 @@ The full matrix, including what is verified per native CLI, is in
   updater nor the install script installs anything without it. The download
   must match its signed SHA-256, and the new app's version, signature and
   server must check out before it replaces the old one.
+- The installer carries the same Switcher.app as the release's
+  `Switcher_<version>.dmg`, byte for byte. It loads nothing from the
+  network, checks the copy's signature, version and server before anything
+  is replaced, swaps it in the way the updater does, and clears macOS's
+  download flag only on that copy. It never asks for a password unless
+  Switcher already sits in a folder you cannot change. A browser download
+  is checked by nothing automatically; its checksum is in the release's
+  signed `SHA256SUMS` if you want to check it yourself
+  ([how](docs/details.md#security-model)).
 - An optional dashboard password and an opt-in TLS LAN listener are in
   Settings. The full model is in [details](docs/details.md#security-model).
 

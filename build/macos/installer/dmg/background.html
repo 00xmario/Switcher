@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The Finder window of Install-Switcher.dmg, drawn behind its two icons.
+     This is the first thing anyone sees, before macOS lets anything run, so
+     it carries the one step macOS asks for. build/macos/installer/build.sh
+     draws it at 1x and 2x on a Mac with the installer's own WebKit view
+     (InstallSwitcher --snapshot) for every build; Finder draws the icons
+     and their labels at the places marked .slot, which dmg/settings.py
+     repeats. -->
+<title>Install Switcher background</title>
+<style>
+  :root {
+    --text: #eef8f2; --dim: #a9bdb2; --faint: #7d9488;
+    --brand: linear-gradient(135deg, #d4f76e 0%, #43dc8d 50%, #10a89a 100%);
+    /* Finder writes icon labels in black in light mode and in white in dark
+       mode, and the background cannot tell which. This green-gray reads at
+       about 4.5:1 against both. */
+    --plate: #5a7c6c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 720px; height: 440px; overflow: hidden; }
+  body {
+    position: relative; color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background:
+      radial-gradient(420px 300px at 12% -10%, rgb(212 247 110 / .16), transparent 70%),
+      radial-gradient(460px 320px at 95% 0%, rgb(67 220 141 / .16), transparent 70%),
+      radial-gradient(520px 300px at 50% 120%, rgb(16 168 154 / .2), transparent 70%),
+      linear-gradient(180deg, #0e1f17 0%, #08120d 60%, #050b08 100%);
+  }
+  .grid { position: absolute; inset: 0; background-image: linear-gradient(rgb(255 255 255 / .03) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / .03) 1px, transparent 1px); background-size: 30px 30px; -webkit-mask-image: radial-gradient(75% 70% at 50% 40%, #000, transparent); }
+  header { position: absolute; left: 26px; right: 26px; top: 20px; height: 36px; display: flex; align-items: center; gap: 11px; }
+  header svg { width: 30px; height: 30px; filter: drop-shadow(0 4px 10px rgb(0 0 0 / .5)); }
+  header h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
+  header .pill { margin-left: auto; padding: 4px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: var(--dim); background: rgb(255 255 255 / .06); box-shadow: 0 0 0 1px rgb(255 255 255 / .1) inset; }
+  .card { position: absolute; top: 72px; width: 324px; height: 282px; border-radius: 20px; background: linear-gradient(165deg, rgb(255 255 255 / .075), rgb(255 255 255 / .025)); box-shadow: 0 0 0 1px rgb(255 255 255 / .1) inset, 0 24px 50px -24px rgb(0 0 0 / .8); }
+  .card.one { left: 24px; }
+  .card.two { left: 372px; }
+  .card h2 { position: absolute; left: 20px; right: 16px; top: 17px; margin: 0; display: flex; align-items: center; gap: 10px; font-size: 14.5px; font-weight: 650; letter-spacing: -.01em; }
+  .num { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%; font-size: 13px; font-weight: 800; color: #052012; background: var(--brand); box-shadow: 0 0 14px rgb(67 220 141 / .45); }
+  /* Where Finder puts the icon (112 pt, centred on the slot) and its label. */
+  .slot { position: absolute; left: 162px; top: 128px; width: 0; height: 0; }
+  .slot::before { content: ""; position: absolute; left: -82px; top: -82px; width: 164px; height: 164px; border-radius: 50%; background: radial-gradient(closest-side, rgb(67 220 141 / .22), rgb(67 220 141 / .06) 60%, transparent); }
+  .plate { position: absolute; left: -82px; top: 61px; width: 164px; height: 21px; border-radius: 7px; background: var(--plate); }
+  .card p { position: absolute; left: 20px; right: 20px; bottom: 16px; margin: 0; color: var(--dim); font-size: 12.5px; text-align: center; }
+  .card p b { color: var(--text); font-weight: 650; }
+  .card p .no { color: #ff9b8c; font-weight: 600; white-space: nowrap; }
+  .chev { position: absolute; left: 350px; top: 186px; width: 20px; height: 26px; }
+  footer { position: absolute; left: 26px; right: 26px; top: 366px; display: flex; gap: 14px; align-items: flex-start; }
+  footer .shield { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: #43dc8d; background: rgb(67 220 141 / .1); box-shadow: 0 0 0 1px rgb(67 220 141 / .25) inset; }
+  footer .shield svg { width: 18px; height: 18px; }
+  footer p { margin: 0; color: var(--faint); font-size: 11.8px; line-height: 1.5; }
+  footer p b { color: var(--dim); font-weight: 650; }
+  footer code { font: 11px ui-monospace, "SF Mono", Menlo, monospace; color: var(--dim); }
+  /* ?preview shows where Finder's icons will be, for layout work only. */
+  .fake { display: none; position: absolute; left: -56px; top: -56px; width: 112px; height: 112px; border-radius: 24px; background: rgb(255 255 255 / .25); }
+  .fake + i { display: none; position: absolute; left: -82px; top: 63px; width: 164px; text-align: center; font: 12px -apple-system, sans-serif; font-style: normal; color: #000; }
+  body.preview .fake, body.preview .fake + i { display: block; }
+</style>
+</head>
+<body>
+<div class="grid"></div>
+<header>
+  <svg viewBox="0 0 100 100" aria-hidden="true">
+    <defs>
+      <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="30" y1="22" x2="62" y2="80"><stop offset="0" stop-color="#d4f76e"/><stop offset=".5" stop-color="#43dc8d"/><stop offset="1" stop-color="#10a89a"/></linearGradient>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22332b"/><stop offset="1" stop-color="#0a120e"/></linearGradient>
+      <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><rect width="100" height="100" fill="#fff"/><circle cx="68" cy="28" r="13.4" fill="#000"/></mask>
+    </defs>
+    <rect width="100" height="100" rx="23" fill="url(#bg)"/>
+    <rect x="1" y="1" width="98" height="98" rx="22" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="2"/>
+    <g transform="translate(50 50) scale(1.05) translate(-52.9 -47.1)">
+      <path d="M68 28H44A11 11 0 0 0 44 50H56A11 11 0 0 1 56 72H32" fill="none" stroke="url(#g)" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round" mask="url(#cut)"/>
+      <circle cx="68" cy="28" r="11" fill="#f4fff8"/>
+    </g>
+  </svg>
+  <h1>Install Switcher</h1>
+  <span class="pill">macOS asks once · about a minute</span>
+</header>
+
+<section class="card one">
+  <h2><span class="num">1</span>Double-click Install Switcher</h2>
+  <div class="slot"><span class="plate"></span><span class="fake"></span><i>Install Switcher</i></div>
+  <p>macOS says it can't check the app. Close that<br>message: click <b>Done</b>, <span class="no">never Move to Trash</span>.</p>
+</section>
+
+<svg class="chev" viewBox="0 0 20 26" aria-hidden="true"><path d="M5 3l10 10L5 23" fill="none" stroke="#43dc8d" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+
+<section class="card two">
+  <h2><span class="num">2</span>Then double-click this</h2>
+  <div class="slot"><span class="plate"></span><span class="fake"></span><i>Privacy &amp; Security</i></div>
+  <p>Scroll down, click <b>Open Anyway</b> and confirm<br>with your password. The installer opens.</p>
+</section>
+
+<footer>
+  <span class="shield"><svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.5 12l2.4 2.4 4.6-4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+  <p><b>Why does macOS ask?</b> It opens a downloaded app with a plain “Open” only when its developer pays for Apple's Developer Program and has it notarized. Switcher is free and open source, so macOS has you approve it once, and never again for Switcher. Prefer Terminal? The one-line install is at <code>github.com/00xmario/switcher</code>.</p>
+</footer>
+<script>if (location.search.includes('preview')) document.body.classList.add('preview');</script>
+</body>
+</html>
