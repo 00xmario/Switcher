@@ -171,14 +171,14 @@ func (r *Recorder) Usage(account string, windows []Window) {
 				r.addEventLocked(Event{T: at, Kind: kind, Account: account, Window: w.Label})
 			}
 			if used >= 100 && (last.Used < 100 || newCycle) {
-				r.addEventLocked(Event{T: now, Kind: EventLimit, Account: account, Window: w.Label})
+				r.limitLocked(account, w.Label, now)
 			}
 			same := last.Used == used && abs64(last.Resets-w.ResetsAt) <= 120
 			if same && now-last.T < int64(heartbeat/time.Second) {
 				continue
 			}
 		} else if used >= 100 {
-			r.addEventLocked(Event{T: now, Kind: EventLimit, Account: account, Window: w.Label})
+			r.limitLocked(account, w.Label, now)
 		}
 		s.Points = append(s.Points, p)
 		changed = true
@@ -186,6 +186,19 @@ func (r *Recorder) Usage(account string, windows []Window) {
 	if changed {
 		r.changedLocked()
 	}
+}
+
+// limitLocked records a window reaching its limit. A refusal for the
+// account minutes before is this same limit, seen first: it becomes this
+// window's limit rather than a second one.
+func (r *Recorder) limitLocked(account, window string, now int64) {
+	for i := len(r.events) - 1; i >= 0 && now-r.events[i].T < 15*60; i-- {
+		if e := &r.events[i]; e.Account == account && e.Kind == EventRefused {
+			e.Kind, e.Window = EventLimit, window
+			return
+		}
+	}
+	r.addEventLocked(Event{T: now, Kind: EventLimit, Account: account, Window: window})
 }
 
 // Window is one quota window as the proxy reads it.
@@ -248,10 +261,25 @@ func (r *Recorder) Remember(account, provider, name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m := Meta{Provider: provider, Name: name}
-	if r.meta[account] != m {
+	if r.meta[account] != m && r.referencedLocked(account) {
 		r.meta[account] = m
 		r.changedLocked()
 	}
+}
+
+// referencedLocked says whether the history has anything of an account.
+func (r *Recorder) referencedLocked(account string) bool {
+	for k := range r.series {
+		if k.Account == account {
+			return true
+		}
+	}
+	for _, e := range r.events {
+		if e.Account == account || e.To == account {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Recorder) addEventLocked(e Event) {
@@ -289,6 +317,19 @@ func (r *Recorder) pruneLocked(now int64) {
 		i = len(r.events) - maxEvents
 	}
 	r.events = append([]Event(nil), r.events[i:]...)
+	// The names of accounts nothing refers to any more go too.
+	used := map[string]bool{}
+	for k := range r.series {
+		used[k.Account] = true
+	}
+	for _, e := range r.events {
+		used[e.Account], used[e.To] = true, true
+	}
+	for id := range r.meta {
+		if !used[id] {
+			delete(r.meta, id)
+		}
+	}
 }
 
 // Flush writes the history now when it changed.

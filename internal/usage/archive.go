@@ -2,7 +2,12 @@ package usage
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 )
@@ -16,8 +21,11 @@ import (
 // deleted gets no new usage later: records are dated when written.)
 //
 // Entries of the last compactAfterDays keep their quarter hours, as a
-// ledger has them; older ones are kept per hour, which is all that
+// ledger has them; older ones are kept per half hour, which is all that
 // insights about them need, so the archive stays small for years of use.
+// Half hours, not hours: days start on a half hour in India, Iran,
+// Newfoundland and South Australia (and on a quarter hour only in Nepal and
+// the Chatham Islands, whose old usage may cross midnight by 15 minutes).
 // The first scan with an archive reads every log on disk, however old.
 
 // archiveVersion is raised when what the archive holds changes meaning; an
@@ -29,9 +37,10 @@ const archiveVersion = 1
 // entries kept per quarter hour.
 const compactAfterDays = 100
 
-// quartersPerHour: a ledger's quarter hours are counted from the Unix
-// epoch, so an hour starts at a quarter that is a multiple of four.
-const quartersPerHour = 4
+// quartersPerBucket is how many quarter hours old usage is kept together
+// in: a ledger's quarter hours are counted from the Unix epoch, so a half
+// hour starts at a quarter that is a multiple of two.
+const quartersPerBucket = 2
 
 // maxArchiveSessions bounds the sessions the archive keeps: the ones whose
 // last usage is newest stay.
@@ -47,20 +56,34 @@ type archiveFile struct {
 	Sessions    []SessionSpan `json:"sessions"`
 }
 
-// loadArchive reads the archive, or nil when there is none of this version.
-// backfilled says whether every log on disk has been read into it.
-func loadArchive(path string) (ledger *Ledger, backfilled bool) {
+// errArchiveUnreadable: the archive is there but could not be read this
+// time; it is left alone and read again on the next scan.
+var errArchiveUnreadable = errors.New("usage archive unreadable")
+
+// loadArchive reads the archive: nil and no error when there is none. One
+// that is damaged, or of another version (a newer Switcher's, after going
+// back to an older one), is set aside under a name of its own, never
+// overwritten, and the logs are read again from scratch.
+func loadArchive(path string, now time.Time) (ledger *Ledger, backfilled bool, err error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
 	if err != nil {
-		return nil, false
+		return nil, false, errArchiveUnreadable
 	}
 	var f archiveFile
 	if json.Unmarshal(data, &f) != nil || f.Version != archiveVersion {
-		return nil, false
+		aside := fmt.Sprintf("%s.set-aside-%d", path, now.Unix())
+		if os.Rename(path, aside) != nil {
+			return nil, false, errArchiveUnreadable
+		}
+		log.Printf("usage: the archive could not be used and was kept as %s; reading the logs again", filepath.Base(aside))
+		return nil, false, nil
 	}
 	l := &Ledger{Entries: f.Entries, Sessions: f.Sessions, ScannedAtMs: f.ScannedAtMs}
 	l.bound()
-	return l, f.Backfilled
+	return l, f.Backfilled, nil
 }
 
 // saveArchive writes the archive in place of the old one, readable by this
@@ -87,13 +110,14 @@ type entryKey struct {
 	provider, model string
 }
 
-// compacted returns the entries with those before cut moved to the hour
-// they fall in, the entries of one hour, provider and model added up.
+// compacted returns the entries with those before cut moved to the half
+// hour they fall in, the entries of one half hour, provider and model
+// added up.
 func compacted(entries []LedgerEntry, cut int64) map[entryKey]LedgerEntry {
 	out := make(map[entryKey]LedgerEntry, len(entries))
 	for _, e := range entries {
 		if e.Quarter < cut {
-			e.Quarter -= ((e.Quarter % quartersPerHour) + quartersPerHour) % quartersPerHour
+			e.Quarter -= ((e.Quarter % quartersPerBucket) + quartersPerBucket) % quartersPerBucket
 		}
 		k := entryKey{e.Quarter, e.Provider, e.Model}
 		if old, ok := out[k]; ok {
@@ -107,7 +131,7 @@ func compacted(entries []LedgerEntry, cut int64) map[entryKey]LedgerEntry {
 }
 
 // mergeArchive adds a scan's ledger to the archive and reports whether the
-// archive changed. For each quarter hour (or, when old, hour), provider and
+// archive changed. For each quarter hour (or, when old, half hour), provider and
 // model, the entry counting more records wins, the scan's when they count
 // as many (its prices are the latest); an entry the scan no longer has, its
 // log gone, stays. Neither ledger is changed.
@@ -156,7 +180,13 @@ func mergeArchive(archive, scanned *Ledger, now time.Time) (*Ledger, bool) {
 			k := [2]string{s.Provider, s.ID}
 			have, ok := spans[k]
 			if ok {
-				s.First, s.Last, s.Active = min(s.First, have.First), max(s.Last, have.Last), max(s.Active, have.Active)
+				// A session resumed after what the archive has of it: the
+				// scan counts only its quarter hours since, so add them.
+				active := max(s.Active, have.Active)
+				if s.First > have.Last {
+					active = s.Active + have.Active
+				}
+				s.First, s.Last, s.Active = min(s.First, have.First), max(s.Last, have.Last), active
 			}
 			if !ok || have != s {
 				changed = true

@@ -70,7 +70,11 @@ export function monthLabel(month) {
 
 export function hourLabel(h) { return `${String(h).padStart(2, '0')}:00`; }
 
-export function plural(n, one, many = one + 's') { return `${n} ${n === 1 ? one : many}`; }
+export function plural(n, one, many = one + 's') { n = Number(n) || 0; return `${n} ${n === 1 ? one : many}`; }
+
+// num is a number from an answer, as a number whatever was sent: values
+// the host sends a paired computer are drawn as numbers, never markup.
+export const num = v => Number(v) || 0;
 
 // change: how much a number moved against the one before, as "+34%".
 export function change(now, before) {
@@ -294,7 +298,7 @@ export function modelsHTML(ins, metric, logos = {}, limit = 12) {
       <td class="ins-share"><span class="ins-share-track"><span class="ins-share-fill ${esc(m.provider)}" style="width:${((v / top) * 100).toFixed(1)}%"></span></span></td>
       <td class="ins-num">${esc(metricText(v, metric))}<small>${((share || 0) * 100).toFixed(1)}%</small></td>
       <td class="ins-num ins-dim">${esc(metric === 'cost' ? tokens(m.tokens) : money(m.cost_usd))}</td>
-      <td class="ins-num ins-dim">${m.active_days}</td>
+      <td class="ins-num ins-dim">${num(m.active_days)}</td>
       <td class="ins-dim ins-when">${esc(day(m.first_day))} – ${esc(day(m.last_day))}</td>
     </tr>`;
   }).join('');
@@ -429,7 +433,7 @@ export function poolChartHTML(pool, report) {
   const color = PROVIDER_COLORS[pool.provider] || 'var(--accent)';
   const marks = (pool.resets || []).filter(m => m.t >= t0 && m.t <= t1).map(m => {
     const x = (X(m.t) / W) * 100;
-    return `<span class="ins-reset${m.projected ? ' is-projected' : ''}" style="left:${x.toFixed(2)}%" ${tip(`${m.projected ? 'Reset' : 'Reset'} · ${m.name || 'an account'}`, when(m.t, report.now), m.gain ? `+${m.gain}% back` : '')}>${m.gain ? `+${m.gain}%` : ''}</span>`;
+    return `<span class="ins-reset${m.projected ? ' is-projected' : ''}" style="left:${x.toFixed(2)}%" ${tip(`${m.projected ? 'Reset' : 'Reset'} · ${m.name || 'an account'}`, when(m.t, report.now), m.gain ? `+${num(m.gain)}% back` : '')}>${m.gain ? `+${num(m.gain)}%` : ''}</span>`;
   }).join('');
   const empties = [];
   if (pool.first_empty) empties.push([pool.first_empty.t, `${pool.first_empty.name || 'An account'} runs out`]);
@@ -462,20 +466,20 @@ export function poolChartHTML(pool, report) {
       ${marks}${emptyMarks}${hovers}
     </div>
     <div class="ins-pool-x">${ticks.join('')}</div>
-    <div class="ins-pool-legend"><span class="is-rec">Recorded</span><span class="is-proj">Projected at the last ${report.burn_hours}h's pace</span></div>
+    <div class="ins-pool-legend"><span class="is-rec">Recorded</span><span class="is-proj">Projected at the last ${num(report.burn_hours)}h's pace</span></div>
   </div>`;
 }
 
 export function poolCardHTML(pools, report, chosen, logos = {}) {
   const pool = pools.find(p => p.window === chosen) || pools[0];
   const windows = pools.map(p => [p.window, p.window]);
-  const burn = pool.burn?.[`${report.burn_hours}h`] || 0;
+  const burn = num(pool.burn?.[`${num(report.burn_hours)}h`]);
   const facts = [
-    ['Pool empty', pool.pool_empty ? within(pool.pool_empty, report.now) : burn > 0 ? 'Not before the resets' : 'Not at this pace', pool.pool_empty ? when(pool.pool_empty, report.now) : ''],
+    ['Pool empty', num(pool.pool_empty) ? within(pool.pool_empty, report.now) : burn > 0 ? 'Not before the resets' : 'Not at this pace', pool.pool_empty ? when(pool.pool_empty, report.now) : ''],
     ['First empty', pool.first_empty ? within(pool.first_empty.t, report.now) : pool.empty_now ? `${pool.empty_now} out now` : '–', pool.first_empty ? pool.first_empty.name : ''],
-    ['Next reset', pool.next_reset ? `+${pool.next_reset.gain}% ${within(pool.next_reset.t, report.now)}` : '–', pool.next_reset ? `${pool.next_reset.name} · ${when(pool.next_reset.t, report.now)}` : ''],
-    [`Burn, last ${report.burn_hours}h`, rate(burn), `1h ${rate(pool.burn?.['1h'])} · 24h ${rate(pool.burn?.['24h'])}`],
-    ['Limits hit', String(pool.limit_hits || 0), `in the last ${report.days === 1 ? '24 hours' : `${report.days} days`}`],
+    ['Next reset', pool.next_reset ? `+${num(pool.next_reset.gain)}% ${within(pool.next_reset.t, report.now)}` : '–', pool.next_reset ? `${pool.next_reset.name} · ${when(pool.next_reset.t, report.now)}` : ''],
+    [`Burn, last ${num(report.burn_hours)}h`, rate(burn), `1h ${rate(pool.burn?.['1h'])} · 24h ${rate(pool.burn?.['24h'])}`],
+    ['Limits hit', String(num(pool.limit_hits)), `in the last ${num(report.days) === 1 ? '24 hours' : `${num(report.days)} days`}`],
   ];
   return `<section class="ins-card is-wide ins-pool" data-pool="${esc(pool.provider)}">
     <div class="ins-card-head">
@@ -512,12 +516,12 @@ export function accountsHTML(report, logos = {}) {
       <td>${w ? spark(w.series, report.now, report.since) : ''}</td>
       <td class="ins-num">${w ? esc(rate(w.burn)) : '–'}<small>${w ? `${esc(rate(w.active_burn))} in use` : ''}</small></td>
       <td class="ins-num">${w?.empty_in ? esc(duration(w.empty_in / 60)) : '–'}</td>
-      <td class="ins-num">${esc(drain)}<small>${w?.cycles ? `${w.hits} of ${plural(w.cycles, 'window')}` : ''}</small></td>
-      <td class="ins-num">${a.limit_hits || 0}<small>${a.last_hit ? esc(within(a.last_hit, report.now)) : ''}</small></td>
+      <td class="ins-num">${esc(drain)}<small>${w?.cycles ? `${num(w.hits)} of ${plural(w.cycles, 'window')}` : ''}</small></td>
+      <td class="ins-num">${num(a.limit_hits)}<small>${a.last_hit ? esc(within(a.last_hit, report.now)) : ''}</small></td>
     </tr>`;
   }).join('');
   return `<div class="ins-table-wrap"><table class="ins-table ins-accounts">
-    <thead><tr><th>Account</th><th>Now</th><th>Used, ${report.days === 1 ? '24h' : `${report.days} days`}</th><th class="ins-num">Burn ${report.burn_hours}h</th><th class="ins-num">Empty in</th><th class="ins-num">Reset to limit</th><th class="ins-num">Limits hit</th></tr></thead>
+    <thead><tr><th>Account</th><th>Now</th><th>Used, ${num(report.days) === 1 ? '24h' : `${num(report.days)} days`}</th><th class="ins-num">Burn ${num(report.burn_hours)}h</th><th class="ins-num">Empty in</th><th class="ins-num">Reset to limit</th><th class="ins-num">Limits hit</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 

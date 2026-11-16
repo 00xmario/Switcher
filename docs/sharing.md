@@ -148,7 +148,7 @@ is at the other end when pairing without a code.
   while it stays paired: removing it (or Disconnect on it) takes its usage
   out, and pairing it again brings it back, counted once, since each
   computer sends all of its usage: the last 91 days to the quarter hour, and
-  what its archive keeps from before per hour, for Insights. Days follow each
+  what its archive keeps from before per half hour, for Insights. Days follow each
   viewer's own time zone, to the quarter hour. The host and the client both
   need 1.31 or later; Insights on every computer counts another computer's
   older usage once the host has 1.35 or later.

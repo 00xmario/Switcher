@@ -467,8 +467,15 @@ func pool(provider, window string, accs []Account, series map[seriesKey][]Point,
 		switch {
 		case (e.Kind == EventReset || e.Kind == EventEarlyReset) && e.Window == window:
 			p.Resets = append(p.Resets, Moment{T: e.T, Account: e.Account, Name: nameOf(accs, e.Account)})
-		case e.Kind == EventLimit && e.Window == window, e.Kind == EventRefused:
+		case e.Kind == EventLimit && e.Window == window:
 			p.LimitHits++
+		case e.Kind == EventRefused:
+			// A refusal says no window: it counts for this one when this
+			// window was at its limit then.
+			points := series[seriesKey{e.Account, window}]
+			if usedAt(points, e.T) >= 100 || usedAt(points, e.T+15*60) >= 100 {
+				p.LimitHits++
+			}
 		}
 	}
 

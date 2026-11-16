@@ -232,3 +232,43 @@ func TestReportNamesRemovedAccounts(t *testing.T) {
 		t.Fatalf("report: %+v", rep)
 	}
 }
+
+// A refusal and then the reading at 100% are one limit, of that window,
+// counted in that window's pool only; the names of accounts nothing refers
+// to are not kept.
+func TestOneLimitCountsOnce(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	r, c := recorderAt(t, now.Add(-time.Hour))
+	read := func(session int) {
+		r.Usage("a", []Window{{Label: "Session", Used: session, ResetsAt: now.Add(3 * time.Hour).Unix()}, {Label: "Weekly", Used: 40, ResetsAt: now.Add(72 * time.Hour).Unix()}})
+	}
+	read(96)
+	c.add(time.Minute)
+	r.Refused("a")
+	c.add(time.Minute)
+	read(100)
+	if got := kinds(r); len(got) != 1 || got[0] != "limit:Session" {
+		t.Fatalf("events %v", got)
+	}
+	rep := r.Report(now, 7, 3, []Account{{ID: "a", Provider: "claude", Name: "a@example.com"}})
+	if rep.Accounts[0].LimitHits != 1 {
+		t.Fatalf("account limit hits %d", rep.Accounts[0].LimitHits)
+	}
+	for _, p := range rep.Pools {
+		if want := map[string]int{"Session": 1, "Weekly": 0}[p.Window]; p.LimitHits != want {
+			t.Fatalf("%s pool: %d limit hits, want %d", p.Window, p.LimitHits, want)
+		}
+	}
+	r.Remember("never", "claude", "never@example.com")
+	if _, ok := r.meta["never"]; ok {
+		t.Fatal("the name of an account without history was kept")
+	}
+	r.meta["gone"] = Meta{Provider: "claude", Name: "gone@example.com"}
+	r.dirty = true
+	if err := r.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.meta["gone"]; ok {
+		t.Fatal("a name nothing refers to was kept")
+	}
+}

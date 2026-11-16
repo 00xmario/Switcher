@@ -37,6 +37,10 @@ type Service struct {
 	archiveUnsent bool // the last write failed: write it again
 }
 
+// historyFloor is the oldest a usage record may be: records dated before
+// it (a missing timestamp reads as 1970) are left out.
+var historyFloor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // NewService builds the service; dataDir holds usage-scan-cache.json,
 // usage-archive.json and model-rates.json.
 func NewService(dataDir string, client *http.Client) *Service {
@@ -178,23 +182,28 @@ func (s *Service) scanOwn() bool {
 	began := time.Now()
 	path := filepath.Join(s.dataDir, "usage-archive.json")
 	if !s.archiveRead {
-		s.archive, s.backfilled = loadArchive(path)
-		s.archiveRead = true
+		archive, backfilled, err := loadArchive(path, now)
+		// An archive that could not be read this time is left as it is:
+		// this scan shows what the logs have, and the next reads it again.
+		s.archive, s.backfilled, s.archiveRead = archive, backfilled, err == nil
 	}
 	// Until the archive holds every log on disk, read them all, however
-	// old; then the window the Usage page shows is enough.
+	// old (no AI coding tool wrote one before historyFloor); then the
+	// window the Usage page shows is enough.
 	start := now.AddDate(0, 0, -LedgerDays)
 	from := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.Local)
 	if !s.backfilled {
-		from = time.Unix(0, 0)
+		from = historyFloor
 	}
 	scanned := collectLedger(ResolveSources(), s.cache, rates, from)
 	ledger, changed := mergeArchive(s.archive, scanned, now)
-	if changed || !s.backfilled || s.archiveUnsent {
-		err := saveArchive(path, ledger, true)
-		s.archiveUnsent = err != nil
+	if s.archiveRead {
+		if changed || !s.backfilled || s.archiveUnsent {
+			err := saveArchive(path, ledger, true)
+			s.archiveUnsent = err != nil
+		}
+		s.archive, s.backfilled = ledger, true
 	}
-	s.archive, s.backfilled = ledger, true
 	s.mu.Lock()
 	s.own, s.ownAt, s.scanMs = ledger, s.now(), time.Since(began).Milliseconds()
 	s.mu.Unlock()
