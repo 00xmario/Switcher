@@ -153,6 +153,14 @@ and a six-digit code; only phones you approve on the Mac get in.
 - **Costs and tokens.** A Usage tab reads your CLIs' own session logs and
   prices them, per day, provider and model. With Macs sharing a host, every
   one shows the same total: all of them added up, with each one's share.
+- **Insights, for all time.** Switcher keeps its own archive of your usage, so
+  it stays counted after the CLIs delete their logs (Claude Code does after
+  30 days). The Insights tab looks at it from every side: lifetime totals,
+  streaks, an activity heatmap, your busiest weekday and hour, months, models,
+  tools and computers. Its Limits view records each account's quota over time:
+  the pool of accounts with how fast it drains and when it will run out, how
+  long each account takes from a reset to its limit, and every limit, reset and
+  switch.
 - **A command line for you and your agents.** Switch, sign in, set limits,
   share between Macs and set up Claude Desktop from a terminal or over SSH,
   with JSON output and stable exit codes.

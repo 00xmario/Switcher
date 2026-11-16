@@ -28,6 +28,7 @@ import (
 
 	"switcher/internal/claudecode"
 	"switcher/internal/provider"
+	"switcher/internal/quota"
 	"switcher/internal/store"
 )
 
@@ -134,6 +135,9 @@ type Manager struct {
 	resetSerial   uint64
 	quotaRevision map[string]uint64
 	spentCredits  map[string]map[string]int64
+	// quotaLog records the accounts' quota over time for Insights: usage
+	// readings, limits refused and switches. Nil records nothing.
+	quotaLog *quota.Recorder
 }
 
 // New loads persisted state and returns the proxy manager. registration is
@@ -952,6 +956,13 @@ func (m *Manager) recordUsage(id string, gen uint64, usage provider.Usage, succe
 		usage.Windows = append([]provider.UsageWindow(nil), usage.Windows...)
 		m.lastUsage[id] = usage
 		m.quotaRevision[id]++
+		if m.quotaLog != nil {
+			windows := make([]quota.Window, 0, len(usage.Windows))
+			for _, w := range usage.Windows {
+				windows = append(windows, quota.Window{Label: w.Label, Used: w.UsedPercent, ResetsAt: w.ResetsAt})
+			}
+			m.quotaLog.Usage(id, windows)
+		}
 		return usage
 	}
 	if errors.Is(err, provider.ErrUsageRateLimited) {
@@ -1398,10 +1409,23 @@ func (m *Manager) markExhaustedIfResetUnchanged(id string, until time.Time, expe
 }
 
 func (m *Manager) markExhaustedLocked(id string, until time.Time) error {
-	return m.mutateStateLocked(func() {
+	err := m.mutateStateLocked(func() {
 		m.exhausted[id] = until
 		m.quotaRevision[id]++
 	})
+	if err == nil {
+		m.quotaLog.Refused(id)
+	}
+	return err
+}
+
+// SetQuotaRecorder has the proxy record what it learns of the accounts'
+// quota: every usage reading, every request refused for a limit and every
+// switch to another account. Set it before serving.
+func (m *Manager) SetQuotaRecorder(r *quota.Recorder) {
+	m.mu.Lock()
+	m.quotaLog = r
+	m.mu.Unlock()
 }
 
 // SetAutoUseResetPolicy wires the user's preference for spending a banked

@@ -60,6 +60,7 @@ import (
 	"switcher/internal/provider/grok"
 	"switcher/internal/provider/opencode"
 	"switcher/internal/proxy"
+	"switcher/internal/quota"
 	"switcher/internal/reexec"
 	"switcher/internal/remote"
 	"switcher/internal/server"
@@ -473,6 +474,10 @@ func run(port, desktopRelayPort int) {
 		},
 	})
 	usageService := usage.NewService(config.Dir(), nil)
+	// The accounts' quota over time, for Insights: what the proxy learns of
+	// each account's windows, its limits and the switches it makes.
+	quotaLog := quota.Open(filepath.Join(config.Dir(), "quota-history.json"))
+	proxyManager.SetQuotaRecorder(quotaLog)
 	// Cost/token usage: rescan the common windows periodically in the
 	// background so the API always has a recent summary ready.
 	// One scan serves every window.
@@ -492,6 +497,7 @@ func run(port, desktopRelayPort int) {
 		Settings: settingsStore, Port: port, RemoteClient: remoteClient, Handback: handBack,
 		Autostart:    autostart.New(executablePath()),
 		UsageDevices: usage.OpenDeviceStore(filepath.Join(config.Dir(), "usage-devices")),
+		Quota:        quotaLog,
 		MachineName:  remote.MachineName(),
 		// The tray's Quit Switcher: stop as on SIGTERM, which also tells
 		// the login service not to restart it.
@@ -500,6 +506,7 @@ func run(port, desktopRelayPort int) {
 	// The paired computers' latest usage, kept in memory only, is written
 	// before an update or a change of listeners replaces this process.
 	reexec.BeforeExec(api.UsageDevices.Flush)
+	reexec.BeforeExec(func() { _ = quotaLog.Flush() })
 	// Usage added up across a host and the computers that use it: this
 	// computer's own, and the others' as the host keeps them.
 	usageService.SetIdentity(api.UsageIdentity)
@@ -709,8 +716,10 @@ func run(port, desktopRelayPort int) {
 	case <-shutdown.Done():
 	case serveErr = <-serveErrors:
 	}
-	// The paired computers' latest usage, kept in memory only, is written.
+	// The paired computers' latest usage, kept in memory only, is written,
+	// and the quota history.
 	api.UsageDevices.Flush()
+	_ = quotaLog.Flush()
 	if desktopRelay != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := desktopRelay.Close(closeCtx); err != nil {

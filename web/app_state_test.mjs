@@ -231,6 +231,7 @@ const renderContext = vm.createContext({
   renderSettings: () => {},
   loadUsage: () => {},
   loadPage: { setActive: () => {} },
+  insightsPage: { setActive: () => {} }, insightsRoot: { hidden: true },
   history: { replaceState: () => {} },
   location: { hash: '', pathname: '/', search: '' },
   document: {

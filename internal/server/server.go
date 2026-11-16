@@ -29,6 +29,7 @@ import (
 	"switcher/internal/phone"
 	"switcher/internal/provider"
 	"switcher/internal/proxy"
+	"switcher/internal/quota"
 	"switcher/internal/reexec"
 	"switcher/internal/remote"
 	"switcher/internal/sessionmeta"
@@ -56,8 +57,10 @@ type API struct {
 	CallbackReady func(signInURL string) error
 	// UsageDevices keeps, on a host, the usage its paired computers send;
 	// MachineName names this computer in the combined usage.
-	UsageDevices   *usage.DeviceStore
-	MachineName    string
+	UsageDevices *usage.DeviceStore
+	MachineName  string
+	// Quota keeps the accounts' quota history for Insights (Limits).
+	Quota          *quota.Recorder
 	usageShare     usageShare
 	usageAnswer    usageAnswer
 	usageUploaders usageUploaders
@@ -155,6 +158,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts/{id}/recheck", a.changing(a.handleRecheckAccount))
 	mux.HandleFunc("POST /api/usage/refresh", a.changing(a.handleRefreshAll))
 	mux.HandleFunc("GET /api/tokens", a.handleUsage)
+	mux.HandleFunc("GET /api/insights", a.handleInsights)
+	mux.HandleFunc("GET /api/insights/limits", a.handleInsightLimits)
 	mux.HandleFunc("POST /api/tokens/refresh", a.handleUsageRefresh)
 	mux.HandleFunc("PUT /api/tokens/device", a.handleUsageDevice)
 	mux.HandleFunc("GET /api/tokens/ledgers", a.handleUsageLedgers)
@@ -1404,6 +1409,89 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		answer["sharing"] = sharing
 	}
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleInsights answers with the long view of every computer's usage, for
+// all time (?range=all, the default) or the last 365, 90, 30 or 7 days. Like
+// handleUsage it never scans inline.
+func (a *API) handleInsights(w http.ResponseWriter, r *http.Request) {
+	days := 0
+	switch r.URL.Query().Get("range") {
+	case "365":
+		days = 365
+	case "90":
+		days = 90
+	case "30":
+		days = 30
+	case "7":
+		days = 7
+	}
+	if a.Usage == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "usage not configured"})
+		return
+	}
+	insights := a.Usage.Insights(days)
+	if insights == nil {
+		go a.Usage.Rescan()
+		writeJSON(w, http.StatusAccepted, map[string]any{"scanning": true})
+		return
+	}
+	stale := a.Usage.Age(days) > 10*time.Minute
+	if stale {
+		go a.Usage.Rescan()
+	}
+	if _, paired := remote.PairedDevice(r); !paired {
+		go a.syncUsageIfOld(usagePageSync)
+	}
+	answer := map[string]any{"scanning": false, "stale": stale, "insights": insights}
+	if sharing := a.usageSharing(); sharing != nil {
+		answer["sharing"] = sharing
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleInsightLimits answers with the accounts' quota history: each
+// provider's pool of accounts over the last days (?days=1, 7, the default,
+// or 30) and projected at the burn rate of the last hours (?burn=1, 3, the
+// default, 6 or 24), each account's windows and how fast they drain, and
+// the limits, resets and switches. A computer that uses a host asks the
+// host, which holds the accounts (see remote.Client).
+func (a *API) handleInsightLimits(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	switch r.URL.Query().Get("days") {
+	case "1":
+		days = 1
+	case "30":
+		days = 30
+	}
+	burn := 3
+	switch r.URL.Query().Get("burn") {
+	case "1":
+		burn = 1
+	case "6":
+		burn = 6
+	case "24":
+		burn = 24
+	}
+	if a.Quota == nil || a.Store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "quota history not configured"})
+		return
+	}
+	stored, err := a.Store.List()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not read accounts"})
+		return
+	}
+	active := map[string]string{}
+	if a.Proxy != nil {
+		active = a.Proxy.ActiveAll()
+	}
+	accounts := make([]quota.Account, 0, len(stored))
+	for _, acc := range stored {
+		accounts = append(accounts, quota.Account{ID: acc.ID, Provider: acc.Provider, Name: acc.Email, Plan: acc.Plan, Active: active[acc.Provider] == acc.ID})
+		a.Quota.Remember(acc.ID, acc.Provider, acc.Email)
+	}
+	writeJSON(w, http.StatusOK, a.Quota.Report(time.Now(), days, burn, accounts))
 }
 
 // handleUsageRefresh forces a rescan of every window.

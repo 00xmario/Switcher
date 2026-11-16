@@ -435,9 +435,11 @@ var remotePaths = []string{"/remote/", "/api/accounts/", "/api/usage/refresh", "
 //
 // And usage, added up across the computers: a paired computer sends its own
 // ledger (only its own, see usage.DeviceStore) and reads everyone's, so
-// every computer shows the same combined usage.
+// every computer shows the same combined usage; and the accounts' quota
+// history, for its Insights page: the accounts' names and shares used over
+// time, which /api/state shows it already.
 var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check", "/api/system",
-	"/api/system/apps", "/api/agent-skill", "/api/tokens/device", "/api/tokens/ledgers"}
+	"/api/system/apps", "/api/agent-skill", "/api/tokens/device", "/api/tokens/ledgers", "/api/insights/limits"}
 
 func allowedRemotePath(path string) bool {
 	if slices.Contains(remoteExactPaths, path) {

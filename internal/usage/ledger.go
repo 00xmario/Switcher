@@ -41,14 +41,19 @@ type LedgerEntry struct {
 	Unpriced int64
 }
 
-// SessionSpan is one session and the first and last quarter hour it had
-// usage in. Its ID is a hash: the session's own id stays on the computer.
-// It is sent as an array: [provider, id, first, last].
+// SessionSpan is one session, the first and last quarter hour it had usage
+// in, and how many quarter hours had usage: a session resumed days later
+// spans days but was active for far less. Its ID is a hash: the session's
+// own id stays on the computer. It is sent as an array: [provider, id,
+// first, last, active]; a Switcher before active sent four, and one reading
+// four leaves Active 0 (unknown), and one that reads only four ignores the
+// fifth.
 type SessionSpan struct {
 	Provider string
 	ID       string
 	First    int64
 	Last     int64
+	Active   int64
 }
 
 func (e LedgerEntry) MarshalJSON() ([]byte, error) {
@@ -76,22 +81,35 @@ func (e *LedgerEntry) UnmarshalJSON(data []byte) error {
 }
 
 func (s SessionSpan) MarshalJSON() ([]byte, error) {
-	return json.Marshal([]any{s.Provider, s.ID, s.First, s.Last})
+	return json.Marshal([]any{s.Provider, s.ID, s.First, s.Last, s.Active})
 }
 
 func (s *SessionSpan) UnmarshalJSON(data []byte) error {
-	var raw [4]json.RawMessage
+	var raw [5]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	var out SessionSpan
-	for i, field := range []any{&out.Provider, &out.ID, &out.First, &out.Last} {
+	for i, field := range []any{&out.Provider, &out.ID, &out.First, &out.Last, &out.Active} {
+		if i == 4 && raw[i] == nil {
+			break // from a Switcher that did not count active quarter hours
+		}
 		if err := json.Unmarshal(raw[i], field); err != nil {
 			return errInvalidLedger
 		}
 	}
 	*s = out
 	return nil
+}
+
+// Minutes is how long a session was active, to the quarter hour: the
+// quarter hours with usage, or, when they are not known, first to last.
+func (s SessionSpan) Minutes() int64 {
+	n := s.Last - s.First + 1
+	if s.Active > 0 && s.Active < n {
+		n = s.Active
+	}
+	return max(n, 0) * quarterSeconds / 60
 }
 
 var errInvalidLedger = errors.New("invalid usage ledger")
@@ -177,9 +195,13 @@ func (d *DeviceLedgers) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// LedgerDays is how far back a ledger reaches: the longest window shown,
-// and a day more for time zones ahead of UTC.
+// LedgerDays is how far back a regular scan reads: the longest window the
+// Usage page shows, and a day more for time zones ahead of UTC. A ledger
+// reaches further back with what the archive keeps (see archive.go).
 const LedgerDays = 91
+
+// historyYears is how far back a ledger from another computer is taken.
+const historyYears = 20
 
 // Limits on a ledger taken from another computer. A computer's own ledger
 // is cut to them before it is sent: the oldest usage goes first.
@@ -216,6 +238,7 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 	}
 	entries := map[key]*LedgerEntry{}
 	sessions := map[[2]string]*SessionSpan{}
+	active := map[[2]string]map[int64]struct{}{}
 	seen := map[string]struct{}{}
 	startUTC := start.UTC()
 	sink := func(r Record) {
@@ -255,6 +278,12 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 				sessions[sk] = span
 			}
 			span.First, span.Last = min(span.First, quarter), max(span.Last, quarter)
+			quarters := active[sk]
+			if quarters == nil {
+				quarters = map[int64]struct{}{}
+				active[sk] = quarters
+			}
+			quarters[quarter] = struct{}{}
 		}
 	}
 	began := time.Now()
@@ -266,7 +295,8 @@ func collectLedger(sources []Source, cache *ScanCache, table RateTable, start ti
 	for _, e := range entries {
 		l.Entries = append(l.Entries, *e)
 	}
-	for _, s := range sessions {
+	for k, s := range sessions {
+		s.Active = int64(len(active[k]))
 		l.Sessions = append(l.Sessions, *s)
 	}
 	sort.Slice(l.Entries, func(i, j int) bool {
@@ -461,14 +491,14 @@ func Combine(devices []DeviceLedger, self string, since, until time.Time, loc *t
 }
 
 // Clean makes a ledger from another computer safe to keep and show: only
-// the last LedgerDays and no future, known providers, plain short model
+// the last historyYears and no future, known providers, plain short model
 // names, counts that are whole and not negative, totals that cannot
 // overflow, and bounded sizes. It reports whether anything is left.
 func (l *Ledger) Clean(now time.Time) bool {
 	if l == nil {
 		return false
 	}
-	oldest, newest := unixQuarter(now.AddDate(0, 0, -LedgerDays-1)), unixQuarter(now.Add(24*time.Hour))
+	oldest, newest := unixQuarter(now.AddDate(-historyYears, 0, -1)), unixQuarter(now.Add(24*time.Hour))
 	entries := l.Entries[:0]
 	for _, e := range l.Entries {
 		if len(entries) >= maxLedgerEntries || e.Quarter < oldest || e.Quarter > newest || !knownProviders[e.Provider] {
@@ -487,6 +517,7 @@ func (l *Ledger) Clean(now time.Time) bool {
 		if len(s.ID) == 0 || len(s.ID) > 32 || strings.Trim(s.ID, "0123456789abcdef") != "" {
 			continue
 		}
+		s.Active = min(max(s.Active, 0), s.Last-s.First+1)
 		sessions = append(sessions, s)
 	}
 	l.Sessions = sessions

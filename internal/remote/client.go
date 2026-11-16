@@ -1070,7 +1070,9 @@ func (c *Client) Inference(ctx context.Context, account string, r *http.Request,
 // waiting for /api/state to change: this Mac's state merges its own settings
 // into the host's, so this Switcher watches it itself.
 var forwardedPaths = []string{"/api/accounts/", "/api/usage/refresh", "/api/providers/", "/v0/management/",
-	"/codex/", "/claude/", "/grok/", "/opencode/", "/antigravity/", "/gemini/", "/copilot/"}
+	"/codex/", "/claude/", "/grok/", "/opencode/", "/antigravity/", "/gemini/", "/copilot/",
+	// The accounts' quota history is the host's: it holds the accounts.
+	"/api/insights/limits"}
 
 func forwarded(path string) bool {
 	for _, prefix := range forwardedPaths {

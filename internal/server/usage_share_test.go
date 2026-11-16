@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"switcher/internal/quota"
 	"switcher/internal/remote"
+	"switcher/internal/store"
 	"switcher/internal/usage"
 )
 
@@ -120,6 +122,18 @@ func TestUsageIsCombinedAcrossHostAndClients(t *testing.T) {
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || answer.Summary.TotalTokens != 123 || answer.Sharing["host"] == nil || answer.Sharing["updated_ms"] == nil {
 		t.Fatalf("the client's Usage answer: %v %s", err, w.Body.String())
+	}
+
+	// So does Insights, on every computer.
+	for name, api := range map[string]*API{"k12": hostAPI, "MacBook": laptopAPI, "Mini": miniAPI} {
+		w := httptest.NewRecorder()
+		api.handleInsights(w, httptest.NewRequest(http.MethodGet, "/api/insights?range=all", nil))
+		var answer struct {
+			Insights usage.Insights `json:"insights"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || answer.Insights.Totals.Tokens != 123 || len(answer.Insights.Devices) != 3 || answer.Insights.Range != "all" {
+			t.Fatalf("%s's Insights answer: %v %s", name, err, w.Body.String())
+		}
 	}
 
 	// A paired computer may send only its own usage.
@@ -613,5 +627,31 @@ func TestAnAnswerMeasuresWhatItHolds(t *testing.T) {
 	}()
 	if body3 == nil || !json.Valid(body3) {
 		t.Fatalf("answer 3 is not JSON:\n%s", body3)
+	}
+}
+
+// The limits endpoint names the accounts there are and reports their pool.
+func TestInsightLimitsReportsThePool(t *testing.T) {
+	st := store.New(t.TempDir())
+	for _, a := range []store.Account{
+		{ID: "claude-a", Provider: "claude", Email: "work@example.com"},
+		{ID: "claude-b", Provider: "claude", Email: "home@example.com"},
+	} {
+		if err := st.Save(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log := quota.Open(filepath.Join(t.TempDir(), "quota-history.json"))
+	log.Usage("claude-a", []quota.Window{{Label: "Weekly", Used: 30}})
+	log.Usage("claude-b", []quota.Window{{Label: "Weekly", Used: 90}})
+	api := &API{Store: st, Quota: log}
+	w := httptest.NewRecorder()
+	api.handleInsightLimits(w, httptest.NewRequest(http.MethodGet, "/api/insights/limits?days=30&burn=6", nil))
+	var rep quota.Report
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &rep) != nil || rep.Days != 30 || rep.BurnHours != 6 {
+		t.Fatalf("answer %d %s", w.Code, w.Body.String())
+	}
+	if len(rep.Pools) != 1 || rep.Pools[0].Remaining != 80 || rep.Pools[0].Capacity != 200 || len(rep.Accounts) != 2 || rep.Accounts[0].Name == "" {
+		t.Fatalf("report: %s", w.Body.String())
 	}
 }

@@ -105,14 +105,16 @@ func TestCombineUsesTheViewersDays(t *testing.T) {
 	}
 }
 
-// A ledger from another computer is kept only within its window, with plain
-// names and numbers that cannot go negative, overflow or be NaN.
+// A ledger from another computer is kept only within its history (years,
+// for insights, but no future), with plain names and numbers that cannot go
+// negative, overflow or be NaN.
 func TestCleanMakesAnotherComputersLedgerSafe(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	l := &Ledger{
 		Entries: []LedgerEntry{
 			{Quarter: unixQuarter(now), Provider: "claude", Model: "fable\x1b[2J", Totals: Totals{Output: -5, CachedInput: 1 << 62}, Cost: math.NaN(), Savings: math.Inf(1), Records: 2, Unpriced: 9},
-			{Quarter: unixQuarter(now.AddDate(0, 0, -200)), Provider: "claude", Model: "old", Records: 1},
+			{Quarter: unixQuarter(now.AddDate(0, 0, -200)), Provider: "claude", Model: "history", Records: 1},
+			{Quarter: unixQuarter(now.AddDate(-21, 0, 0)), Provider: "claude", Model: "too old", Records: 1},
 			{Quarter: unixQuarter(now.AddDate(0, 0, 5)), Provider: "claude", Model: "future", Records: 1},
 			{Quarter: unixQuarter(now), Provider: "\x00\x01", Model: "no provider", Records: 1},
 			{Quarter: unixQuarter(now), Provider: `"><style>*{display:none}</style>`, Model: "unknown provider", Records: 1},
@@ -129,15 +131,15 @@ func TestCleanMakesAnotherComputersLedgerSafe(t *testing.T) {
 	if !l.Clean(now) {
 		t.Fatal("refused")
 	}
-	if len(l.Entries) != 2 {
+	if len(l.Entries) != 3 || l.Entries[1].Model != "history" {
 		t.Fatalf("entries kept: %+v", l.Entries)
 	}
 	e := l.Entries[0]
 	if e.Model != "fable[2J" || e.Totals.Output != 0 || e.Totals.CachedInput != maxLedgerTotal || e.Cost != 0 || e.Savings != 0 || e.Unpriced != 2 {
 		t.Fatalf("first entry: %+v", e)
 	}
-	if len([]rune(l.Entries[1].Model)) != maxLedgerName || l.Entries[1].Cost != 0 {
-		t.Fatalf("second entry: model %d runes, cost %v", len([]rune(l.Entries[1].Model)), l.Entries[1].Cost)
+	if len([]rune(l.Entries[2].Model)) != maxLedgerName || l.Entries[2].Cost != 0 {
+		t.Fatalf("last entry: model %d runes, cost %v", len([]rune(l.Entries[2].Model)), l.Entries[2].Cost)
 	}
 	if len(l.Sessions) != 1 || l.Sessions[0].ID != "0123abcd" {
 		t.Fatalf("sessions kept: %+v", l.Sessions)

@@ -28,10 +28,17 @@ type Service struct {
 	dataDir  string
 	client   *http.Client
 	now      func() time.Time
+
+	// The archive: this computer's usage for all time (archive.go). It is
+	// read on the first scan and written after each scan that changed it.
+	archive       *Ledger
+	archiveRead   bool
+	backfilled    bool
+	archiveUnsent bool // the last write failed: write it again
 }
 
-// NewService builds the service; dataDir holds usage-scan-cache.json and
-// model-rates.json.
+// NewService builds the service; dataDir holds usage-scan-cache.json,
+// usage-archive.json and model-rates.json.
 func NewService(dataDir string, client *http.Client) *Service {
 	if client == nil {
 		client = http.DefaultClient
@@ -69,17 +76,41 @@ func (s *Service) SetOthers(others func() []DeviceLedger) {
 // up, or nil before this computer's first scan. The caller decides
 // staleness with Age.
 func (s *Service) Get(days int) *Summary {
+	devices, key, own, scanMs := s.devices()
+	if own == nil {
+		return nil
+	}
+	until := s.now()
+	summary := Combine(devices, key, until.AddDate(0, 0, -(days-1)), until, time.Local)
+	summary.ScannedAtMs, summary.ScanMs = own.ScannedAtMs, scanMs
+	return summary
+}
+
+// Insights returns the long view of every computer's usage over the last
+// days, or all time when days is 0; nil before this computer's first scan.
+func (s *Service) Insights(days int) *Insights {
+	devices, key, own, _ := s.devices()
+	if own == nil {
+		return nil
+	}
+	insights := BuildInsights(devices, key, days, s.now(), time.Local)
+	insights.ScannedMs = own.ScannedAtMs
+	return insights
+}
+
+// devices is every computer's ledger, this one's first, with this one's key.
+func (s *Service) devices() (devices []DeviceLedger, key string, own *Ledger, scanMs int64) {
 	s.mu.Lock()
 	own, ownAt, scanMs, identity, others := s.own, s.ownAt, s.scanMs, s.identity, s.others
 	s.mu.Unlock()
 	if own == nil {
-		return nil
+		return nil, "", nil, 0
 	}
 	key, name, host := "this", "This computer", false
 	if identity != nil {
 		key, name, host = identity()
 	}
-	devices := []DeviceLedger{{Key: key, Name: name, Host: host, UpdatedMs: ownAt.UnixMilli(), Ledger: own}}
+	devices = []DeviceLedger{{Key: key, Name: name, Host: host, UpdatedMs: ownAt.UnixMilli(), Ledger: own}}
 	if others != nil {
 		for _, d := range others() {
 			if d.Key != key {
@@ -87,10 +118,7 @@ func (s *Service) Get(days int) *Summary {
 			}
 		}
 	}
-	until := s.now()
-	summary := Combine(devices, key, until.AddDate(0, 0, -(days-1)), until, time.Local)
-	summary.ScannedAtMs, summary.ScanMs = own.ScannedAtMs, scanMs
-	return summary
+	return devices, key, own, scanMs
 }
 
 // Own is this computer's ledger from its latest scan, or nil before one.
@@ -148,8 +176,25 @@ func (s *Service) scanOwn() bool {
 	rates := s.currentRates()
 	now := s.now()
 	began := time.Now()
+	path := filepath.Join(s.dataDir, "usage-archive.json")
+	if !s.archiveRead {
+		s.archive, s.backfilled = loadArchive(path)
+		s.archiveRead = true
+	}
+	// Until the archive holds every log on disk, read them all, however
+	// old; then the window the Usage page shows is enough.
 	start := now.AddDate(0, 0, -LedgerDays)
-	ledger := collectLedger(ResolveSources(), s.cache, rates, time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.Local))
+	from := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.Local)
+	if !s.backfilled {
+		from = time.Unix(0, 0)
+	}
+	scanned := collectLedger(ResolveSources(), s.cache, rates, from)
+	ledger, changed := mergeArchive(s.archive, scanned, now)
+	if changed || !s.backfilled || s.archiveUnsent {
+		err := saveArchive(path, ledger, true)
+		s.archiveUnsent = err != nil
+	}
+	s.archive, s.backfilled = ledger, true
 	s.mu.Lock()
 	s.own, s.ownAt, s.scanMs = ledger, s.now(), time.Since(began).Milliseconds()
 	s.mu.Unlock()

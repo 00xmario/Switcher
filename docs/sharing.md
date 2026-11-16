@@ -147,9 +147,14 @@ is at the other end when pairing without a code.
   shows the host's last numbers while the host is away. A computer counts
   while it stays paired: removing it (or Disconnect on it) takes its usage
   out, and pairing it again brings it back, counted once, since each
-  computer sends all of its last 91 days. Days follow each viewer's own time
-  zone, to the quarter hour. The host and the client both need 1.31 or
-  later.
+  computer sends all of its usage: the last 91 days to the quarter hour, and
+  what its archive keeps from before per hour, for Insights. Days follow each
+  viewer's own time zone, to the quarter hour. The host and the client both
+  need 1.31 or later; Insights on every computer counts another computer's
+  older usage once the host has 1.35 or later.
+- The accounts' quota history (Insights, **Limits**) is the host's: it holds
+  the accounts and checks their usage, so a client's Limits view shows the
+  host's.
 
   What a paired computer sends is checked like everything else it sends:
   one computer's usage per pairing, sent at most once a minute, known

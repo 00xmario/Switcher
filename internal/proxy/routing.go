@@ -45,6 +45,12 @@ func (m *Manager) handleExhaustion(providerID, id string, until time.Time, expec
 			m.selectionRevision[providerID]++
 		}
 	})
+	if err == nil {
+		m.quotaLog.Refused(id)
+		if next != "" {
+			m.quotaLog.Switched(providerID, id, next)
+		}
+	}
 	if err == nil && kept && next != "" {
 		// The route is also what Claude Code uses now, so say that it moved.
 		m.recordAutoSwitchLocked(providerID, "claude_code", id, next)

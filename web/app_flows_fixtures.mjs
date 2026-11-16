@@ -20,10 +20,12 @@ const deferred = () => {
 test('ordinary Usage navigation loads usage through the final page handler', () => {
   let loads = 0;
   const loadActive = [];
+  const insightsActive = [];
   const pages = {};
   const replaced = [];
   const context = vm.createContext({
     loadPage: { setActive: on => loadActive.push(on) },
+    insightsPage: { setActive: on => insightsActive.push(on) }, insightsRoot: {},
     history: { replaceState: (_, __, url) => replaced.push(url) },
     location: { hash: '', pathname: '/', search: '' },
     data: { compact_accounts: true },
@@ -45,6 +47,13 @@ test('ordinary Usage navigation loads usage through the final page handler', () 
   assert.equal(pages['load-page'].hidden, false);
   assert.deepEqual(loadActive, [false, false, true]);
   assert.deepEqual(replaced, ['#load']);
+  // So does Insights.
+  context.location.hash = '#load';
+  context.setPage('insights');
+  assert.equal(context.insightsRoot.hidden, false);
+  assert.equal(pages['load-page'].hidden, true);
+  assert.deepEqual(insightsActive, [false, false, false, true]);
+  assert.deepEqual(replaced, ['#load', '/', '#insights']);
 });
 
 function usageFixture() {
@@ -362,6 +371,8 @@ function logoutFixture(logoutResponse, stateResponse = () => Promise.resolve(rep
     stateTimer: 901, usageTimer: 902, stateEpoch: 0, pollRequest: 0, stateRequestId: 0, lastAppliedStateRequestId: 0, lastRenderMinute: 0,
     pendingRechecks: new Map(), pendingActivations: new Set(), closeAccountMenu() {},
     loadPage: { resets: 0, reset() { this.resets++; } },
+    insightsPage: { resets: 0, active: true, reset() { this.resets++; }, setActive(on) { this.active = on; } },
+    insightsRoot: { cleared: false, replaceChildren() { this.cleared = true; } },
     settleRechecks: () => false, resetFeedback: { observe() {} },
     render: () => assert.fail('private dashboard repainted'), renderAddProviderMenu: () => assert.fail('private controls repainted'),
     toast: () => assert.fail('logout must use its dedicated view'),
@@ -395,6 +406,7 @@ test('logout persistence failure clears private UI and retains an explicit logou
   assert.equal(context.data.hub_management_key, undefined);
   assert.equal(context.usageState.summary, null);
   assert.equal(context.loadPage.resets, 1, 'logout must stop and clear the load page');
+  assert.ok(context.insightsPage.resets === 1 && !context.insightsPage.active && context.insightsRoot.cleared, 'logout must stop and clear Insights');
   oldState.resolve(reply({ auth_required: true }, 401));
   await oldPoll;
   assert.equal(storage.get('switcher-csrf'), 'logout-csrf', 'late 401 must not destroy retry proof');

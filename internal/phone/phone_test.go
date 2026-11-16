@@ -276,6 +276,9 @@ func TestOnlyTheFixedActionsAreReachable(t *testing.T) {
 		{http.MethodGet, "/api/system"},
 		{http.MethodGet, "/api/tokens/ledgers"},
 		{http.MethodPost, "/api/tokens"},
+		// Insights is the dashboard's, not the phone page's.
+		{http.MethodGet, "/api/insights"},
+		{http.MethodGet, "/api/insights/limits"},
 		{http.MethodGet, "/app.js"},
 		{http.MethodGet, "/index.html"},
 	} {

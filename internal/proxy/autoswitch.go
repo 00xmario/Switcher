@@ -78,6 +78,7 @@ func (m *Manager) recordAutoSwitchLocked(providerID, where, from, to string) {
 	m.autoSwitchSerial++
 	m.lastAutoSwitch = AutoSwitch{ID: fmt.Sprintf("%s-%d", m.probeBootID, m.autoSwitchSerial), Provider: providerID,
 		Where: where, From: from, To: to, At: time.Now().Unix()}
+	m.quotaLog.Switched(providerID, from, to)
 }
 
 // outOfUsageLocked reports whether an account has run out: parked after a
