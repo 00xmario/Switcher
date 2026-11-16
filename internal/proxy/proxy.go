@@ -1504,7 +1504,7 @@ func (m *Manager) autoUseBankedResetForRequest(ctx context.Context, prov provide
 	if time.Now().Before(cooldownUntil) {
 		return false, false, nil
 	}
-	credits, err := rc.ListResetCredits(ctx, account)
+	credits, err := rc.ListResetCredits(provider.FreshCredits(ctx), account)
 	if err != nil {
 		log.Printf("proxy: list banked resets for %s: %v", account.Email, err)
 		return false, false, nil
@@ -1513,9 +1513,19 @@ func (m *Manager) autoUseBankedResetForRequest(ctx context.Context, prov provide
 		return false, false, nil
 	}
 	credits = m.AvailableResetCredits(account.ID, credits)
-	if len(credits) == 0 {
+	// Only a reset the provider says can be used now is spent on its own.
+	chosen := -1
+	for i, credit := range credits {
+		if credit.Unusable == "" {
+			chosen = i
+			break
+		}
+	}
+	if chosen < 0 {
 		return false, false, nil
 	}
+	creditID := credits[chosen].ID
+	remaining := append(append([]provider.ResetCredit(nil), credits[:chosen]...), credits[chosen+1:]...)
 	if ctx.Err() != nil || !resolver(account) {
 		return false, false, nil
 	}
@@ -1542,18 +1552,27 @@ func (m *Manager) autoUseBankedResetForRequest(ctx context.Context, prov provide
 		return true, false, err
 	}
 	m.mu.Unlock()
-	outcome, err := rc.ConsumeResetCredit(ctx, account, credits[0].ID)
+	outcome, err := rc.ConsumeResetCredit(ctx, account, creditID)
 	if err != nil {
 		log.Printf("proxy: auto-use banked reset for %s: %v", account.Email, err)
+		// The claim may have gone through with its answer lost: wait before
+		// another, so a list that changed meanwhile cannot spend a second.
+		m.mu.Lock()
+		m.autoResetAt[account.ID] = time.Now().Add(autoUseResetCooldown)
+		m.mu.Unlock()
 		return false, false, nil
 	}
 	switch outcome {
 	case "reset", "already_redeemed":
 		log.Printf("proxy: auto-used a banked reset for %s (%s)", account.Email, outcome)
-		err := m.recordBankedReset(account.ID, credits[0].ID, outcome, credits[1:], true)
+		err := m.recordBankedReset(account.ID, creditID, outcome, remaining, true)
 		return true, true, err
 	default:
 		log.Printf("proxy: banked reset for %s did not clear the limit (%s)", account.Email, outcome)
+		// Ask again only after the cooldown, not on every request.
+		m.mu.Lock()
+		m.autoResetAt[account.ID] = time.Now().Add(autoUseResetCooldown)
+		m.mu.Unlock()
 		return false, false, nil
 	}
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { accountHTML, stateHTML } from './account-cards.js';
+import { accountHTML, stateHTML, resetAsk } from './account-cards.js';
 
 const now = 1_800_000_000;
 const claude = {
@@ -36,4 +36,30 @@ test('the menu bar\'s badges show as notes', () => {
   // With no numbers on screen there is nothing to call stale.
   assert.doesNotMatch(accountHTML({ ...claude, usage: { windows: [] }, health: { condition: 'usage_unavailable' } }, now), /Usage stale/);
   assert.doesNotMatch(accountHTML({ ...claude, health: { condition: 'usage_current' } }, now), /Sign in again|Usage stale/);
+});
+
+test('Claude\'s kinds of banked reset get a button each, and the question names the kind', () => {
+  const a = { ...claude, reset_credits: { count: 3, next_id: '1-0011aabb-weekly', kinds: [
+    { kind: 'Weekly reset', count: 1, next_id: '1-0011aabb-weekly' },
+    { kind: 'Fable reset', count: 2, next_id: '2-0011aabb-fable', unusable: 'Usable once you reach a limit it refills' },
+  ] } };
+  const html = accountHTML(a, now);
+  assert.match(html, /⚡ 3 banked/);
+  assert.match(html, /title="1 × Weekly reset, 2 × Fable reset"/);
+  assert.match(html, /data-credit="1-0011aabb-weekly"[^>]*>Use weekly reset · 1</);
+  assert.match(html, /data-credit="2-0011aabb-fable"[^>]*title="Usable once you reach a limit it refills">Use Fable reset · 2</);
+  const button = { dataset: { kind: 'Fable reset', credit: '2-0011aabb-fable', count: '2' } };
+  const ask = resetAsk(a, button);
+  assert.equal(ask.title, 'Use a Fable reset?');
+  assert.equal(ask.credit, '2-0011aabb-fable');
+  assert.match(ask.message, /^Usable once you reach a limit it refills\. a@example\.com has 2 left/);
+});
+
+test('a Codex account keeps its single banked reset button', () => {
+  const a = { ...claude, provider: 'codex', reset_credits: { count: 2, next_id: 'credit-1' } };
+  const html = accountHTML(a, now);
+  assert.match(html, />Use banked reset</);
+  const ask = resetAsk(a, { dataset: {} });
+  assert.equal(ask.credit, 'credit-1');
+  assert.equal(ask.title, 'Use a banked reset?');
 });

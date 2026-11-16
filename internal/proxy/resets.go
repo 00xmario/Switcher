@@ -98,14 +98,14 @@ func (m *Manager) UseBankedReset(ctx context.Context, id, creditID string) (stri
 		account = fresh
 		return true, nil
 	}
-	credits, err := creditsProvider.ListResetCredits(ctx, account)
+	credits, err := creditsProvider.ListResetCredits(provider.FreshCredits(ctx), account)
 	if err != nil {
 		retry, refreshErr := recoverAuthentication(err, "list reset credits")
 		if refreshErr != nil {
 			return "", refreshErr
 		}
 		if retry {
-			credits, err = creditsProvider.ListResetCredits(ctx, account)
+			credits, err = creditsProvider.ListResetCredits(provider.FreshCredits(ctx), account)
 		}
 	}
 	if err != nil {
@@ -147,9 +147,9 @@ func resetAuthenticationFailed(providerID, operation string, err error) bool {
 	if errors.Is(err, provider.ErrUsageAuthRequired) {
 		return true
 	}
-	// Codex currently emits exact leaf status errors for credit operations.
+	// Codex and Claude emit exact leaf status errors for credit operations.
 	// Do not infer rejection from response bodies or wrapped transport errors.
-	return providerID == "codex" && err != nil && errors.Unwrap(err) == nil && err.Error() == operation+": http 401"
+	return (providerID == "codex" || providerID == "claude") && err != nil && errors.Unwrap(err) == nil && err.Error() == operation+": http 401"
 }
 
 // Called under the account lock. Keep the last known quota visible until a

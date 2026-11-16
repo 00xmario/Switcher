@@ -18,8 +18,10 @@ type Account struct {
 	ClaudeCode bool     `json:"claude_code,omitempty"`
 	Health     string   `json:"health,omitempty"`
 	Usage      []Window `json:"usage"`
-	// BankedResets counts the account's unused usage-limit resets (Codex).
-	BankedResets int `json:"banked_resets,omitempty"`
+	// BankedResets counts the account's unused usage-limit resets (Codex,
+	// Claude); ResetKinds splits them by kind, such as Claude's Fable reset.
+	BankedResets int         `json:"banked_resets,omitempty"`
+	ResetKinds   []ResetKind `json:"reset_kinds,omitempty"`
 	// UsageLimit is the share of the weekly or monthly usage the account
 	// keeps; AtLimit says it reached it, so Switcher moved away from it.
 	UsageLimit int  `json:"usage_limit,omitempty"`
@@ -28,6 +30,15 @@ type Account struct {
 	// loginKept: Claude Code is signed in with this account, but its requests
 	// use the selected one.
 	loginKept bool
+}
+
+// ResetKind is one kind of banked reset and how many are left. Unusable says
+// why the provider would refuse one right now.
+type ResetKind struct {
+	Kind     string `json:"kind"`
+	Count    int    `json:"count"`
+	Unusable string `json:"unusable,omitempty"`
+	nextID   string
 }
 
 // Window is one usage window, such as a five-hour session or a week.
@@ -68,6 +79,12 @@ type apiAccount struct {
 	ResetCredits *struct {
 		Count  int    `json:"count"`
 		NextID string `json:"next_id"`
+		Kinds  []struct {
+			Kind     string `json:"kind"`
+			Count    int    `json:"count"`
+			NextID   string `json:"next_id"`
+			Unusable string `json:"unusable"`
+		} `json:"kinds"`
 	} `json:"reset_credits"`
 	UsageLimit int  `json:"usage_limit"`
 	AtLimit    bool `json:"at_limit"`
@@ -84,6 +101,9 @@ func (a apiAccount) account() Account {
 	}
 	if a.ResetCredits != nil {
 		account.BankedResets, account.nextReset = a.ResetCredits.Count, a.ResetCredits.NextID
+		for _, k := range a.ResetCredits.Kinds {
+			account.ResetKinds = append(account.ResetKinds, ResetKind{Kind: k.Kind, Count: k.Count, Unusable: k.Unusable, nextID: k.NextID})
+		}
 	}
 	return account
 }
@@ -405,11 +425,17 @@ func runRemove(c *ctx, args []string) error {
 	return nil
 }
 
-const resetHelp = `Spends one banked usage-limit reset (Codex) on an account, so it can be used
-again right away. Name the account, or a provider for its active account:
+const resetHelp = `Spends one banked usage-limit reset (Codex, Claude) on an account, so it can
+be used again right away. Name the account, or a provider for its active account:
 
   switcher reset codex --yes
   switcher reset me@example.com --yes
+
+Claude banks kinds of reset, such as a Fable reset and a weekly reset. Choose
+one with --kind (the start of its name is enough); without it the reset
+Claude suggests is used:
+
+  switcher reset claude --kind fable --yes
 
 Banked resets cannot be given back, so the command asks for --yes.
 `
@@ -417,6 +443,7 @@ Banked resets cannot be given back, so the command asks for --yes.
 func runReset(c *ctx, args []string) error {
 	fs := c.flags("reset")
 	yes := fs.Bool("yes", false, "")
+	kind := fs.String("kind", "", "")
 	pos, err := c.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -442,12 +469,39 @@ func runReset(c *ctx, args []string) error {
 	if account.nextReset == "" {
 		return fmt.Errorf("%s has no banked reset", account.Email)
 	}
+	credit, count, what := account.nextReset, account.BankedResets, "banked reset"
+	if want := strings.ToLower(strings.TrimSpace(*kind)); want != "" || len(account.ResetKinds) > 0 {
+		var chosen *ResetKind
+		for i, k := range account.ResetKinds {
+			if want == "" && k.nextID == account.nextReset || want != "" && strings.HasPrefix(strings.ToLower(k.Kind), want) {
+				if chosen != nil && want != "" {
+					return usagef("--kind %q fits both %s and %s; give more of the name", *kind, chosen.Kind, k.Kind)
+				}
+				if chosen == nil {
+					chosen = &account.ResetKinds[i]
+				}
+			}
+		}
+		if chosen == nil && want != "" {
+			names := make([]string, 0, len(account.ResetKinds))
+			for _, k := range account.ResetKinds {
+				names = append(names, k.Kind)
+			}
+			if len(names) == 0 {
+				return fmt.Errorf("%s has no kinds of reset to choose from", account.Email)
+			}
+			return fmt.Errorf("%s has no %q reset; it has: %s", account.Email, *kind, strings.Join(names, ", "))
+		}
+		if chosen != nil {
+			credit, count, what = chosen.nextID, chosen.Count, strings.ToLower(chosen.Kind)
+		}
+	}
 	if !*yes {
 		plural := "s"
-		if account.BankedResets == 1 {
+		if count == 1 {
 			plural = ""
 		}
-		return usagef("this spends one of the %d banked reset%s of %s; add --yes to confirm", account.BankedResets, plural, account.Email)
+		return usagef("this spends one of the %d %s%s of %s; add --yes to confirm", count, what, plural, account.Email)
 	}
 	var answer struct {
 		Outcome string `json:"outcome"`
@@ -460,7 +514,7 @@ func runReset(c *ctx, args []string) error {
 			} `json:"reset_credits"`
 		} `json:"account"`
 	}
-	if err := c.cl.call(http.MethodPost, "/api/accounts/"+url.PathEscape(account.ID)+"/use-reset", map[string]string{"credit_id": account.nextReset}, &answer); err != nil {
+	if err := c.cl.call(http.MethodPost, "/api/accounts/"+url.PathEscape(account.ID)+"/use-reset", map[string]string{"credit_id": credit}, &answer); err != nil {
 		return err
 	}
 	left := 0
@@ -471,6 +525,10 @@ func runReset(c *ctx, args []string) error {
 		"reset":            fmt.Sprintf("Used a banked reset on %s.", account.Email),
 		"already_redeemed": fmt.Sprintf("That reset was already used on %s.", account.Email),
 		"nothing_to_reset": fmt.Sprintf("%s has nothing to reset right now; the reset was kept.", account.Email),
+		"already_used":     fmt.Sprintf("That reset was already used on %s.", account.Email),
+		"cooldown":         fmt.Sprintf("That reset is cooling down on %s; nothing was used.", account.Email),
+		"unavailable":      fmt.Sprintf("Claude couldn't reset the limits of %s; nothing was used.", account.Email),
+		"not_next_grant":   fmt.Sprintf("Claude wants the reset it suggests used first on %s; nothing was used. Try without --kind.", account.Email),
 	}[answer.Outcome]
 	if human == "" {
 		human = fmt.Sprintf("The provider answered %q for %s.", answer.Outcome, account.Email)

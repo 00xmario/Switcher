@@ -181,10 +181,30 @@ type LoginInfo struct {
 type ResetCredit struct {
 	ID        string `json:"id"`
 	ExpiresAt int64  `json:"expires_at"` // unix seconds
+	// Kind names the reset when a provider banks more than one kind, such
+	// as Claude's "Fable reset" and "Weekly reset". Empty for Codex.
+	Kind string `json:"kind,omitempty"`
+	// Unusable says why the provider would refuse this reset right now;
+	// empty when it can be used. Switcher never spends one automatically.
+	Unusable string `json:"unusable,omitempty"`
+}
+
+type freshCreditsKey struct{}
+
+// FreshCredits asks ListResetCredits for the provider's current answer, not
+// one remembered from a recent usage check: before spending a reset.
+func FreshCredits(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshCreditsKey{}, true)
+}
+
+// WantsFreshCredits reports whether the listing must ask the provider now.
+func WantsFreshCredits(ctx context.Context) bool {
+	fresh, _ := ctx.Value(freshCreditsKey{}).(bool)
+	return fresh
 }
 
 // ResetCreditProvider is an optional interface for providers that bank
-// usage-limit reset credits (codex). The account view lists how many
+// usage-limit reset credits (Codex, Claude). The account view lists how many
 // credits are available so the UI can offer spending one.
 type ResetCreditProvider interface {
 	ListResetCredits(ctx context.Context, a store.Account) ([]ResetCredit, error)

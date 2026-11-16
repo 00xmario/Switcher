@@ -14,6 +14,9 @@ export const PLANS = {
 export const OUTCOMES = {
   reset: 'Banked reset used', already_redeemed: 'That reset was already spent',
   nothing_to_reset: 'Nothing to reset right now; the reset was kept', no_credit: 'No banked reset available',
+  already_used: 'That reset was already used', cooldown: 'That reset is cooling down; nothing was used',
+  unavailable: "Couldn't reset the limits; nothing was used",
+  not_next_grant: 'Claude wants another reset used first; nothing was used',
 };
 // Usage at or below this share left reads as low, as in the web app.
 const LOW = 20;
@@ -87,18 +90,44 @@ export function windowHTML(w, now = Date.now() / 1000, rawLimit = 0) {
 // have bars. By default it is the phone's: the proxy's account, with bars.
 const phoneView = { place: 'your Mac', selected: a => a.active, bars: true, limits: false };
 
+// lowerFirst writes a kind of reset mid-sentence: "a weekly reset", but
+// "a Fable reset", since Fable is a name.
+export const lowerFirst = s => /^(Weekly|Full|Limit|Session) /.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+
+// resetAsk is the question before spending a banked reset, and the credit
+// it spends: the button's own kind, or the account's next to expire.
+export function resetAsk(a, button) {
+  const kind = button.dataset.kind;
+  if (kind) {
+    const k = (a?.reset_credits?.kinds || []).find(x => x.kind === kind);
+    const left = k?.count || Number(button.dataset.count) || 0;
+    return {
+      title: `Use a ${lowerFirst(kind)}?`,
+      message: `${k?.unusable ? `${k.unusable}. ` : ''}${a?.email || 'This account'} has ${left} left; a used reset cannot be given back.`,
+      credit: button.dataset.credit || k?.next_id || '',
+    };
+  }
+  const credits = a?.reset_credits?.count || 0;
+  return {
+    title: 'Use a banked reset?',
+    message: `${a?.email || 'This account'} gets its usage back right away. You have ${credits} banked reset${credits === 1 ? '' : 's'}; a used reset cannot be given back.`,
+    credit: a?.reset_credits?.next_id || '',
+  };
+}
+
 // accountHTML draws one account row. A row that is not in use is one big
 // button that switches to it; a banked reset stays its own button.
 export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
   const { place, selected, bars, limits } = { ...phoneView, ...view };
   const windows = a.usage?.windows || [];
   const credits = a.reset_credits?.count || 0;
+  const kinds = a.reset_credits?.kinds || [];
   const out = a.exhausted_until > now;
   const active = Boolean(selected(a));
   const plan = PLANS[a.plan] || a.plan || '';
   const title = `<span class="title">
       <span class="email">${esc(a.email || a.id)}</span>${plan ? `<span class="plan">· ${esc(plan)}</span>` : ''}
-      ${credits > 0 ? `<span class="banked">⚡ ${credits} banked</span>` : ''}
+      ${credits > 0 ? `<span class="banked"${kinds.length ? ` title="${esc(kinds.map(k => `${k.count} × ${k.kind}`).join(', '))}"` : ''}>⚡ ${credits} banked</span>` : ''}
       ${active ? `<span class="check" title="In use">${CHECK}<span class="sr">In use</span></span>` : '<span class="use">Use</span>'}
     </span>`;
   // The menu bar's badges: cached usage stays on screen when checks fail, so
@@ -120,8 +149,12 @@ export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
     ? `<div class="row-main">${body}</div>`
     : `<button type="button" class="row-main" data-use="${esc(a.id)}">${body}</button>`;
   const actions = [
-    credits > 0 && a.reset_credits?.next_id
-      ? `<button type="button" class="button${out ? ' accent' : ''}" data-reset="${esc(a.id)}">Use banked reset</button>` : '',
+    // Claude banks kinds of reset (a Fable reset, a weekly reset): one
+    // button each. Codex has one kind: one button for the next to expire.
+    ...(kinds.length
+      ? kinds.map(k => `<button type="button" class="button${out && !k.unusable ? ' accent' : ''}" data-reset="${esc(a.id)}" data-credit="${esc(k.next_id)}" data-kind="${esc(k.kind)}" data-count="${k.count}"${k.unusable ? ` title="${esc(k.unusable)}"` : ''}>Use ${esc(lowerFirst(k.kind))} · ${k.count}</button>`)
+      : [credits > 0 && a.reset_credits?.next_id
+        ? `<button type="button" class="button${out ? ' accent' : ''}" data-reset="${esc(a.id)}">Use banked reset</button>` : '']),
     limits ? limitPickHTML(a) : '',
   ].join('');
   const reset = actions ? `<div class="row-actions">${actions}</div>` : '';

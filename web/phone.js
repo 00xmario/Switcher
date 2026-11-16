@@ -7,7 +7,7 @@
 // it shares with the Linux tray's panel (account-cards.js).
 import { switcherMark, playMark } from './brand.js';
 import * as cards from './account-cards.js';
-import { PROVIDERS, OUTCOMES, esc } from './account-cards.js';
+import { PROVIDERS, OUTCOMES, esc, resetAsk } from './account-cards.js';
 import { update as updateRings } from './load-card.js';
 import { tabsHTML, usageHTML, loadViewHTML, updateHTML, TABS, PERIODS } from './phone-views.js';
 
@@ -418,12 +418,12 @@ if (typeof document !== 'undefined') {
       });
     } else if (target.dataset.reset) {
       const a = account(target.dataset.reset);
-      const credits = a?.reset_credits?.count || 0;
-      confirmSheet('Use a banked reset?', `${a?.email || 'This account'} gets its usage back right away. You have ${credits} banked reset${credits === 1 ? '' : 's'}; a used reset cannot be given back.`, 'Use reset')
+      const ask = resetAsk(a, target);
+      confirmSheet(ask.title, ask.message, 'Use reset')
         .then(ok => {
-          if (!ok) return;
+          if (!ok || !ask.credit) return;
           act(target, async () => {
-            const answer = await api(`/api/accounts/${encodeURIComponent(a.id)}/reset`, { method: 'POST', body: { credit_id: a.reset_credits.next_id } });
+            const answer = await api(`/api/accounts/${encodeURIComponent(a.id)}/reset`, { method: 'POST', body: { credit_id: ask.credit } });
             if (answer.outcome === 'reset') playMark($('top-mark'));
             toast(OUTCOMES[answer.outcome] || `The provider answered ${answer.outcome}`);
           });

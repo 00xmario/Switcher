@@ -4,7 +4,7 @@
 // dashboard's login, and follows changes as they happen.
 import { switcherMark, playMark } from './brand.js';
 import * as cards from './account-cards.js';
-import { PROVIDERS, OUTCOMES, esc } from './account-cards.js';
+import { PROVIDERS, OUTCOMES, esc, resetAsk } from './account-cards.js';
 import * as loadCard from './load-card.js';
 
 // The panel marks the account the Mac menu marks: Claude Code's login for
@@ -269,12 +269,12 @@ if (typeof document !== 'undefined') {
       });
     } else if (target.dataset.reset) {
       const a = account(target.dataset.reset);
-      const credits = a?.reset_credits?.count || 0;
-      confirmSheet('Use a banked reset?', `${a?.email || 'This account'} gets its usage back right away. You have ${credits} banked reset${credits === 1 ? '' : 's'}; a used reset cannot be given back.`, 'Use reset')
+      const ask = resetAsk(a, target);
+      confirmSheet(ask.title, ask.message, 'Use reset')
         .then(ok => {
-          if (!ok || !a?.reset_credits?.next_id) return;
+          if (!ok || !ask.credit) return;
           act(target, async () => {
-            const answer = await api(`/api/accounts/${encodeURIComponent(a.id)}/use-reset`, { method: 'POST', body: { credit_id: a.reset_credits.next_id } });
+            const answer = await api(`/api/accounts/${encodeURIComponent(a.id)}/use-reset`, { method: 'POST', body: { credit_id: ask.credit } });
             if (answer.outcome === 'reset') playMark($('top-mark'));
             toast(OUTCOMES[answer.outcome] || `The provider answered ${answer.outcome}`);
           });

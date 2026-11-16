@@ -592,7 +592,7 @@ function accountHTML(account) {
             ${plan ? `<span>${escapeHTML(plan)}</span>` : ''}
             ${status.cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
             ${limitMetaHTML(account)}
-            ${account.reset_credits?.count > 0 ? `<span class="banked" title="Banked usage-limit resets available">⚡ ${account.reset_credits.count} banked</span>` : ''}
+            ${bankedBadgeHTML(account)}
           </div>
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
         </div>
@@ -625,7 +625,26 @@ function compactWindowHTML(win, limit = 0) {
     </div>`;
 }
 
+// bankedBadgeHTML counts an account's banked resets; with kinds (Claude's
+// Fable and weekly resets) the tooltip names how many of each.
+function bankedBadgeHTML(account) {
+  const credits = account.reset_credits;
+  if (!(credits?.count > 0)) return '';
+  const kinds = credits.kinds || [];
+  const title = kinds.length ? kinds.map(k => `${k.count} × ${k.kind}`).join(', ') : 'Banked usage-limit resets available';
+  return `<span class="banked" title="${escapeHTML(title)}">⚡ ${credits.count} banked</span>`;
+}
+
 function compactCreditsHTML(credits) {
+  const kinds = credits?.kinds || [];
+  if (kinds.length) {
+    const rows = kinds.map(k => {
+      const exact = k.next_expires_at ? resetTime(k.next_expires_at, `${k.kind} expires`) : null;
+      const when = exact ? `<time datetime="${exact.iso}" title="${escapeHTML(exact.title)}">${escapeHTML(exact.short)}</time><span>· in ${fmtRemaining(k.next_expires_at)}</span>` : '';
+      return `<div class="compact-credit"><span>${k.count} × ${escapeHTML(k.kind)}</span>${when}${k.unusable ? `<span class="dim">· ${escapeHTML(k.unusable)}</span>` : ''}</div>`;
+    });
+    return `<div class="compact-credits"><h4>Banked resets</h4>${rows.join('')}</div>`;
+  }
   const expiries = credits?.expires_at || (credits?.next_expires_at ? [credits.next_expires_at] : []);
   const rows = expiries.map((timestamp, index) => {
     const exact = resetTime(timestamp, 'Banked reset expires');
@@ -658,7 +677,7 @@ function compactAccountHTML(account) {
       <div class="compact-plan"><span>Plan</span><strong>${escapeHTML(plan)}</strong>
         ${status.cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
         ${limitMetaHTML(account)}
-        ${account.reset_credits?.count > 0 ? `<span class="banked" title="Banked usage-limit resets available">⚡ ${account.reset_credits.count} banked</span>` : ''}
+        ${bankedBadgeHTML(account)}
       </div>
       <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
       <div class="compact-windows">${windows}${compactCreditsHTML(account.reset_credits)}</div>
@@ -695,7 +714,7 @@ function mergedAccountHTML(account) {
             ${plan ? `<span>${escapeHTML(plan)}</span>` : ''}
             ${statusOf(account).cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
             ${limitMetaHTML(account)}
-            ${account.reset_credits?.count > 0 ? `<span class="banked" title="Banked usage-limit resets available">⚡ ${account.reset_credits.count} banked</span>` : ''}
+            ${bankedBadgeHTML(account)}
           </div>
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
         </div>
@@ -774,12 +793,12 @@ function accountMenuHTML(account) {
   const labels = { global: 'Global', on: 'On', off: 'Off' };
   return `
     ${account.native_switch_available ? `<button type="button" role="menuitem" data-act="activate" data-account-id="${escapeHTML(account.id)}" ${pendingActivations.has(account.id) ? 'disabled aria-busy="true"' : ''}>${pendingActivations.has(account.id) ? 'Switching…' : 'Use in Claude Code'}</button>` : ''}
-    ${account.reset_credits?.count > 0 ? `<button type="button" role="menuitem" data-act="use-reset" data-account-id="${escapeHTML(account.id)}" data-credit-id="${escapeHTML(account.reset_credits.next_id || '')}" ${account.last_reset?.pending ? 'disabled title="Refreshing quota after the last reset"' : ''}>Use reset</button>` : ''}
+    ${useResetMenuHTML(account)}
     ${account.supports_banked_resets ? `
       <div class="menu-auto-reset" role="group" aria-label="Auto-use reset, currently ${account.auto_use_reset_effective ? 'on' : 'off'}">
         <span class="menu-group-label">Auto-use reset · ${account.auto_use_reset_effective ? 'on' : 'off'}</span>
         <div class="menu-chips">
-          ${['global', 'on', 'off'].map(v => `<button type="button" role="menuitemradio" aria-checked="${mode === v}" data-act="auto-reset" data-mode="${v}" data-account-id="${escapeHTML(account.id)}">${labels[v]}</button>`).join('')}
+          ${(account.provider === 'claude' ? ['on', 'off'] : ['global', 'on', 'off']).map(v => `<button type="button" role="menuitemradio" aria-checked="${mode === v || (account.provider === 'claude' && v === 'off' && mode === 'global')}" data-act="auto-reset" data-mode="${v}" data-account-id="${escapeHTML(account.id)}">${labels[v]}</button>`).join('')}
         </div>
       </div>` : ''}
     ${usageLimitMenuHTML(account)}
@@ -787,6 +806,25 @@ function accountMenuHTML(account) {
     ${data.remote?.role === 'client'
       ? `<p class="menu-note">Removed on ${escapeHTML(data.remote.host || 'the host')}, which keeps it</p>`
       : `<button type="button" role="menuitem" data-act="delete" data-account-id="${escapeHTML(account.id)}">Remove</button>`}`;
+}
+
+// resetKindText writes a kind of reset mid-sentence: "a weekly reset", but
+// "a Fable reset", since Fable is a name.
+function resetKindText(kind) {
+  return /^(Weekly|Full|Limit|Session) /.test(kind) ? kind.charAt(0).toLowerCase() + kind.slice(1) : kind;
+}
+
+// useResetMenuHTML offers spending a banked reset: one item per kind when
+// the provider banks several (Claude), else one for the next to expire.
+function useResetMenuHTML(account) {
+  const credits = account.reset_credits;
+  if (!(credits?.count > 0)) return '';
+  const pending = account.last_reset?.pending ? 'disabled title="Refreshing quota after the last reset"' : '';
+  const kinds = credits.kinds || [];
+  if (!kinds.length) {
+    return `<button type="button" role="menuitem" data-act="use-reset" data-account-id="${escapeHTML(account.id)}" data-credit-id="${escapeHTML(credits.next_id || '')}" ${pending}>Use reset</button>`;
+  }
+  return kinds.map(k => `<button type="button" role="menuitem" data-act="use-reset" data-account-id="${escapeHTML(account.id)}" data-credit-id="${escapeHTML(k.next_id)}" data-kind="${escapeHTML(k.kind)}" data-count="${k.count}" ${pending || (k.unusable ? `title="${escapeHTML(k.unusable)}"` : '')}>Use ${escapeHTML(resetKindText(k.kind))} <span class="dim">· ${k.count} left</span></button>`).join('');
 }
 
 // usageLimitMenuHTML offers the share of the weekly or monthly usage an
@@ -1225,6 +1263,17 @@ async function runAccountAction(button) {
     } else if (button.dataset.act === 'use-reset') {
       const creditID = button.dataset.creditId;
       if (!creditID) throw new Error('Refresh the account before choosing a banked reset');
+      const kind = button.dataset.kind;
+      if (kind) {
+        const left = Number(button.dataset.count) || 0;
+        const note = data.accounts.find(a => a.id === id)?.reset_credits?.kinds?.find(k => k.kind === kind)?.unusable;
+        const yes = await confirmDialog({
+          title: `Use a ${resetKindText(kind)}?`,
+          message: `${note ? `${note}. ` : ''}You have ${left} left; a used reset cannot be given back.`,
+          confirmLabel: 'Use it',
+        });
+        if (!yes) return;
+      }
       if (!resetFeedback.begin(id)) return;
       button.disabled = true;
       try {
@@ -1240,6 +1289,9 @@ async function runAccountAction(button) {
         const outcomes = {
           reset: 'Banked reset used', already_redeemed: 'That reset was already spent',
           nothing_to_reset: 'Nothing to reset right now', no_credit: 'No banked reset available',
+          already_used: 'That reset was already used', cooldown: 'That reset is cooling down; nothing was used',
+          unavailable: "Couldn't reset your limits; nothing was used",
+          not_next_grant: 'Claude wants another reset used first; nothing was used',
         };
         toast(outcomes[res.outcome] || 'Done');
         await pollState();
@@ -2642,7 +2694,7 @@ async function renderSettings() {
           <label class="switch-wrap"><input type="checkbox" id="auto-switch-claude" aria-label="Switch Claude automatically when an account runs out of usage" ${status.auto_switch_claude !== false ? 'checked' : ''}><span class="switch-visual"></span></label>
         </div>
         <div class="settings-row">
-          <div><strong>Use banked resets automatically</strong><span class="dim">Codex. Each account can override this in its ⋯ menu.</span></div>
+          <div><strong>Use banked resets automatically</strong><span class="dim">Codex. Each account can override this in its ⋯ menu; a Claude account only when turned on there.</span></div>
           <label class="switch-wrap"><input type="checkbox" id="auto-use-reset" aria-label="Use a banked reset automatically when an account is out of usage" ${status.auto_use_reset ? 'checked' : ''}><span class="switch-visual"></span></label>
         </div>
         <div class="settings-row">

@@ -458,3 +458,43 @@ func TestFirstPickPrefersAPaidAccount(t *testing.T) {
 		t.Fatalf("active %q, want the paid account", active)
 	}
 }
+
+func TestAutoUseResetSkipsAResetTheProviderWouldRefuse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(limitUntil(time.Now().Add(time.Hour))))
+	}))
+	defer upstream.Close()
+
+	m, prov := newCreditManager(t, upstream, func(store.Account) bool { return true }, account("a"))
+	prov.mu.Lock()
+	prov.credits = []provider.ResetCredit{
+		{ID: "2-0011aabb-fable", Kind: "Fable reset", Unusable: "Doesn't refill the limit you've reached"},
+		{ID: "1-0011aabb-weekly", Kind: "Weekly reset"},
+	}
+	prov.mu.Unlock()
+	doRequest(t, m, "/v1/responses")
+	prov.mu.Lock()
+	consumed := append([]string(nil), prov.consumed...)
+	prov.mu.Unlock()
+	if len(consumed) != 1 || consumed[0] != "1-0011aabb-weekly" {
+		t.Fatalf("spent %v, want only the weekly reset the provider would take", consumed)
+	}
+}
+
+func TestAutoUseResetWaitsAfterAResetDidNotHelp(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(limitUntil(time.Now().Add(time.Hour))))
+	}))
+	defer upstream.Close()
+
+	m, prov := newCreditManager(t, upstream, func(store.Account) bool { return true }, account("a"))
+	prov.outcome = "unavailable"
+	prov.grant("a")
+	doRequest(t, m, "/v1/responses")
+	doRequest(t, m, "/v1/responses")
+	if got := prov.spends(); got != 1 {
+		t.Fatalf("asked to redeem %d times, want 1 until the cooldown passes", got)
+	}
+}

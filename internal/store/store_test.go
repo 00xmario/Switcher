@@ -121,3 +121,16 @@ func TestAutoUseResetOverrideBeatsGlobal(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeSpendsResetsOnItsOwnOnlyWhenTurnedOnForTheAccount(t *testing.T) {
+	on, off := true, false
+	if (Account{Provider: "claude"}).AutoUseResetEnabled(true) {
+		t.Fatal("the global Codex preference spent a Claude reset")
+	}
+	if !(Account{Provider: "claude", AutoUseReset: &on}).AutoUseResetEnabled(false) {
+		t.Fatal("a Claude account turned on does not spend")
+	}
+	if !(Account{Provider: "codex"}).AutoUseResetEnabled(true) || (Account{Provider: "codex", AutoUseReset: &off}).AutoUseResetEnabled(true) {
+		t.Fatal("Codex lost its global preference")
+	}
+}

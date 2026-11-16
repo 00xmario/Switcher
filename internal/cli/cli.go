@@ -79,7 +79,7 @@ func init() {
 		{name: "load", args: "[--apps]", summary: "Show how busy this computer, or the host it uses, is; --apps: what is using it", run: runLoad},
 		{name: "remove", args: "<account> --yes", summary: "Remove an account from Switcher", run: runRemove},
 		{name: "refresh", args: "[account]", summary: "Refresh usage for one or all accounts", run: runRefresh},
-		{name: "reset", args: "<account|provider> --yes", summary: "Spend a banked reset (Codex) on an account", help: resetHelp, run: runReset},
+		{name: "reset", args: "<account|provider> [--kind K] --yes", summary: "Spend a banked reset (Codex, Claude) on an account", help: resetHelp, run: runReset},
 		{name: "share", args: "[on|off|code|devices|revoke <id> --yes|tailnet on|off]", summary: "Share this Mac's accounts with your other Macs", help: shareHelp, run: runShare},
 		{name: "connect", args: "<address> [--code CODE] [--yes]", summary: "Use the accounts of a Switcher that shares them; no code for your own Tailscale devices", help: connectHelp, run: runConnect},
 		{name: "disconnect", args: "--yes", summary: "Stop using another Switcher", run: runDisconnect},

@@ -287,6 +287,7 @@ switcher limit work@example.com 10         # keep 10%: switch away at 10% left
 switcher load                              # CPU, memory and GPU of this Mac or the host
 switcher load --apps                       # and what is using it, by app
 switcher reset codex --yes                 # spend a banked reset
+switcher reset claude --kind fable --yes   # spend a Claude Fable reset
 switcher phone on                          # use Switcher from your phone
 switcher use-host off                      # host down? work on this Mac's own accounts
 switcher hand-back on --yes                # before removing Switcher: tools go direct again
@@ -303,7 +304,7 @@ in the [command line guide](docs/cli.md).
 
 | Provider | Sign in | What Switcher does |
 |---|---|---|
-| **Claude** | Browser, or import Claude Code's login | Switches Claude Code's own login and the Claude proxy, by itself when an account runs out; optional Claude Desktop routing |
+| **Claude** | Browser, or import Claude Code's login | Switches Claude Code's own login and the Claude proxy, by itself when an account runs out; banked resets (Fable, weekly); optional Claude Desktop routing |
 | **Codex** | ChatGPT in the browser | Proxy for the Codex CLI, one-command setup, banked resets |
 | **Grok Build** | Device code | Proxy for the session service |
 | **OpenCode Go** | API key | Proxy |

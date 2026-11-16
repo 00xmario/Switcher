@@ -47,6 +47,8 @@ type Provider struct {
 	mu          sync.Mutex
 	verifier    map[string]verifierEntry
 	limits      map[string]cachedUsage
+	resets      map[string]resetSnapshot
+	resetsWait  map[string]time.Time
 	Native      *claudecode.Manager
 	nativeError error
 }
@@ -368,8 +370,10 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	// cedar_ember=1 adds the banked resets, as Claude Code asks for them,
+	// so listing them needs no second request.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://api.anthropic.com/api/oauth/usage", nil)
+		claudeAPIBase+"/api/oauth/usage?cedar_ember=1&skip_spend=1", nil)
 	if err != nil {
 		return provider.Usage{}, provider.ErrUsageUnavailable
 	}
@@ -406,6 +410,7 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return provider.Usage{}, provider.ErrUsageUnavailable
 	}
+	p.rememberResets(a, raw)
 
 	var windows []provider.UsageWindow
 	if w := windowOf("Session", parsed.FiveHour); w != nil {

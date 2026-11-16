@@ -5,7 +5,7 @@ Open Switcher on your phone wherever you are. You can:
 - see every account's usage;
 - refresh it;
 - switch accounts, Claude included;
-- spend a banked Codex reset;
+- spend a banked Codex or Claude reset;
 - see what the coding tools spent (Usage: cost and tokens by tool, computer
   and model, over 24 hours, 7 or 30 days), as on the dashboard;
 - see how busy the computer doing the work is and which apps use it (Load).

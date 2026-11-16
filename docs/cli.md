@@ -34,7 +34,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
 | `switcher limit <account> [percent\|off]` | Keep a share of an account's weekly usage: Switcher switches away at that much left (1–95, or `off`); without a share, show the limit |
 | `switcher load [--apps]` | CPU, memory and GPU load of this computer, or of the host whose accounts it uses; `--apps` adds what is using it, by app |
-| `switcher reset <account\|provider> --yes` | Spend a banked reset (Codex) on an account, or on a provider's active account |
+| `switcher reset <account\|provider> [--kind K] --yes` | Spend a banked reset (Codex, Claude) on an account, or on a provider's active account. Claude banks kinds of reset (a Fable reset, a weekly reset): `--kind` picks one by the start of its name; without it the one Claude suggests is used |
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
 | `switcher share tailnet [on\|off]` | Let your own Tailscale devices connect without a code, or make them use one; on for a Mac that starts sharing now, off for one that shared before |
 | `switcher connect <address> [--code CODE] [--yes]` | Use the accounts of a Mac that shares them: your own Tailscale devices need no code; `--yes` switches from the host in use, which stays if the new one fails |

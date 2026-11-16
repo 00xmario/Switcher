@@ -497,12 +497,43 @@ func autoUseResetMode(a store.Account) string {
 	}
 }
 
-// resetCreditsView surfaces banked usage-limit resets (codex).
+// resetCreditsView surfaces banked usage-limit resets (Codex, Claude).
 type resetCreditsView struct {
 	Count         int     `json:"count"`
 	NextID        string  `json:"next_id,omitempty"`
 	NextExpiresAt int64   `json:"next_expires_at,omitempty"`
 	ExpiresAt     []int64 `json:"expires_at,omitempty"`
+	// Kinds groups the resets of a provider that banks more than one kind
+	// (Claude's Fable and weekly resets), in the order they are offered.
+	Kinds []resetKindView `json:"kinds,omitempty"`
+}
+
+// resetKindView is one kind of banked reset: how many are left, the one to
+// spend next, and why the provider would refuse it now, if it would.
+type resetKindView struct {
+	Kind          string `json:"kind"`
+	Count         int    `json:"count"`
+	NextID        string `json:"next_id"`
+	NextExpiresAt int64  `json:"next_expires_at,omitempty"`
+	Unusable      string `json:"unusable,omitempty"`
+}
+
+func resetKinds(credits []provider.ResetCredit) []resetKindView {
+	var kinds []resetKindView
+	index := map[string]int{}
+	for _, credit := range credits {
+		if credit.Kind == "" {
+			continue
+		}
+		i, ok := index[credit.Kind]
+		if !ok {
+			i = len(kinds)
+			index[credit.Kind] = i
+			kinds = append(kinds, resetKindView{Kind: credit.Kind, NextID: credit.ID, NextExpiresAt: credit.ExpiresAt, Unusable: credit.Unusable})
+		}
+		kinds[i].Count++
+	}
+	return kinds
 }
 
 func (a *API) viewOf(acc store.Account) accountView {
@@ -521,7 +552,7 @@ func (a *API) viewWithSettings(acc store.Account, preferences settings.Settings)
 	// Providers with banked resets report how many are available so the UI
 	// can offer spending one. The upstream call is TTL-cached: /api/state
 	// is polled every few seconds and must never make the request path
-	// wait on chatgpt.com.
+	// wait on chatgpt.com or api.anthropic.com.
 	if rc, ok := a.Providers[acc.Provider].(provider.ResetCreditProvider); ok {
 		if credits, ok := a.cachedResetCredits(rc, acc); ok {
 			expiries := make([]int64, 0, len(credits))
@@ -533,6 +564,7 @@ func (a *API) viewWithSettings(acc store.Account, preferences settings.Settings)
 			v.ResetCredits = &resetCreditsView{
 				Count:     len(credits),
 				ExpiresAt: expiries,
+				Kinds:     resetKinds(credits),
 			}
 			if len(credits) > 0 {
 				v.ResetCredits.NextID = credits[0].ID

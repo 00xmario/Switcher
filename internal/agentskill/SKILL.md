@@ -111,7 +111,7 @@ Set limits on several accounts by running the command once per account.
 | How busy this computer, or the host, is | `switcher load --json` |
 | What is using it, by app (processor, memory, graphics) | `switcher load --apps --json` |
 | Install this skill on this computer and its host | `switcher skill install --on both --json` |
-| Spend a banked reset (Codex), only when asked | `switcher reset <account> --yes --json` |
+| Spend a banked reset (Codex, Claude), only when asked | `switcher reset <account> [--kind fable\|weekly] --yes --json` |
 | Settings | `switcher settings --json`, `switcher settings set auto_switch_claude=false --json` |
 | Sign in a new account (opens a browser) | `switcher login <provider>` |
 | Open the dashboard | `switcher open` |
@@ -119,7 +119,8 @@ Set limits on several accounts by running the command once per account.
 
 Settings keys: `auto_switch_claude` (move Claude off an account that runs
 out, default on), `auto_use_reset` (spend a Codex banked reset automatically
-before falling back to a Free account or one at its usage limit), `menu_usage_bars`,
+before falling back to a Free account or one at its usage limit; a Claude
+account spends its resets on its own only when turned on in its ⋯ menu), `menu_usage_bars`,
 `reset_notifications`, `compact_accounts`, `merge_accounts`.
 
 ## Answering questions

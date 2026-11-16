@@ -61,12 +61,14 @@ type ClaudeCodeLogin struct {
 
 // AutoUseResetEnabled resolves the effective policy for spending a banked
 // reset on this account: the per-account override wins, otherwise the
-// global preference applies.
+// global preference applies. A Claude account spends its resets on its own
+// only when turned on for that account: they come in kinds, such as a Fable
+// reset, that the global Codex preference was never about.
 func (a Account) AutoUseResetEnabled(global bool) bool {
 	if a.AutoUseReset != nil {
 		return *a.AutoUseReset
 	}
-	return global
+	return global && a.Provider != "claude"
 }
 
 // State is the persisted routing state: the active account per provider,
