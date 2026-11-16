@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -24,6 +25,12 @@ import (
 // reset, ...), each with a number of resets left. Claude Code reads them from
 // the usage endpoint with cedar_ember=1 and spends one with a claim on the
 // organization; Switcher does the same.
+// claudeCodeUserAgent is how Claude Code introduces itself. Anthropic hands
+// out an account's banked resets only to Claude Code (any other client is
+// told "surface": ineligible), so the usage check and the claim say so, as
+// the Codex provider does for the Codex CLI.
+const claudeCodeUserAgent = "claude-cli/2.1.325 (external, cli)"
+
 var (
 	claudeAPIBase   = "https://api.anthropic.com"
 	resetGrantID    = regexp.MustCompile(`^[a-z0-9_-]{1,40}$`)
@@ -50,9 +57,10 @@ type resetGrant struct {
 // resetSnapshot is the last usage answer for an account, which carries its
 // banked resets; a listing soon after reuses it instead of asking again.
 type resetSnapshot struct {
-	token string
-	raw   []byte
-	at    time.Time
+	token  string
+	raw    []byte
+	at     time.Time
+	reason string
 }
 
 // The usage check runs every few minutes and refreshes the snapshot; the
@@ -72,7 +80,32 @@ func (p *Provider) rememberResets(a store.Account, raw []byte) {
 	if p.resets == nil {
 		p.resets = map[string]resetSnapshot{}
 	}
-	p.resets[a.ID] = resetSnapshot{token: a.Token.AccessToken, raw: raw, at: time.Now()}
+	reason := resetIneligibility(raw)
+	if old, ok := p.resets[a.ID]; !ok || old.reason != reason {
+		if reason != "" {
+			// Says why no reset shows, such as a client Anthropic no
+			// longer accepts ("surface", "cli_version").
+			log.Printf("claude: banked resets not offered for %s: %s", a.Email, reason)
+		}
+	}
+	p.resets[a.ID] = resetSnapshot{token: a.Token.AccessToken, raw: raw, at: time.Now(), reason: reason}
+}
+
+// resetIneligibility is the server's reason for offering no resets, or "".
+func resetIneligibility(raw []byte) string {
+	var parsed struct {
+		CedarEmber *struct {
+			Eligible bool    `json:"eligible"`
+			Reason   *string `json:"ineligible_reason"`
+		} `json:"cedar_ember"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil || parsed.CedarEmber == nil || parsed.CedarEmber.Eligible {
+		return ""
+	}
+	if r := deref(parsed.CedarEmber.Reason); r != "" && len(r) <= 40 {
+		return r
+	}
+	return "unknown"
 }
 
 func (p *Provider) recentResets(a store.Account) []byte {
@@ -127,6 +160,7 @@ func (p *Provider) ListResetCredits(ctx context.Context, a store.Account) ([]pro
 	if err := p.ApplyAuth(req, a); err != nil {
 		return nil, fmt.Errorf("list reset credits: %w", err)
 	}
+	req.Header.Set("User-Agent", claudeCodeUserAgent)
 	raw, status, err := readLimited(req)
 	if err != nil {
 		return nil, fmt.Errorf("list reset credits: %w", err)
@@ -212,10 +246,10 @@ func parseResetCredits(raw []byte, now time.Time) ([]provider.ResetCredit, error
 	return credits, nil
 }
 
+// grantKind names a grant as Claude Code does, by what it refills; the
+// server's label is a campaign title ("New model launch: one Fable reset
+// for Max, ..."), so it is not the name.
 func grantKind(g resetGrant) string {
-	if label := strings.TrimSpace(g.Label); label != "" && len(label) <= 60 {
-		return label
-	}
 	if g.GivesBackWeekly {
 		return "Fable reset"
 	}
@@ -295,6 +329,7 @@ func (p *Provider) ConsumeResetCredit(ctx context.Context, a store.Account, cred
 		return "", fmt.Errorf("consume reset credit: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", claudeCodeUserAgent)
 	raw, status, err := readLimited(req)
 	if err != nil {
 		return "", fmt.Errorf("consume reset credit: %w", err)

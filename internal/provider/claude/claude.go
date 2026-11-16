@@ -380,6 +380,7 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 	if err := p.ApplyAuth(req, a); err != nil {
 		return provider.Usage{}, provider.ErrUsageUnavailable
 	}
+	req.Header.Set("User-Agent", claudeCodeUserAgent)
 	resp, err := provider.Client().Do(req)
 	if err != nil {
 		return provider.Usage{}, provider.ErrUsageUnavailable

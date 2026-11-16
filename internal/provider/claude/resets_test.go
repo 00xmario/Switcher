@@ -268,3 +268,70 @@ func TestResetListingBacksOffAfterTooManyRequests(t *testing.T) {
 		t.Fatalf("a fresh listing did not ask: %d", calls)
 	}
 }
+
+// The answer Anthropic gave for a real Max account (ids and dates kept,
+// nothing personal in it): one full reset of the weekly kind and two Fable
+// resets on separate grants with long campaign labels.
+const liveResets = `{"cedar_ember":{"eligible":true,"ineligible_reason":null,"at_limit":false,"next_grant_id":"full-reset-2611","grants":[
+ {"id":"full-reset-2611","label":"One full limit reset (November 2026)","type":"weekly","resets_total":1,"resets_left":1,"usable_now":true,"use_requires_limit":false,"paused":false,"unavailable_reason":null,"gives_back_weekly":false,"ends_at":"2026-12-10T22:00:00+00:00"},
+ {"id":"launch-2610-fable","label":"New model launch: one Fable reset for Max, Team Premium and Enterprise Premium","type":"full","resets_total":1,"resets_left":1,"usable_now":true,"use_requires_limit":false,"paused":false,"unavailable_reason":null,"gives_back_weekly":true,"ends_at":"2027-03-09T07:59:00+00:00"},
+ {"id":"launch-2610-fable-6mo","label":"New model launch: one more Fable reset at 6 months' tenure","type":"full","resets_total":1,"resets_left":1,"usable_now":true,"use_requires_limit":false,"paused":false,"unavailable_reason":null,"gives_back_weekly":true,"ends_at":"2027-03-09T07:59:00+00:00"}]}}`
+
+func TestLiveResetAnswer(t *testing.T) {
+	credits, err := parseResetCredits([]byte(liveResets), time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range credits {
+		grant, _ := creditGrant(c.ID)
+		got = append(got, c.Kind+"|"+grant+"|"+c.Unusable)
+	}
+	want := "Weekly reset|full-reset-2611|,Fable reset|launch-2610-fable|,Fable reset|launch-2610-fable-6mo|"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestResetRequestsIntroduceThemselvesAsClaudeCode(t *testing.T) {
+	old := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: testTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/oauth/profile" && !strings.HasPrefix(req.Header.Get("User-Agent"), "claude-cli/") {
+			t.Errorf("%s %s sent as %q", req.Method, req.URL.Path, req.Header.Get("User-Agent"))
+		}
+		body := liveResets
+		switch req.URL.Path {
+		case "/api/oauth/profile":
+			body = `{"account":{"uuid":"a"},"organization":{"uuid":"org-1"}}`
+		case "/api/organizations/org-1/reset_rate_limits":
+			body = `{"result":"not_limited"}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = old })
+	p := New()
+	account := store.Account{ID: "claude-1", Token: store.Token{AccessToken: "t"}}
+	if _, err := p.Usage(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	credits, err := p.ListResetCredits(provider.FreshCredits(context.Background()), account)
+	if err != nil || len(credits) != 3 {
+		t.Fatalf("credits %d, err %v", len(credits), err)
+	}
+	if _, err := p.ConsumeResetCredit(context.Background(), account, credits[0].ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResetIneligibility(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"cedar_ember":{"eligible":false,"ineligible_reason":"surface","grants":[]}}`: "surface",
+		`{"cedar_ember":{"eligible":false}}`:                                           "unknown",
+		liveResets:                                                                     "",
+		`{"five_hour":{}}`:                                                             "",
+	} {
+		if got := resetIneligibility([]byte(raw)); got != want {
+			t.Fatalf("%s: got %q want %q", raw[:30], got, want)
+		}
+	}
+}
