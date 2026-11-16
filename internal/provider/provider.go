@@ -191,6 +191,20 @@ type ResetCreditProvider interface {
 	ConsumeResetCredit(ctx context.Context, a store.Account, creditID string) (outcome string, err error)
 }
 
+// DayTokens is the tokens an account used on one day, as its provider
+// counts them: on every computer and in the cloud.
+type DayTokens struct {
+	Day    string // 2026-09-09
+	Tokens int64
+}
+
+// ProfileProvider is an optional interface for providers that keep an
+// account's daily token totals themselves (codex), for usage the logs on
+// these computers no longer hold.
+type ProfileProvider interface {
+	ProfileDays(ctx context.Context, a store.Account) ([]DayTokens, error)
+}
+
 // Provider encapsulates everything Switcher needs to log in, refresh, and
 // forward traffic for one upstream.
 type Provider interface {

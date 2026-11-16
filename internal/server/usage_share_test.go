@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"switcher/internal/provider"
 	"switcher/internal/quota"
 	"switcher/internal/remote"
 	"switcher/internal/store"
@@ -124,6 +125,13 @@ func TestUsageIsCombinedAcrossHostAndClients(t *testing.T) {
 		t.Fatalf("the client's Usage answer: %v %s", err, w.Body.String())
 	}
 
+	// The host holds the Codex accounts: their day totals from OpenAI fill
+	// every computer's Insights, the clients' through the host.
+	hostAPI.CodexHistory = usage.OpenCodexHistory(filepath.Join(t.TempDir(), "codex-history.json"))
+	hostAPI.CodexHistory.Merge("codex-a", map[string]int64{time.Now().AddDate(0, 0, -40).Format("2006-01-02"): 1000})
+	if err := hostAPI.CodexHistory.Fetched(time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	// So does Insights, on every computer.
 	for name, api := range map[string]*API{"k12": hostAPI, "MacBook": laptopAPI, "Mini": miniAPI} {
 		w := httptest.NewRecorder()
@@ -131,7 +139,7 @@ func TestUsageIsCombinedAcrossHostAndClients(t *testing.T) {
 		var answer struct {
 			Insights usage.Insights `json:"insights"`
 		}
-		if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || answer.Insights.Totals.Tokens != 123 || len(answer.Insights.Devices) != 3 || answer.Insights.Range != "all" {
+		if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || answer.Insights.Totals.Tokens != 1123 || answer.Insights.ProfileTokens != 1000 || len(answer.Insights.Devices) != 3 || answer.Insights.Range != "all" {
 			t.Fatalf("%s's Insights answer: %v %s", name, err, w.Body.String())
 		}
 	}
@@ -653,5 +661,51 @@ func TestInsightLimitsReportsThePool(t *testing.T) {
 	}
 	if len(rep.Pools) != 1 || rep.Pools[0].Remaining != 80 || rep.Pools[0].Capacity != 200 || len(rep.Accounts) != 2 || rep.Accounts[0].Name == "" {
 		t.Fatalf("report: %s", w.Body.String())
+	}
+}
+
+type fakeCodexProfile struct{ calls int }
+
+func (f *fakeCodexProfile) ProfileDays(ctx context.Context, a store.Account) ([]provider.DayTokens, error) {
+	f.calls++
+	if a.ID == "codex-b" {
+		return nil, errors.New("refused")
+	}
+	return []provider.DayTokens{{Day: "2026-06-01", Tokens: 9000}}, nil
+}
+
+// The Switcher that holds the accounts reads each Codex account's day
+// totals, keeps them, and does not read again right away.
+func TestCodexHistoryIsReadFromTheAccounts(t *testing.T) {
+	st := store.New(t.TempDir())
+	for _, a := range []store.Account{{ID: "codex-a", Provider: "codex"}, {ID: "codex-b", Provider: "codex"}, {ID: "claude-a", Provider: "claude"}} {
+		if err := st.Save(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake := &fakeCodexProfile{}
+	path := filepath.Join(t.TempDir(), "codex-history.json")
+	api := &API{Store: st, CodexHistory: usage.OpenCodexHistory(path), codexProfileForTest: fake}
+	read := func() map[string]int64 {
+		w := httptest.NewRecorder()
+		api.handleCodexDays(w, httptest.NewRequest(http.MethodGet, "/api/insights/codex-days", nil))
+		var answer struct {
+			Days map[string]int64 `json:"days"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer.Days
+	}
+	read()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(read()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if days := read(); days["2026-06-01"] != 9000 {
+		t.Fatalf("days %+v", days)
+	}
+	if again, _ := usage.OpenCodexHistory(path).Days(); again["2026-06-01"] != 9000 {
+		t.Fatalf("not kept: %+v", again)
 	}
 }

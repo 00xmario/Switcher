@@ -498,6 +498,7 @@ func run(port, desktopRelayPort int) {
 		Autostart:    autostart.New(executablePath()),
 		UsageDevices: usage.OpenDeviceStore(filepath.Join(config.Dir(), "usage-devices")),
 		Quota:        quotaLog,
+		CodexHistory: usage.OpenCodexHistory(filepath.Join(config.Dir(), "codex-history.json")),
 		MachineName:  remote.MachineName(),
 		// The tray's Quit Switcher: stop as on SIGTERM, which also tells
 		// the login service not to restart it.

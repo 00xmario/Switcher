@@ -92,12 +92,16 @@ func (s *Service) Get(days int) *Summary {
 
 // Insights returns the long view of every computer's usage over the last
 // days, or all time when days is 0; nil before this computer's first scan.
-func (s *Service) Insights(days int) *Insights {
+func (s *Service) Insights(days int) *Insights { return s.InsightsWith(days, nil) }
+
+// InsightsWith is Insights with the Codex accounts' daily totals from
+// OpenAI (see BuildInsightsWith).
+func (s *Service) InsightsWith(days int, codexDays map[string]int64) *Insights {
 	devices, key, own, _ := s.devices()
 	if own == nil {
 		return nil
 	}
-	insights := BuildInsights(devices, key, days, s.now(), time.Local)
+	insights := BuildInsightsWith(devices, key, days, s.now(), time.Local, codexDays)
 	insights.ScannedMs = own.ScannedAtMs
 	return insights
 }

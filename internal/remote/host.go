@@ -437,9 +437,10 @@ var remotePaths = []string{"/remote/", "/api/accounts/", "/api/usage/refresh", "
 // ledger (only its own, see usage.DeviceStore) and reads everyone's, so
 // every computer shows the same combined usage; and the accounts' quota
 // history, for its Insights page: the accounts' names and shares used over
-// time, which /api/state shows it already.
+// time, which /api/state shows it already; and the Codex accounts' daily
+// token totals from OpenAI, numbers per day with no account named.
 var remoteExactPaths = []string{"/api/state", "/api/state/changes", "/api/update", "/api/update/check", "/api/system",
-	"/api/system/apps", "/api/agent-skill", "/api/tokens/device", "/api/tokens/ledgers", "/api/insights/limits"}
+	"/api/system/apps", "/api/agent-skill", "/api/tokens/device", "/api/tokens/ledgers", "/api/insights/limits", "/api/insights/codex-days"}
 
 func allowedRemotePath(path string) bool {
 	if slices.Contains(remoteExactPaths, path) {

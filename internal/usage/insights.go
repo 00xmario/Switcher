@@ -16,6 +16,9 @@ type Insights struct {
 	TimeZone  string `json:"time_zone"`
 	FirstDay  string `json:"first_day,omitempty"` // the first day with usage, in the range
 	ScannedMs int64  `json:"scanned_at_ms"`
+	// ProfileTokens is how much of the total is known only from the Codex
+	// accounts' profiles at OpenAI: day totals, without cost, model or hour.
+	ProfileTokens int64 `json:"codex_profile_tokens,omitempty"`
 
 	Totals         InsightTotals   `json:"totals"`
 	Streaks        Streaks         `json:"streaks"`
@@ -173,6 +176,20 @@ func mondayFirst(d time.Weekday) int { return (int(d) + 6) % 7 }
 // days up to now (inclusive), or for all time when days is 0. self is the
 // key of the computer asking.
 func BuildInsights(devices []DeviceLedger, self string, days int, now time.Time, loc *time.Location) *Insights {
+	return BuildInsightsWith(devices, self, days, now, loc, nil)
+}
+
+// ProfileModel names, among the models, the usage known only as a day's
+// total from the Codex accounts' profiles at OpenAI.
+const ProfileModel = "Codex account history (day totals)"
+
+// BuildInsightsWith is BuildInsights with the Codex accounts' own daily
+// token totals, as OpenAI counts them (day to tokens, all accounts added
+// up). They count usage on every computer and in the cloud, also where the
+// logs are gone, but only as a day's total: no cost, model or hour. A day
+// counts whichever is more, the logs' Codex tokens or OpenAI's total, so
+// nothing is counted twice.
+func BuildInsightsWith(devices []DeviceLedger, self string, days int, now time.Time, loc *time.Location, codexDays map[string]int64) *Insights {
 	if loc == nil {
 		loc = time.Local
 	}
@@ -194,6 +211,13 @@ func BuildInsights(devices []DeviceLedger, self string, days int, now time.Time,
 				if t := time.Unix(e.Quarter*quarterSeconds, 0).In(loc); t.Before(start) {
 					start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 				}
+			}
+		}
+	}
+	if days == 0 {
+		for day, tokens := range codexDays {
+			if d, err := time.ParseInLocation("2006-01-02", day, loc); err == nil && tokens > 0 && d.Before(start) && !d.Before(historyFloor) {
+				start = d
 			}
 		}
 	}
@@ -320,6 +344,51 @@ func BuildInsights(devices []DeviceLedger, self string, days int, now time.Time,
 			share.Cost += e.Cost
 		}
 		shares = append(shares, share)
+	}
+
+	// What OpenAI counted on a day beyond the logs' Codex tokens.
+	startDay, endDay := start.Format("2006-01-02"), today.Format("2006-01-02")
+	for day, tokens := range codexDays {
+		if day < startDay || day > endDay || len(day) != 10 {
+			continue
+		}
+		da := dayMap[day]
+		if da == nil {
+			da = &dayAgg{providers: map[string]*dayCell{}}
+			dayMap[day] = da
+		}
+		cell := da.providers[ProviderCodex]
+		if cell == nil {
+			cell = &dayCell{}
+			da.providers[ProviderCodex] = cell
+		}
+		extra := min(tokens, maxLedgerTotal) - cell.Tokens
+		if extra <= 0 {
+			continue
+		}
+		cell.Tokens += extra
+		da.tokens += extra
+		mk := [2]string{ProviderCodex, ProfileModel}
+		ma := models[mk]
+		if ma == nil {
+			ma = &modelAgg{ModelInsight: ModelInsight{Provider: ProviderCodex, Model: ProfileModel, FirstDay: day, LastDay: day}, days: map[string]bool{}}
+			models[mk] = ma
+		}
+		ma.Tokens += extra
+		ma.records++
+		ma.unpriced++
+		ma.days[day] = true
+		ma.FirstDay, ma.LastDay = minDay(ma.FirstDay, day), maxDay(ma.LastDay, day)
+		pa := providers[ProviderCodex]
+		if pa == nil {
+			pa = &providerAgg{ProviderInsight: ProviderInsight{Provider: ProviderCodex, FirstDay: day, LastDay: day}, days: map[string]bool{}, sessions: map[string]bool{}}
+			providers[ProviderCodex] = pa
+		}
+		pa.Tokens += extra
+		pa.days[day] = true
+		pa.FirstDay, pa.LastDay = minDay(pa.FirstDay, day), maxDay(pa.LastDay, day)
+		t.Tokens += extra
+		out.ProfileTokens += extra
 	}
 
 	// Sessions, each counted once on the day it started; a session seen by

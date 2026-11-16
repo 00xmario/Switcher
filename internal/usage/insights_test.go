@@ -3,6 +3,7 @@ package usage
 import (
 	"encoding/json"
 	"math"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -173,5 +174,75 @@ func TestSessionLengthIsActiveTime(t *testing.T) {
 	l := &Ledger{Sessions: []SessionSpan{{Provider: "codex", ID: "ab", First: 10, Last: 20, Active: 50}}}
 	if !l.Clean(time.Unix(20*quarterSeconds, 0)) || l.Sessions[0].Active != 11 {
 		t.Fatalf("an active count past the span: %+v", l.Sessions)
+	}
+}
+
+// The Codex accounts' day totals from OpenAI fill the days the logs lack: a
+// day counts the larger of the two, never both; they reach back before the
+// logs, and are told apart in the total and the models.
+func TestInsightsFillInCodexDayTotals(t *testing.T) {
+	now := time.Date(2026, 11, 16, 15, 0, 0, 0, time.UTC)
+	codex := map[string]int64{
+		"2026-11-14": 500,  // the logs have 300 of Codex that day: 200 more
+		"2026-11-15": 100,  // the logs have 400: nothing more
+		"2026-06-01": 9000, // before any log
+		"2026-12-01": 77,   // the future: left out
+		"1999-01-01": 5,    // before any AI coding tool: left out
+	}
+	in := BuildInsightsWith(insightDevices(), "this", 0, now, time.UTC, codex)
+	if in.Since != "2026-06-01" || in.ProfileTokens != 9200 || in.Totals.Tokens != 1880+9200 {
+		t.Fatalf("since %s, profile %d, total %d", in.Since, in.ProfileTokens, in.Totals.Tokens)
+	}
+	if in.PeakDay.Day != "2026-06-01" || in.PeakDay.Tokens != 9000 || in.Totals.ActiveDays != 7 {
+		t.Fatalf("peak %+v, %d active days", in.PeakDay, in.Totals.ActiveDays)
+	}
+	var found bool
+	for _, m := range in.Models {
+		if m.Model == ProfileModel {
+			found = m.Tokens == 9200 && m.Unpriced && m.ActiveDays == 2
+		}
+	}
+	if !found || in.Providers[0].Provider != "codex" || in.Providers[0].Tokens != 700+9200 {
+		t.Fatalf("models %+v providers %+v", in.Models, in.Providers)
+	}
+	// The hours of the day are the logs' only.
+	var hours int64
+	for _, h := range in.Hours {
+		hours += h.Tokens
+	}
+	if hours != 1880 {
+		t.Fatalf("hours add up to %d", hours)
+	}
+	if got := BuildInsightsWith(insightDevices(), "this", 7, now, time.UTC, codex); got.ProfileTokens != 200 {
+		t.Fatalf("7 days: %d from profiles", got.ProfileTokens)
+	}
+}
+
+// The history keeps the largest total seen per day and account, adds the
+// accounts up, survives a restart, and is asked for no more than every so
+// often.
+func TestCodexHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex-history.json")
+	h := OpenCodexHistory(path)
+	now := time.Now()
+	if !h.Begin(now, time.Hour) || h.Begin(now, time.Hour) {
+		t.Fatal("a read did not begin once")
+	}
+	h.Merge("a", map[string]int64{"2026-09-09": 40, "2026-09-10": 5, "bad": 3, "2026-09-11": -1})
+	h.Merge("a", map[string]int64{"2026-09-09": 30, "2026-09-10": 8})
+	h.Merge("b", map[string]int64{"2026-09-09": 2})
+	if err := h.Fetched(now); err != nil {
+		t.Fatal(err)
+	}
+	h.End()
+	if h.Begin(now.Add(time.Minute), time.Hour) {
+		t.Fatal("read again too soon")
+	}
+	days, fetched := OpenCodexHistory(path).Days()
+	if len(days) != 2 || days["2026-09-09"] != 42 || days["2026-09-10"] != 8 || fetched != now.UnixMilli() {
+		t.Fatalf("days %+v", days)
+	}
+	if got := CleanCodexDays(map[string]int64{"2026-09-09": 1, "<b>": 2, "2026-13-40": 3, "2026-09-10": -4}); len(got) != 1 {
+		t.Fatalf("cleaned %+v", got)
 	}
 }

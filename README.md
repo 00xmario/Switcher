@@ -155,7 +155,8 @@ and a six-digit code; only phones you approve on the Mac get in.
   one shows the same total: all of them added up, with each one's share.
 - **Insights, for all time.** Switcher keeps its own archive of your usage, so
   it stays counted after the CLIs delete their logs (Claude Code does after
-  30 days). The Insights tab looks at it from every side: lifetime totals,
+  30 days), and fills older Codex days from your OpenAI account's own day
+  totals. The Insights tab looks at it from every side: lifetime totals,
   streaks, an activity heatmap, your busiest weekday and hour, months, models,
   tools and computers. Its Limits view records each account's quota over time:
   the pool of accounts with how fast it drains and when it will run out, how

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -331,4 +332,28 @@ func (c *Client) pairingID() string {
 		return ""
 	}
 	return c.cfg.DeviceID + "|" + c.cfg.Fingerprint
+}
+
+// CodexDays asks the host for its Codex accounts' daily token totals, as
+// OpenAI reports them: the host holds the accounts. ok is false when the
+// host cannot be asked or does not know them (an older Switcher).
+func (c *Client) CodexDays(ctx context.Context) (days map[string]int64, ok bool) {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://switcher-host/api/insights/codex-days", nil)
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	var got struct {
+		Days map[string]int64 `json:"days"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&got) != nil {
+		return nil, false
+	}
+	return usage.CleanCodexDays(got.Days), true
 }

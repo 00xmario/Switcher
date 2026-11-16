@@ -642,6 +642,7 @@ export function createInsightsPage({ api, root, logos = {}, locked = () => false
     if (sharing?.host && sharing.reason) notes.push(`${sharing.host}'s usage is not added up right now`);
     if (data.range === 'all' && data.first_day) notes.push(`Since ${day(data.first_day)}`);
     if (data.totals?.unpriced_records && state.metric === 'cost') notes.push('some models have no price and count as $0');
+    if (data.codex_profile_tokens) notes.push(`${tokens(data.codex_profile_tokens)} of Codex known only as day totals from your OpenAI account (no cost, model or hour)`);
     status.textContent = notes.join(' · ');
   }
 

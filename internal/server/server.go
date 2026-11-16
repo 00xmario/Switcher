@@ -60,14 +60,20 @@ type API struct {
 	UsageDevices *usage.DeviceStore
 	MachineName  string
 	// Quota keeps the accounts' quota history for Insights (Limits).
-	Quota          *quota.Recorder
-	usageShare     usageShare
-	usageAnswer    usageAnswer
-	usageUploaders usageUploaders
-	Store          *store.Store
-	Logins         *login.Manager
-	Proxy          *proxy.Manager
-	DesktopRelay   *desktoprelay.Manager
+	Quota *quota.Recorder
+	// CodexHistory keeps the Codex accounts' daily token totals from
+	// OpenAI, which fill the days the logs no longer hold in Insights.
+	CodexHistory *usage.CodexHistory
+	codexDays    hostCodexDays
+	// codexProfileForTest stands in for the Codex provider's profile.
+	codexProfileForTest provider.ProfileProvider
+	usageShare          usageShare
+	usageAnswer         usageAnswer
+	usageUploaders      usageUploaders
+	Store               *store.Store
+	Logins              *login.Manager
+	Proxy               *proxy.Manager
+	DesktopRelay        *desktoprelay.Manager
 	// DesktopSessionMetadata is the same explicit, lazy index supplied to the
 	// relay's trusted conversation resolver. GET only decorates response copies.
 	// Nil disables display lookup; the manager may still verify saved associations
@@ -160,6 +166,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tokens", a.handleUsage)
 	mux.HandleFunc("GET /api/insights", a.handleInsights)
 	mux.HandleFunc("GET /api/insights/limits", a.handleInsightLimits)
+	mux.HandleFunc("GET /api/insights/codex-days", a.handleCodexDays)
 	mux.HandleFunc("POST /api/tokens/refresh", a.handleUsageRefresh)
 	mux.HandleFunc("PUT /api/tokens/device", a.handleUsageDevice)
 	mux.HandleFunc("GET /api/tokens/ledgers", a.handleUsageLedgers)
@@ -1430,7 +1437,7 @@ func (a *API) handleInsights(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "usage not configured"})
 		return
 	}
-	insights := a.Usage.Insights(days)
+	insights := a.Usage.InsightsWith(days, a.codexDayTotals(r.Context()))
 	if insights == nil {
 		go a.Usage.Rescan()
 		writeJSON(w, http.StatusAccepted, map[string]any{"scanning": true})
@@ -1494,6 +1501,92 @@ func (a *API) handleInsightLimits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.Quota.Report(time.Now(), days, burn, accounts))
 }
 
+// hostCodexDays is a client's copy of its host's Codex day totals.
+type hostCodexDays struct {
+	mu   sync.Mutex
+	at   time.Time
+	days map[string]int64
+}
+
+// codexDayTotals is the Codex accounts' daily token totals from OpenAI, all
+// accounts added up: this Switcher's own, or, on a computer that uses a
+// host, the host's (asked every ten minutes at most, the last answer kept
+// while the host is away). Nil when there are none.
+func (a *API) codexDayTotals(ctx context.Context) map[string]int64 {
+	if a.RemoteClient != nil && a.RemoteClient.Connected() {
+		c := &a.codexDays
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if time.Since(c.at) > 10*time.Minute {
+			if days, ok := a.RemoteClient.CodexDays(ctx); ok {
+				c.days = days
+			}
+			c.at = time.Now()
+		}
+		return c.days
+	}
+	if a.CodexHistory == nil {
+		return nil
+	}
+	a.refreshCodexHistory(time.Hour)
+	days, _ := a.CodexHistory.Days()
+	return days
+}
+
+// refreshCodexHistory reads every Codex account's profile again, in the
+// background, when the last read is older than every. Only the Switcher
+// that holds the accounts does.
+func (a *API) refreshCodexHistory(every time.Duration) {
+	if a.CodexHistory == nil || a.Store == nil || a.RemoteClient != nil && a.RemoteClient.Connected() {
+		return
+	}
+	reader, ok := a.Providers["codex"].(provider.ProfileProvider)
+	if a.codexProfileForTest != nil {
+		reader, ok = a.codexProfileForTest, true
+	}
+	if !ok || !a.CodexHistory.Begin(time.Now(), every) {
+		return
+	}
+	go func() {
+		defer a.CodexHistory.End()
+		accounts, err := a.Store.List()
+		if err != nil {
+			return
+		}
+		for _, acc := range accounts {
+			if acc.Provider != "codex" {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			days, err := reader.ProfileDays(ctx, acc)
+			cancel()
+			if err != nil {
+				continue
+			}
+			totals := make(map[string]int64, len(days))
+			for _, d := range days {
+				totals[d.Day] = d.Tokens
+			}
+			a.CodexHistory.Merge(acc.ID, totals)
+		}
+		// Without an answer the time of the last read still moves on, so a
+		// provider that refuses is not asked on every page view.
+		_ = a.CodexHistory.Fetched(time.Now())
+	}()
+}
+
+// handleCodexDays gives the Codex accounts' daily token totals, for a
+// paired computer's Insights: days and numbers, no account named.
+func (a *API) handleCodexDays(w http.ResponseWriter, r *http.Request) {
+	if a.CodexHistory == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"days": map[string]int64{}})
+		return
+	}
+	a.refreshCodexHistory(time.Hour)
+	days, fetched := a.CodexHistory.Days()
+	writeJSON(w, http.StatusOK, map[string]any{"days": days, "fetched_ms": fetched})
+}
+
 // handleUsageRefresh forces a rescan of every window.
 func (a *API) handleUsageRefresh(w http.ResponseWriter, r *http.Request) {
 	if a.Usage == nil {
@@ -1506,6 +1599,7 @@ func (a *API) handleUsageRefresh(w http.ResponseWriter, r *http.Request) {
 		a.Usage.Rescan()
 		a.syncUsage(context.Background())
 	}()
+	a.refreshCodexHistory(time.Minute)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 

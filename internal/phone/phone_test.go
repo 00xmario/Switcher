@@ -279,6 +279,7 @@ func TestOnlyTheFixedActionsAreReachable(t *testing.T) {
 		// Insights is the dashboard's, not the phone page's.
 		{http.MethodGet, "/api/insights"},
 		{http.MethodGet, "/api/insights/limits"},
+		{http.MethodGet, "/api/insights/codex-days"},
 		{http.MethodGet, "/app.js"},
 		{http.MethodGet, "/index.html"},
 	} {
