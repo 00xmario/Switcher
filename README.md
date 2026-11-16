@@ -160,7 +160,8 @@ and a six-digit code; only phones you approve on the Mac get in.
   tools and computers. Its Limits view records each account's quota over time:
   the pool of accounts with how fast it drains and when it will run out, how
   long each account takes from a reset to its limit, and every limit, reset and
-  switch.
+  switch. **Share** makes a picture of your activity to post: the last 26
+  weeks and your streaks, no account names.
 - **A command line for you and your agents.** Switch, sign in, set limits,
   share between Macs and set up Claude Desktop from a terminal or over SSH,
   with JSON output and stable exit codes.

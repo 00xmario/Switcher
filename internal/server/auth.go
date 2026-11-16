@@ -164,7 +164,9 @@ func exempt(r *http.Request) bool {
 	}
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		switch path {
-		case "/login", "/login.js", "/login.css":
+		// And the font the login page is set in: Inter, public, the same
+		// for everyone.
+		case "/login", "/login.js", "/login.css", "/fonts/inter-latin-wght-normal.woff2", "/fonts/inter-latin-wght-italic.woff2":
 			return true
 		}
 	}

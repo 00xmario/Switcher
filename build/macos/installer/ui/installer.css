@@ -1,5 +1,9 @@
 /* Install Switcher: one dark, on-brand window. The palette is the app icon's:
    a deep green-black tile and the lime-to-teal track of the mark. */
+/* Inter, the face Switcher is set in, ships inside the installer (fonts/,
+   copied from web/fonts; SIL Open Font License). */
+@font-face { font-family: "Switcher Inter"; font-style: normal; font-weight: 100 900; src: url("fonts/inter-latin-wght-normal.woff2") format("woff2"); }
+
 :root {
   --bg-0: #050b08;
   --bg-1: #0a1611;
@@ -20,7 +24,7 @@
   --brand: linear-gradient(135deg, var(--lime) 0%, var(--green) 50%, var(--teal) 100%);
   --ease: cubic-bezier(.22, 1, .36, 1);
   --spring: cubic-bezier(.34, 1.56, .64, 1);
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Helvetica Neue", sans-serif;
+  --sans: "Switcher Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
   color-scheme: dark;
 }

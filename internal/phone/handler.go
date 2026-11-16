@@ -105,11 +105,14 @@ var assets = map[string]string{
 	"/load-page.js":     "load-page.js",
 	"/brand.js":         "brand.js",
 	"/favicon.png":      "favicon.png",
+	// Inter, the face the page is set in.
+	"/fonts/inter-latin-wght-normal.woff2": "fonts/inter-latin-wght-normal.woff2",
+	"/fonts/inter-latin-wght-italic.woff2": "fonts/inter-latin-wght-italic.woff2",
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	header := w.Header()
-	header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
+	header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
 	header.Set("Strict-Transport-Security", "max-age=31536000")
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("X-Frame-Options", "DENY")
@@ -466,7 +469,7 @@ func (h *Handler) asset(w http.ResponseWriter, r *http.Request, name string) {
 			[]byte(`<meta name="switcher-version" content="`+html.EscapeString(h.Version())+`">`), 1)
 	}
 	types := map[string]string{".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-		".css": "text/css; charset=utf-8", ".png": "image/png"}
+		".css": "text/css; charset=utf-8", ".png": "image/png", ".woff2": "font/woff2"}
 	for suffix, kind := range types {
 		if strings.HasSuffix(name, suffix) {
 			w.Header().Set("Content-Type", kind)

@@ -1,3 +1,8 @@
+/* Inter, the face Switcher is set in, ships with it (web/fonts; SIL Open
+   Font License, see THIRD_PARTY_NOTICES.md): nothing loads from elsewhere. */
+@font-face { font-family: "Switcher Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2"); }
+@font-face { font-family: "Switcher Inter"; font-style: italic; font-weight: 100 900; font-display: swap; src: url("/fonts/inter-latin-wght-italic.woff2") format("woff2"); }
+
 /* Switcher on the phone. Same palette as the web app (web/style.css) and the
    menu bar panel (Palette in build/macos/menubar.swift); the phone follows
    the system appearance. */
@@ -56,7 +61,7 @@ body {
   padding: 0 env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 28px) env(safe-area-inset-left);
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 15px/1.45 "Switcher Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
 }

@@ -578,13 +578,15 @@ export function controlsHTML(state) {
     ${segmented('range', RANGES, state.range)}${refresh}`;
 }
 
+const SHARE_BUTTON = `<button class="ins-share" type="button" data-ins-share title="Share your activity as a picture"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13"/><path d="m7 8 5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg>Share</button>`;
+
 export function shellHTML(state) {
   return `
     <div class="usage-head">
       <p class="usage-crumb">Insights <span class="crumb-sep">/</span> <span data-ins-scope>All computers</span></p>
       <div class="usage-controls" data-ins-controls>${controlsHTML(state)}</div>
     </div>
-    <p class="ins-status" data-ins-status></p>
+    <div class="ins-subhead"><p class="ins-status" data-ins-status></p><span data-ins-share-slot></span></div>
     <div class="ins-body" data-ins-body></div>
     <div class="usage-tip ins-tip" data-ins-tip role="tooltip"></div>`;
 }
@@ -624,6 +626,7 @@ export function createInsightsPage({ api, root, logos = {}, locked = () => false
   function render() {
     if (!data) return;
     controls.innerHTML = controlsHTML(state);
+    $('[data-ins-share-slot]').innerHTML = state.view === 'usage' && data.totals?.tokens ? SHARE_BUTTON : '';
     if (state.view === 'limits') {
       body.innerHTML = limitsHTML(data, state, logos);
       $('[data-ins-scope]').textContent = 'Accounts';
@@ -649,6 +652,7 @@ export function createInsightsPage({ api, root, logos = {}, locked = () => false
     const key = keyOf();
     if (dataKey !== key) {
       controls.innerHTML = controlsHTML(state);
+      $('[data-ins-share-slot]').innerHTML = '';
       body.innerHTML = '<p class="ins-empty ins-loading">Loading insights…</p>';
       status.textContent = '';
     }
@@ -703,6 +707,17 @@ export function createInsightsPage({ api, root, logos = {}, locked = () => false
       state.burn = d.insBurn; store('switcher.insights.burn', state.burn); load();
     } else if (d.insWindow) {
       state.windows[d.insPool] = d.insWindow; render();
+    } else if (button.hasAttribute('data-ins-share')) {
+      // The card is of all time, whatever range the page shows.
+      button.disabled = true;
+      try {
+        const all = state.view === 'usage' && state.range === 'all' && data ? data : (await api('/api/insights?range=all')).insights;
+        if (!all) throw new Error('Insights are not ready yet');
+        const { openShare } = await import('./share-card.js');
+        await openShare(all, { prefersDark: matchMedia?.('(prefers-color-scheme: dark)').matches || document.documentElement.dataset.theme === 'dark' });
+      } catch (err) {
+        status.textContent = `Could not make the picture: ${err.message || 'no answer'}`;
+      } finally { button.disabled = false; }
     } else if (button.hasAttribute('data-ins-refresh')) {
       button.classList.add('spinning');
       try {

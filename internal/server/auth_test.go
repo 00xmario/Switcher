@@ -126,6 +126,12 @@ func TestUnauthenticatedBrowserCannotReceiveAppShellOrAssets(t *testing.T) {
 			t.Fatalf("login asset %s unavailable: %d", path, w.Code)
 		}
 	}
+	// The login page's font is public; nothing else in its folder is.
+	for path, open := range map[string]bool{"/fonts/inter-latin-wght-normal.woff2": true, "/fonts/inter-latin-wght-italic.woff2": true, "/fonts/": false, "/fonts/other.woff2": false} {
+		if w := request(path, ""); (w.Code != http.StatusUnauthorized) != open {
+			t.Fatalf("unauthenticated %s: %d", path, w.Code)
+		}
+	}
 	for _, path := range []string{"/codex/v1/responses", "/v0/management/auth-files"} {
 		if w := request(path, ""); w.Code != http.StatusOK {
 			t.Fatalf("non-browser route %s was gated: %d", path, w.Code)

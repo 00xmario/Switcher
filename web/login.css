@@ -21,7 +21,11 @@
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+/* Inter, the face Switcher is set in, ships with it (web/fonts; SIL Open
+   Font License, see THIRD_PARTY_NOTICES.md): nothing loads from elsewhere. */
+@font-face { font-family: "Switcher Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2"); }
+@font-face { font-family: "Switcher Inter"; font-style: italic; font-weight: 100 900; font-display: swap; src: url("/fonts/inter-latin-wght-italic.woff2") format("woff2"); }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 "Switcher Inter", system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
 .login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 .login-card { width: min(380px, 100%); padding: 30px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 28px rgb(0 0 0 / .06); }
 .brand-mark { display: block; width: 42px; height: 42px; color: var(--accent); }

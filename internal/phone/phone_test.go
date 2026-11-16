@@ -445,6 +445,33 @@ func TestTheAPIRouterAdmitsOnlyThePhoneRoutes(t *testing.T) {
 	}
 }
 
+// The page is set in Inter, which this listener serves as a font the page
+// may load.
+func TestThePageGetsItsFont(t *testing.T) {
+	x := newHarness(t)
+	font, err := os.ReadFile(filepath.Join("..", "..", "web", "fonts", "inter-latin-wght-normal.woff2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	x.h.Static = fstest.MapFS{"fonts/inter-latin-wght-normal.woff2": {Data: font}}
+	w := x.do(http.MethodGet, "/fonts/inter-latin-wght-normal.woff2", myPhone, nil, nil, "")
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "font/woff2" || w.Body.Len() < 10_000 {
+		t.Fatalf("font: %d %q %d bytes", w.Code, w.Header().Get("Content-Type"), w.Body.Len())
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "font-src 'self'") {
+		t.Fatalf("the page may not load its font: %s", w.Header().Get("Content-Security-Policy"))
+	}
+	css, err := os.ReadFile(filepath.Join("..", "..", "web", "phone.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range regexp.MustCompile(`url\("(/[^"]+)"\)`).FindAllStringSubmatch(string(css), -1) {
+		if _, ok := assets[m[1]]; !ok {
+			t.Errorf("phone.css loads %s, which the phone listener does not serve", m[1])
+		}
+	}
+}
+
 // The page's scripts import their modules from this listener, which serves
 // only the listed assets; a module missing from the list breaks the page.
 func TestThePageGetsEveryModuleItImports(t *testing.T) {

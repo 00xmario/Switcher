@@ -100,6 +100,8 @@ verify-common:
 	node web/load-page_test.mjs
 	node --check web/insights.js
 	node web/insights_test.mjs
+	node --check web/share-card.js
+	node web/share-card_test.mjs
 	node --check web/phone-settings.js
 	node web/phone-settings_test.mjs
 	node --check web/update-progress.js

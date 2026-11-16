@@ -24,13 +24,15 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/install-switcher.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 app="$work/Install Switcher.app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ui/logos"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ui/logos" "$app/Contents/Resources/ui/fonts"
 sed "s/VERSION_TOKEN/$version/g" "$here/Info.plist" >"$app/Contents/Info.plist"
 cp "$here/InstallerIcon.icns" "$app/Contents/Resources/"
 cp "$here/ui/index.html" "$here/ui/installer.css" "$here/ui/installer.js" "$app/Contents/Resources/ui/"
 for logo in claude codex gemini grok copilot opencode; do
 	cp "$macos/logos/$logo.svg" "$app/Contents/Resources/ui/logos/"
 done
+# Inter, the face Switcher is set in, from the web app's own copy.
+cp "$macos/../../web/fonts/inter-latin-wght-normal.woff2" "$app/Contents/Resources/ui/fonts/"
 
 # One installer for every Mac, back to macOS 13, like the app.
 for target in arm64-apple-macos13.0 x86_64-apple-macos13.0; do
