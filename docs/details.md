@@ -80,6 +80,26 @@ required; OpenCode Go uses its own API key.
   and go with their account when it is removed. A Mac that uses another
   Mac's accounts saves the limit on that host, where it applies to every Mac
   (`PATCH /api/accounts/{id}` with `{"usage_limit": 10}`; `0` removes it).
+- **Ending subscriptions**: no provider tells Switcher the day a canceled
+  subscription ends (Claude's sign-in reports only that it is active), so
+  you tell it: the account's ⋯ menu → **Subscription ends…** in the
+  dashboard, or `switcher ends <account> 2026-11-29`. The card, the phone,
+  the panel and the menu bar count down to the day (**Ends Nov 29 · in 7
+  days**). Until that day is over Switcher uses the account first: an
+  automatic pick (after an account runs out or reaches its limit, and the
+  proxy's failover) takes the paid account that ends soonest over one with
+  more usage left, and after a usage poll the provider moves onto it
+  whenever it has 10% or more left in each window, unless the account in use
+  ends no later or is the one you picked last. Setting a day is a pick too:
+  it moves the provider right away. A pick of your own holds until Switcher
+  moves off it because it ran out or reached its limit. An end date never
+  blocks a request: past the day, out of usage, at its limit, signed out or
+  on a Free plan, the account is passed over like any other. Days are kept
+  in `state.json` (`end_dates`) and go with their account when it is
+  removed (`PATCH /api/accounts/{id}` with `{"end_date": "2026-11-29"}`;
+  `""` removes it). For a Codex account the card shows the day ChatGPT's
+  sign-in says it is paid through (`paid_through`); that renews unless the
+  subscription was canceled, so it is not an end date by itself.
 - **Load card**: above Keep awake, the menu bar shows three rings for CPU,
   memory and GPU load, calm in green, amber from 70% and red from 90%, with
   the core count and memory in use beneath. The rings ease to each reading,

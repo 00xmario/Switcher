@@ -137,14 +137,17 @@ func (m *Manager) headroomLocked(a store.Account) int {
 
 // takeoverLocked picks the account of providerID with the most usage left,
 // other than exclude, or "" when none has room. A paid account comes before
-// a Free one, which lacks the paid models. native asks for an account whose
-// identity Claude Code's login can carry. Requires m.mu.
+// a Free one, which lacks the paid models, and among those an account whose
+// subscription ends soonest (endings.go) comes first. native asks for an
+// account whose identity Claude Code's login can carry. Requires m.mu.
 func (m *Manager) takeoverLocked(providerID, exclude string, native bool) (string, error) {
 	accounts, err := m.store.List()
 	if err != nil {
 		return "", err
 	}
 	best, bestLeft, bestPaid := "", 0, false
+	var bestEnd time.Time
+	bestEnds := false
 	for _, a := range accounts {
 		if a.Provider != providerID || a.ID == exclude || (native && a.Token.AccountID == "") {
 			continue
@@ -154,8 +157,10 @@ func (m *Manager) takeoverLocked(providerID, exclude string, native bool) (strin
 			continue
 		}
 		paid := !freePlan(a.Plan)
-		if best == "" || paid && !bestPaid || paid == bestPaid && left > bestLeft {
-			best, bestLeft, bestPaid = a.ID, left, paid
+		end, ends := m.endingLocked(a.ID)
+		sameEnd := ends == bestEnds && end.Equal(bestEnd)
+		if best == "" || paid && !bestPaid || paid == bestPaid && (endsSooner(end, ends, bestEnd, bestEnds) || sameEnd && left > bestLeft) {
+			best, bestLeft, bestPaid, bestEnd, bestEnds = a.ID, left, paid, end, ends
 		}
 	}
 	return best, nil
@@ -274,7 +279,12 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 	}
 	m.mu.Lock()
 	if !m.leaveDueLocked(from, auto) {
+		// Nothing to leave: perhaps an ending account to use up first.
+		to, err := m.pullLocked(providerID, from, true)
 		m.mu.Unlock()
+		if err == nil && to != "" {
+			m.pullLogin(providerID, native, kept, from, to)
+		}
 		return
 	}
 	limited := m.atLimitLocked(from)
@@ -323,6 +333,7 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 	}
 	m.mu.Lock()
 	m.autoSwitchAt[from] = time.Now().Add(autoSwitchCooldown)
+	m.leftAutomaticallyLocked(providerID, from)
 	m.recordAutoSwitchLocked(providerID, "claude_code", from, to)
 	if limited {
 		m.lastAutoSwitch.Reason = "limit"
@@ -342,7 +353,11 @@ func (m *Manager) autoSwitchRoute(providerID string, cooldown bool) {
 	}
 	m.mu.Lock()
 	if !m.atLimitLocked(from) || !m.leaveDueLocked(from, false) {
+		to, err := m.pullLocked(providerID, from, false)
 		m.mu.Unlock()
+		if cooldown && err == nil && to != "" {
+			m.pullRoute(providerID, from, to)
+		}
 		return
 	}
 	to, err := m.takeoverLocked(providerID, from, false)
@@ -375,6 +390,7 @@ func (m *Manager) autoSwitchRoute(providerID string, cooldown bool) {
 	if cooldown {
 		m.autoSwitchAt[from] = time.Now().Add(autoSwitchCooldown)
 	}
+	m.leftAutomaticallyLocked(providerID, from)
 	m.recordAutoSwitchLocked(providerID, "proxy", from, to)
 	m.lastAutoSwitch.Reason = "limit"
 	m.mu.Unlock()
@@ -405,4 +421,66 @@ func (m *Manager) selectUnder(providerID, id string, stillLocked func() bool) er
 func (m *Manager) leaveDueLocked(id string, auto bool) bool {
 	now := time.Now()
 	return m.leaveLocked(id, auto) && now.After(m.autoSwitchAt[id]) && now.After(m.manualHold[id])
+}
+
+// pullLogin moves Claude Code's login (or, kept, the selection) from from onto
+// to, an ending account to use up first (pullLocked), if that still holds
+// right before the switch.
+func (m *Manager) pullLogin(providerID string, native provider.NativeLoginProvider, kept bool, from, to string) {
+	still := func() bool {
+		now := native.NativeStatus().ActiveID
+		if kept {
+			now = m.ActiveID(providerID)
+		}
+		if now != from {
+			return false
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		next, err := m.pullLocked(providerID, from, true)
+		return err == nil && next == to
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	_, err := m.activateNative(ctx, to, still)
+	cancel()
+	if errors.Is(err, errSwitchOvertaken) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err != nil {
+		// Not again before the retry delay.
+		m.autoSwitchAt[to] = time.Now().Add(autoSwitchRetry)
+		log.Printf("proxy: moving Claude Code to the account whose subscription ends soonest did not go through; trying again in a minute")
+		return
+	}
+	m.recordAutoSwitchLocked(providerID, "claude_code", from, to)
+	m.lastAutoSwitch.Reason = "ending"
+	log.Printf("proxy: moved Claude Code to the account whose subscription ends soonest, to use it up first")
+}
+
+// pullRoute moves the proxy's selection from from onto to, an ending account
+// to use up first (pullLocked), if that still holds right before the switch.
+func (m *Manager) pullRoute(providerID, from, to string) {
+	still := func() bool {
+		if m.active[providerID] != from {
+			return false
+		}
+		next, err := m.pullLocked(providerID, from, false)
+		return err == nil && next == to
+	}
+	err := m.selectUnder(providerID, to, still)
+	if errors.Is(err, errSwitchOvertaken) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err != nil {
+		m.autoSwitchAt[to] = time.Now().Add(autoSwitchRetry)
+		log.Printf("proxy: moving %s to the account whose subscription ends soonest did not go through; trying again in a minute", providerID)
+		return
+	}
+	m.recordAutoSwitchLocked(providerID, "proxy", from, to)
+	m.lastAutoSwitch.Reason = "ending"
+	log.Printf("proxy: moved %s to the account whose subscription ends soonest, to use it up first", providerID)
 }

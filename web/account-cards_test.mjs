@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { accountHTML, stateHTML, resetAsk } from './account-cards.js';
+import { accountHTML, stateHTML, resetAsk, endingNote } from './account-cards.js';
 
 const now = 1_800_000_000;
 const claude = {
@@ -62,4 +62,17 @@ test('a Codex account keeps its single banked reset button', () => {
   const ask = resetAsk(a, { dataset: {} });
   assert.equal(ask.credit, 'credit-1');
   assert.equal(ask.title, 'Use a banked reset?');
+});
+
+test('an end date shows as a note with the days to go; a paid-through day without one', () => {
+  const at = new Date(2026, 10, 22, 15).getTime() / 1000;
+  assert.match(endingNote({ end_date: '2026-11-29', ending: true }, at), /<span class="note">Ends Nov 29 · in 7 days · used first<\/span>/);
+  assert.match(endingNote({ end_date: '2026-11-24', ending: true }, at), /class="note is-out">Ends Nov 24 · in 2 days/);
+  assert.match(endingNote({ end_date: '2026-11-22', ending: true }, at), />Ends today · used first</);
+  assert.match(endingNote({ end_date: '2026-11-20' }, at), />Subscription ended Nov 20</);
+  assert.equal(endingNote({ end_date: '"><img src=x>', ending: true }, at), '');
+  assert.equal(endingNote({ end_date: '2026-02-30', ending: true }, at), '');
+  assert.match(endingNote({ paid_through: new Date(2026, 11, 20).getTime() / 1000 }, at), />Paid through Dec 20</);
+  assert.equal(endingNote({ paid_through: at - 60 }, at), '');
+  assert.match(accountHTML({ ...claude, end_date: '2026-11-29', ending: true }, at), /Ends Nov 29/);
 });

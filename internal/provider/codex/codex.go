@@ -543,6 +543,26 @@ func accountFromToken(tok oauthToken) (store.Account, error) {
 	return acc, nil
 }
 
+// PaidThrough implements provider.PaidThroughProvider: the end of the paid
+// period the id_token's ChatGPT claims name, or 0. OpenAI checks it now and
+// then (chatgpt_subscription_last_checked), so a renewal can show late.
+func (p *Provider) PaidThrough(a store.Account) int64 {
+	claims, err := decodeJWTClaims(a.Token.IDToken)
+	if err != nil {
+		return 0
+	}
+	authClaim, _ := claims["https://api.openai.com/auth"].(map[string]any)
+	until := stringClaim(claims, "chatgpt_subscription_active_until")
+	if until == "" && authClaim != nil {
+		until = stringClaim(authClaim, "chatgpt_subscription_active_until")
+	}
+	t, err := time.Parse(time.RFC3339Nano, until)
+	if err != nil || t.Year() < 2000 || t.Year() > 2200 {
+		return 0
+	}
+	return t.Unix()
+}
+
 func decodeJWTClaims(idToken string) (map[string]any, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {

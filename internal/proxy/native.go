@@ -199,7 +199,17 @@ func (m *Manager) ActivateForClient(ctx context.Context, id string) (*claudecode
 		m.manualHold[id] = time.Now().Add(manualHold)
 	}
 	m.mu.Unlock()
-	return m.activateNative(ctx, id, nil)
+	result, err := m.activateNative(ctx, id, nil)
+	if err == nil {
+		// Picked by hand: Switcher does not move off it to use up an
+		// ending account (endings.go).
+		if account, gone := m.store.Get(id); gone == nil {
+			m.mu.Lock()
+			m.pickedByHandLocked(account.Provider, id)
+			m.mu.Unlock()
+		}
+	}
+	return result, err
 }
 
 // activateNative switches under the native activation lock. still, when

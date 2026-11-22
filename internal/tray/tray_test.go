@@ -660,3 +660,25 @@ func TestUsageLimitsFromTheTray(t *testing.T) {
 		t.Fatalf("requests: %v", got)
 	}
 }
+
+// The menu says when a subscription ends and that it is used first, or the
+// day the provider says it is paid through.
+func TestEndingNotes(t *testing.T) {
+	now := time.Date(2026, 11, 22, 15, 0, 0, 0, time.Local)
+	for _, tc := range []struct {
+		a    Account
+		want string
+	}{
+		{Account{EndDate: "2026-11-29", Ending: true}, "Ends Nov 29 · in 7 days · used first"},
+		{Account{EndDate: "2026-11-23", Ending: true}, "Ends tomorrow · used first"},
+		{Account{EndDate: "2026-11-22", Ending: true}, "Ends today · used first"},
+		{Account{EndDate: "2026-11-20"}, "Subscription ended Nov 20"},
+		{Account{EndDate: "nonsense", Ending: true}, ""},
+		{Account{PaidThrough: time.Date(2027, 1, 5, 0, 0, 0, 0, time.Local).Unix()}, "Paid through Jan 5, 2027"},
+		{Account{PaidThrough: now.Add(-time.Hour).Unix()}, ""},
+	} {
+		if got := endingNote(tc.a, now); got != tc.want {
+			t.Errorf("%+v: %q, want %q", tc.a, got, tc.want)
+		}
+	}
+}

@@ -103,15 +103,20 @@ type Manager struct {
 	handedBack         atomic.Bool // handback.go
 	probeBootID        string
 	// Claude's automatic switching (autoswitch.go).
-	claudeAuto         func() bool
-	claudeCodeRouted   func() bool
-	keptLoginAligned   bool
-	keptLoginRetry     time.Time
-	keptLoginWaiting   time.Time
-	autoSwitching      atomic.Bool
-	autoSwitchAgain    atomic.Bool
-	autoSwitchAt       map[string]time.Time
-	manualHold         map[string]time.Time
+	claudeAuto       func() bool
+	claudeCodeRouted func() bool
+	keptLoginAligned bool
+	keptLoginRetry   time.Time
+	keptLoginWaiting time.Time
+	autoSwitching    atomic.Bool
+	autoSwitchAgain  atomic.Bool
+	autoSwitchAt     map[string]time.Time
+	manualHold       map[string]time.Time
+	// endDates is the day each account's subscription ends (endings.go);
+	// handPicked the account of each provider the user picked last, which
+	// Switcher does not move away from to use up an ending account.
+	endDates           map[string]string
+	handPicked         map[string]string
 	claudeReroute      map[string]string
 	limits             map[string]int // usage limits (limits.go), persisted
 	autoSwitchSerial   uint64
@@ -201,6 +206,8 @@ func New(st *store.Store, providers map[string]provider.Provider, registration [
 		manualHold:         map[string]time.Time{},
 		claudeReroute:      map[string]string{},
 		limits:             validLimits(state.UsageLimits),
+		endDates:           validEndDates(state.EndDates),
+		handPicked:         map[string]string{},
 		planChecked:        map[string]time.Time{},
 		resetEvents:        map[string]ResetEvent{},
 		quotaRevision:      map[string]uint64{},
@@ -1113,6 +1120,7 @@ func (m *Manager) persistLocked() error {
 		NativeClaudeCommit: m.nativeClaudeCommit,
 		KeptLoginAligned:   m.keptLoginAligned,
 		UsageLimits:        maps.Clone(m.limits),
+		EndDates:           maps.Clone(m.endDates),
 	})
 }
 

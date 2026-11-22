@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Account is one account as the command line reports it.
@@ -26,7 +27,14 @@ type Account struct {
 	// keeps; AtLimit says it reached it, so Switcher moved away from it.
 	UsageLimit int  `json:"usage_limit,omitempty"`
 	AtLimit    bool `json:"at_limit,omitempty"`
-	nextReset  string
+	// EndDate is the day the account's subscription ends (YYYY-MM-DD), as
+	// set with switcher ends; Ending says it is not over, so Switcher uses
+	// the account first. PaidThrough is when the provider says it is paid
+	// through (Codex), a unix time.
+	EndDate     string `json:"end_date,omitempty"`
+	Ending      bool   `json:"ending,omitempty"`
+	PaidThrough int64  `json:"paid_through,omitempty"`
+	nextReset   string
 	// loginKept: Claude Code is signed in with this account, but its requests
 	// use the selected one.
 	loginKept bool
@@ -86,13 +94,17 @@ type apiAccount struct {
 			Unusable string `json:"unusable"`
 		} `json:"kinds"`
 	} `json:"reset_credits"`
-	UsageLimit int  `json:"usage_limit"`
-	AtLimit    bool `json:"at_limit"`
+	UsageLimit  int    `json:"usage_limit"`
+	AtLimit     bool   `json:"at_limit"`
+	EndDate     string `json:"end_date"`
+	Ending      bool   `json:"ending"`
+	PaidThrough int64  `json:"paid_through"`
 }
 
 func (a apiAccount) account() Account {
 	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, loginKept: a.NativeActive && !a.NativeSwitch, Usage: []Window{},
-		UsageLimit: a.UsageLimit, AtLimit: a.AtLimit && a.UsageLimit > 0}
+		UsageLimit: a.UsageLimit, AtLimit: a.AtLimit && a.UsageLimit > 0,
+		EndDate: a.EndDate, Ending: a.Ending && a.EndDate != "", PaidThrough: a.PaidThrough}
 	if a.Usage != nil && a.Usage.Windows != nil {
 		account.Usage = a.Usage.Windows
 	}
@@ -250,6 +262,9 @@ func accountTable(accounts []Account) string {
 		case a.UsageLimit > 0:
 			notes = append(notes, fmt.Sprintf("keeps %d%%", a.UsageLimit))
 		}
+		if e := endingText(a, time.Now()); e != "" {
+			notes = append(notes, e)
+		}
 		plan := planNames[a.Plan]
 		if plan == "" {
 			plan = a.Plan
@@ -384,6 +399,112 @@ func runLimit(c *ctx, args []string) error {
 	}
 	c.result(map[string]any{"account": account}, human)
 	return nil
+}
+
+const endsHelp = `Tell Switcher the day an account's subscription ends, such as a Claude
+subscription canceled for November 29: no provider tells Switcher that. Until
+that day is over, Switcher uses the account first, so the usage you paid for
+is not lost. It picks it over the others, and moves its provider onto it
+whenever it has room again, unless you picked another account yourself.
+
+  switcher ends me@example.com 2026-11-29   it ends with November 29
+  switcher ends me@example.com off          forget the date
+  switcher ends me@example.com              show it
+
+Claude shows the day under Settings → Billing ("Your subscription will be
+canceled on ..."). For a Codex account Switcher shows the day ChatGPT says
+it is paid through; set it here if that is when it ends.
+`
+
+func runEnds(c *ctx, args []string) error {
+	pos, err := c.parse(c.flags("ends"), args, 1, 2)
+	if err != nil {
+		return err
+	}
+	_, accounts, err := c.state()
+	if err != nil {
+		return err
+	}
+	account, err := resolve(pos[0], accounts)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 1 {
+		human := fmt.Sprintf("%s has no end date.", account.Email)
+		if e := endingText(account, time.Now()); e != "" {
+			human = fmt.Sprintf("%s: %s.", account.Email, e)
+		}
+		c.result(map[string]any{"account": account}, human)
+		return nil
+	}
+	day := strings.ToLower(strings.TrimSpace(pos[1]))
+	if day == "off" || day == "none" {
+		day = ""
+	} else if _, err := time.ParseInLocation(time.DateOnly, day, time.Local); err != nil {
+		return usagef("an end date is a day like 2026-11-29, or off")
+	}
+	var answer struct {
+		Account *apiAccount `json:"account"`
+	}
+	if err := c.cl.call(http.MethodPatch, "/api/accounts/"+url.PathEscape(account.ID), map[string]string{"end_date": day}, &answer); err != nil {
+		return err
+	}
+	if updated := answer.Account.added(); updated != nil {
+		account = *updated
+	} else {
+		account.EndDate, account.Ending = day, day != ""
+	}
+	human := fmt.Sprintf("%s has no end date now.", account.Email)
+	if day != "" {
+		human = fmt.Sprintf("%s ends with %s: Switcher uses it first until then.", account.Email, endDayText(day))
+	}
+	c.result(map[string]any{"account": account}, human)
+	return nil
+}
+
+// endDayText writes a day (YYYY-MM-DD) as "Nov 29", with the year when it is
+// not this one.
+func endDayText(day string) string {
+	t, err := time.ParseInLocation(time.DateOnly, day, time.Local)
+	if err != nil {
+		return day
+	}
+	if t.Year() != time.Now().Year() {
+		return t.Format("Jan 2, 2006")
+	}
+	return t.Format("Jan 2")
+}
+
+// inDays says how far off a day is: "today", "tomorrow", "in 7 days".
+func inDays(n int) string {
+	switch {
+	case n <= 0:
+		return "today"
+	case n == 1:
+		return "tomorrow"
+	}
+	return fmt.Sprintf("in %d days", n)
+}
+
+// endingText is what the account list says about when a subscription ends:
+// the day set and the days left, or the day the provider says it is paid
+// through; "" for neither.
+func endingText(a Account, now time.Time) string {
+	if a.EndDate != "" {
+		day, err := time.ParseInLocation(time.DateOnly, a.EndDate, time.Local)
+		if err != nil {
+			return ""
+		}
+		if !a.Ending {
+			return "ended " + endDayText(a.EndDate)
+		}
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+		return fmt.Sprintf("ends %s (%s), used first", endDayText(a.EndDate), inDays(int(day.Sub(today).Round(24*time.Hour).Hours()/24)))
+	}
+	if a.PaidThrough > now.Unix() {
+		return "paid through " + endDayText(time.Unix(a.PaidThrough, 0).Format(time.DateOnly))
+	}
+	return ""
 }
 
 // parseLimit reads a usage limit: a percentage from 1 to 95, with or without

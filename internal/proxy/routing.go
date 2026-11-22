@@ -79,7 +79,9 @@ func (m *Manager) failoverLocked(exclude, providerID string) (next string, downg
 		return "", false, err
 	}
 	excludeFree := false
-	var free, limitedPaid, limitedFree string
+	var paid, free, limitedPaid, limitedFree string
+	var paidEnd time.Time
+	paidEnds := false
 	for _, a := range accounts {
 		if a.Provider != providerID {
 			continue
@@ -94,7 +96,10 @@ func (m *Manager) failoverLocked(exclude, providerID string) (next string, downg
 		limited := m.atLimitLocked(a.ID)
 		switch {
 		case !freePlan(a.Plan) && !limited:
-			return a.ID, false, nil
+			// The one whose subscription ends soonest (endings.go).
+			if end, ends := m.endingLocked(a.ID); paid == "" || endsSooner(end, ends, paidEnd, paidEnds) {
+				paid, paidEnd, paidEnds = a.ID, end, ends
+			}
 		case !freePlan(a.Plan):
 			if limitedPaid == "" {
 				limitedPaid = a.ID
@@ -110,6 +115,8 @@ func (m *Manager) failoverLocked(exclude, providerID string) (next string, downg
 		}
 	}
 	switch {
+	case paid != "":
+		return paid, false, nil
 	case free != "":
 		return free, !excludeFree, nil
 	case limitedPaid != "":

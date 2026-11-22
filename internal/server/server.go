@@ -483,6 +483,14 @@ type accountView struct {
 	// Switcher moves to another account.
 	UsageLimit int  `json:"usage_limit,omitempty"`
 	AtLimit    bool `json:"at_limit,omitempty"`
+	// EndDate is the day this account's subscription ends (YYYY-MM-DD), as
+	// the user entered it; Ending says that day is not over, so Switcher uses
+	// the account first. PaidThrough is when the provider says the
+	// subscription is paid through (Codex), while that is ahead: a
+	// subscription that renews moves it on, so it is not an end.
+	EndDate     string `json:"end_date,omitempty"`
+	Ending      bool   `json:"ending,omitempty"`
+	PaidThrough int64  `json:"paid_through,omitempty"`
 }
 
 // autoUseResetMode renders a per-account override for the API.
@@ -600,6 +608,14 @@ func viewBaseWithSettings(a *API, acc store.Account, preferences settings.Settin
 	}
 	if v.UsageLimit = a.Proxy.UsageLimit(acc.ID); v.UsageLimit > 0 {
 		v.AtLimit = a.Proxy.AtUsageLimit(acc.ID)
+	}
+	if v.EndDate = a.Proxy.EndDate(acc.ID); v.EndDate != "" {
+		v.Ending = a.Proxy.Ending(acc.ID)
+	}
+	if paid, ok := a.Providers[acc.Provider].(provider.PaidThroughProvider); ok {
+		if until := paid.PaidThrough(acc); until > time.Now().Unix() {
+			v.PaidThrough = until
+		}
 	}
 	v.Usage, v.LastReset, v.QuotaRevision, v.QuotaEpoch = a.Proxy.QuotaSnapshot(acc.ID)
 	if v.Usage != nil && v.Usage.Plan != "" {
@@ -1841,6 +1857,7 @@ func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		AutoUseReset *string `json:"auto_use_reset"`
 		UsageLimit   *int    `json:"usage_limit"`
+		EndDate      *string `json:"end_date"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -1855,6 +1872,23 @@ func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	if body.UsageLimit != nil && (*body.UsageLimit < 0 || *body.UsageLimit > proxy.MaxUsageLimit) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": proxy.ErrInvalidLimit.Error()})
 		return
+	}
+	if body.EndDate != nil && proxy.CheckEndDate(*body.EndDate) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": proxy.ErrInvalidEndDate.Error()})
+		return
+	}
+	if body.EndDate != nil {
+		if err := a.Proxy.SetEndDate(id, *body.EndDate); err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, proxy.ErrInvalidEndDate):
+				status = http.StatusBadRequest
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	if body.UsageLimit != nil {
 		if err := a.Proxy.SetUsageLimit(id, *body.UsageLimit); err != nil {

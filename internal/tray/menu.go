@@ -241,6 +241,9 @@ func accountItems(a Account, handedBack, bars bool, now time.Time) []Item {
 	case a.UsageLimit > 0:
 		note(fmt.Sprintf("Keeps %d%% · switches away at %d%% left", a.UsageLimit, a.UsageLimit))
 	}
+	if e := endingNote(a, now); e != "" {
+		note(e)
+	}
 	for _, w := range windows {
 		note(usageLine(w, bars, unix))
 	}
@@ -396,4 +399,38 @@ func compact(d time.Duration) string {
 		return fmt.Sprintf("%d h", h)
 	}
 	return fmt.Sprintf("%d h %d min", h, m)
+}
+
+// endingNote says when an account's subscription ends, a day the user set,
+// and that Switcher uses it first; or the day its provider says it is paid
+// through. "" for neither.
+func endingNote(a Account, now time.Time) string {
+	short := func(t time.Time) string {
+		if t.Year() != now.Year() {
+			return t.Format("Jan 2, 2006")
+		}
+		return t.Format("Jan 2")
+	}
+	if a.EndDate != "" {
+		day, err := time.ParseInLocation(time.DateOnly, a.EndDate, time.Local)
+		if err != nil {
+			return ""
+		}
+		if !a.Ending {
+			return "Subscription ended " + short(day)
+		}
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+		switch left := int(day.Sub(today).Round(24*time.Hour).Hours() / 24); {
+		case left <= 0:
+			return "Ends today · used first"
+		case left == 1:
+			return "Ends tomorrow · used first"
+		default:
+			return fmt.Sprintf("Ends %s · in %d days · used first", short(day), left)
+		}
+	}
+	if a.PaidThrough > now.Unix() {
+		return "Paid through " + short(time.Unix(a.PaidThrough, 0))
+	}
+	return ""
 }

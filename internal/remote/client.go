@@ -1377,6 +1377,7 @@ func sanitizeHostState(state map[string]any) {
 			delete(account, "native_switch_available")
 			delete(account, "native_active")
 			sanitizeLimit(account)
+			sanitizeEnding(account)
 			kept = append(kept, account)
 		}
 	}
@@ -1452,6 +1453,22 @@ func sanitizeLimit(account map[string]any) {
 	}
 	if at, ok := account["at_limit"].(bool); !ok || !at {
 		delete(account, "at_limit")
+	}
+}
+
+// sanitizeEnding keeps an account's end date only as a day (YYYY-MM-DD),
+// ending only as a plain true beside it, and paid_through only as a whole
+// unix time: anything else from a host is dropped.
+func sanitizeEnding(account map[string]any) {
+	day, ok := account["end_date"].(string)
+	if _, err := time.Parse(time.DateOnly, day); !ok || err != nil {
+		delete(account, "end_date")
+		delete(account, "ending")
+	} else if ending, ok := account["ending"].(bool); !ok || !ending {
+		delete(account, "ending")
+	}
+	if paid, ok := account["paid_through"].(float64); !ok || paid != math.Trunc(paid) || paid < 946684800 || paid > 7258118400 {
+		delete(account, "paid_through")
 	}
 }
 

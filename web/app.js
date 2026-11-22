@@ -431,6 +431,10 @@ function announceAutoSwitch(state) {
   } catch { /* still announce */ }
   const to = (state.accounts || []).find(a => a.id === event.to);
   const name = to?.email ? to.email : 'another account';
+  if (event.reason === 'ending') {
+    toast(`${event.where === 'claude_code' ? 'Claude Code' : PROVIDER_NAMES[event.provider] || 'Switcher'} now uses ${name}: its subscription ends soonest, so it goes first`);
+    return;
+  }
   if (event.reason === 'limit') {
     const from = (state.accounts || []).find(a => a.id === event.from);
     toast(`${from?.email || 'An account'} reached its usage limit; ${event.where === 'claude_code' ? 'Claude Code' : PROVIDER_NAMES[event.provider] || 'Switcher'} now uses ${name}`);
@@ -539,6 +543,104 @@ function limitMetaHTML(account) {
     : `<span class="limit-note" title="Switcher moves to another account at ${limit}% left">Keeps ${limit}%</span>`;
 }
 
+// Ending subscriptions: an account can carry the day its subscription ends,
+// which no provider tells Switcher, and Switcher uses it first until then.
+// endDay reads an end date (YYYY-MM-DD) as a local day, or null.
+function endDay(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!m) return null;
+  const day = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return day.getDate() === Number(m[3]) ? day : null;
+}
+
+// dayText writes a day short: "Nov 29", with the year when it is not this one.
+function dayText(day) {
+  const opts = { month: 'short', day: 'numeric' };
+  if (day.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return day.toLocaleDateString(undefined, opts);
+}
+
+// isoDay writes a local day as YYYY-MM-DD, for a date input.
+function isoDay(day) {
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+}
+
+// daysUntil counts the days until day: 0 on the day itself.
+function daysUntil(day) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((day - today) / 86400000);
+}
+
+function endingMetaHTML(account) {
+  const day = endDay(account.end_date);
+  if (day) {
+    if (account.ending !== true) {
+      return `<span class="limit-note" title="This subscription ended on ${escapeHTML(dayText(day))}. Remove the date from the account menu once you no longer need it.">Ended ${escapeHTML(dayText(day))}</span>`;
+    }
+    const left = daysUntil(day);
+    const when = left <= 0 ? 'Ends today' : left === 1 ? 'Ends tomorrow' : `Ends ${escapeHTML(dayText(day))} · in ${left} days`;
+    return `<span class="${left <= 3 ? 'routing-warning' : 'limit-note'}" title="This subscription ends on ${escapeHTML(dayText(day))}. Until then Switcher uses this account first, so the usage you paid for is not lost.">${when}</span>`;
+  }
+  const paid = Number(account.paid_through);
+  if (Number.isInteger(paid) && paid * 1000 > Date.now()) {
+    const through = dayText(new Date(paid * 1000));
+    return `<span class="limit-note" title="${escapeHTML(PROVIDER_NAMES[account.provider] || 'The provider')} says this subscription is paid through ${escapeHTML(through)}. It renews then unless it was canceled; if it was, set that day as its end date in the account menu.">Paid through ${escapeHTML(through)}</span>`;
+  }
+  return '';
+}
+
+// endDateMenuHTML offers setting the day an account's subscription ends.
+function endDateMenuHTML(account) {
+  const day = endDay(account.end_date);
+  return `<button type="button" role="menuitem" data-act="end-date" data-account-id="${escapeHTML(account.id)}" title="Set the day this subscription ends; Switcher uses the account first until then">${day ? `Subscription ends ${escapeHTML(dayText(day))} <span class="dim">· change</span>` : 'Subscription ends…'}</button>`;
+}
+
+// endDateDialog asks for the day a subscription ends: a YYYY-MM-DD day, ''
+// to remove the one set, or null when canceled.
+function endDateDialog(account) {
+  if (authState.locked) return Promise.resolve(null);
+  const set = endDay(account.end_date);
+  const paid = Number(account.paid_through);
+  const start = set || (Number.isInteger(paid) && paid * 1000 > Date.now() ? new Date(paid * 1000) : null);
+  const where = account.provider === 'claude' ? ' Claude shows it under Settings → Billing, as “Your subscription will be canceled on …”.' : '';
+  return new Promise(resolve => {
+    const previousFocus = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'device-overlay confirm-overlay';
+    overlay.innerHTML = `
+      <div class="device-modal confirm-modal" role="dialog" aria-modal="true" aria-label="When does this subscription end?">
+        <h3>When does this subscription end?</h3>
+        <p class="confirm-message">${escapeHTML(account.email || 'This account')}: until that day is over, Switcher uses this account first, so the usage you paid for is not lost.${escapeHTML(where)}</p>
+        <input type="date" min="${isoDay(new Date())}" value="${start ? isoDay(start) : ''}" aria-label="Last day of the subscription">
+        <div class="device-copy confirm-actions">
+          ${set ? '<button type="button" data-remove>Remove date</button>' : ''}
+          <button type="button" data-cancel>Cancel</button>
+          <button type="button" class="primary" data-ok>Save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('input');
+    input.focus();
+    const close = (value) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      resolve(value);
+    };
+    const save = () => { if (endDay(input.value)) close(input.value); else input.focus(); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(null); }
+      if (e.key === 'Enter' && e.target === input) { e.preventDefault(); save(); }
+    };
+    overlay.querySelector('[data-ok]').addEventListener('click', save);
+    overlay.querySelector('[data-cancel]').addEventListener('click', () => close(null));
+    overlay.querySelector('[data-remove]')?.addEventListener('click', () => close(''));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 function windowHTML(win, providerID, limit = 0) {
   const left = Math.max(0, Math.min(100, 100 - win.used_percent));
   const used = 100 - left;
@@ -591,7 +693,7 @@ function accountHTML(account) {
           <div class="meta">
             ${plan ? `<span>${escapeHTML(plan)}</span>` : ''}
             ${status.cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
-            ${limitMetaHTML(account)}
+            ${limitMetaHTML(account)}${endingMetaHTML(account)}
             ${bankedBadgeHTML(account)}
           </div>
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
@@ -676,7 +778,7 @@ function compactAccountHTML(account) {
       </div>
       <div class="compact-plan"><span>Plan</span><strong>${escapeHTML(plan)}</strong>
         ${status.cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
-        ${limitMetaHTML(account)}
+        ${limitMetaHTML(account)}${endingMetaHTML(account)}
         ${bankedBadgeHTML(account)}
       </div>
       <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
@@ -713,7 +815,7 @@ function mergedAccountHTML(account) {
           <div class="meta">
             ${plan ? `<span>${escapeHTML(plan)}</span>` : ''}
             ${statusOf(account).cls === 'exhausted' ? '<span class="routing-warning">Out of usage</span>' : ''}
-            ${limitMetaHTML(account)}
+            ${limitMetaHTML(account)}${endingMetaHTML(account)}
             ${bankedBadgeHTML(account)}
           </div>
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
@@ -802,6 +904,7 @@ function accountMenuHTML(account) {
         </div>
       </div>` : ''}
     ${usageLimitMenuHTML(account)}
+    ${endDateMenuHTML(account)}
     ${ADD_METHOD[account.provider] === 'key' || data.remote?.role === 'client' ? '' : `<button type="button" role="menuitem" data-act="relogin" data-provider="${escapeHTML(account.provider)}" data-account-id="${escapeHTML(account.id)}">Relogin</button>`}
     ${data.remote?.role === 'client'
       ? `<p class="menu-note">Removed on ${escapeHTML(data.remote.host || 'the host')}, which keeps it</p>`
@@ -1296,6 +1399,23 @@ async function runAccountAction(button) {
         toast(outcomes[res.outcome] || 'Done');
         await pollState();
       } finally { button.disabled = false; resetFeedback.end(id); }
+    } else if (button.dataset.act === 'end-date') {
+      const account = data.accounts.find(a => a.id === id);
+      if (!account) return;
+      const day = await endDateDialog(account);
+      if (day === null) return;
+      const res = await api(`/api/accounts/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ end_date: day }),
+      });
+      stateEpoch++;
+      if (res.account) {
+        data = { ...data, accounts: data.accounts.map(a => a.id === id ? mergeAccountMutation(a, res.account) : a) };
+        render();
+      }
+      toast(day ? `Switcher uses ${account.email || 'this account'} first until ${dayText(endDay(day))}` : 'End date removed');
+      await refreshState();
     } else if (button.dataset.act === 'usage-limit') {
       const limit = Number(button.dataset.limit) || 0;
       button.disabled = true;

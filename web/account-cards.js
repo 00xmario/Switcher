@@ -115,6 +115,32 @@ export function resetAsk(a, button) {
   };
 }
 
+// endingNote says when an account's subscription ends, a day the user set
+// (YYYY-MM-DD), and that Switcher uses it first until then; or, without one,
+// the day its provider says it is paid through (Codex).
+export function endingNote(a, now = Date.now() / 1000) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(a?.end_date || ''));
+  if (m) {
+    const day = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (day.getDate() !== Number(m[3])) return '';
+    const text = shortDay(day, now);
+    if (a.ending !== true) return `<span class="note">Subscription ended ${esc(text)}</span>`;
+    const today = new Date(now * 1000);
+    today.setHours(0, 0, 0, 0);
+    const left = Math.round((day - today) / 86400000);
+    const when = left <= 0 ? 'Ends today' : left === 1 ? 'Ends tomorrow' : `Ends ${esc(text)} · in ${left} days`;
+    return `<span class="note${left <= 3 ? ' is-out' : ''}">${when} · used first</span>`;
+  }
+  const paid = Number(a?.paid_through);
+  return Number.isInteger(paid) && paid > now ? `<span class="note">Paid through ${esc(shortDay(new Date(paid * 1000), now))}</span>` : '';
+}
+
+function shortDay(day, now) {
+  const opts = { month: 'short', day: 'numeric' };
+  if (day.getFullYear() !== new Date(now * 1000).getFullYear()) opts.year = 'numeric';
+  return day.toLocaleDateString(undefined, opts);
+}
+
 // accountHTML draws one account row. A row that is not in use is one big
 // button that switches to it; a banked reset stays its own button.
 export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
@@ -139,6 +165,7 @@ export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
     (condition === 'usage_stale' || condition === 'usage_unavailable') && windows.length ? '<span class="note">Usage stale</span>' : '',
     limitOf(a) && a.at_limit === true ? `<span class="note is-out">At its ${limitOf(a)}% limit · Switcher uses another account</span>` : '',
     limitOf(a) && a.at_limit !== true ? `<span class="note">Keeps ${limitOf(a)}% · switches away at ${limitOf(a)}% left</span>` : '',
+    endingNote(a, now),
     a.native_switch_available && !active ? `<span class="note">Use also switches Claude Code on ${esc(place)}.</span>` : '',
   ].join('');
   const usage = windows.length

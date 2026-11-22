@@ -211,6 +211,14 @@ type ResetCreditProvider interface {
 	ConsumeResetCredit(ctx context.Context, a store.Account, creditID string) (outcome string, err error)
 }
 
+// PaidThroughProvider is an optional interface for providers whose sign-in
+// says until when an account's subscription is paid (Codex). It reads what
+// Switcher already holds, with no request, and gives 0 when it does not say.
+// Paid through is not an end: a subscription that renews moves it on.
+type PaidThroughProvider interface {
+	PaidThrough(a store.Account) int64
+}
+
 // DayTokens is the tokens an account used on one day, as its provider
 // counts them: on every computer and in the cloud.
 type DayTokens struct {

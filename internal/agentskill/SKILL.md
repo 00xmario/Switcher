@@ -1,6 +1,6 @@
 ---
 name: switcher
-description: Drive the Switcher app on this computer, which holds the user's AI subscription accounts (Claude, Codex/ChatGPT, Grok, OpenCode, Gemini, Copilot) and routes Claude Code, Claude Desktop and Codex through the one selected per provider. Use it whenever the user talks about Switcher, switching or picking a Claude/Codex/ChatGPT account, usage or quota left, weekly limits, resets, keeping a percentage on an account, switching automatically when an account reaches some percentage, banked resets, sharing accounts with another computer, or how busy this computer or the Switcher host is.
+description: Drive the Switcher app on this computer, which holds the user's AI subscription accounts (Claude, Codex/ChatGPT, Grok, OpenCode, Gemini, Copilot) and routes Claude Code, Claude Desktop and Codex through the one selected per provider. Use it whenever the user talks about Switcher, switching or picking a Claude/Codex/ChatGPT account, usage or quota left, weekly limits, resets, keeping a percentage on an account, switching automatically when an account reaches some percentage, a canceled subscription to use up before it ends, banked resets, sharing accounts with another computer, or how busy this computer or the Switcher host is.
 metadata:
   managed-by: switcher
 ---
@@ -99,6 +99,25 @@ How to carry it out:
 
 Set limits on several accounts by running the command once per account.
 
+## Canceled subscriptions: use them up first
+
+No provider tells Switcher the day a canceled subscription ends; the user
+can. Until that day is over, Switcher uses that account first: it moves the
+provider onto it whenever it has room, unless the user picked another account
+themselves, so the usage they paid for is not lost.
+
+```sh
+switcher ends <account> 2026-11-29 --json   # it ends with November 29
+switcher ends <account> off --json          # forget the day
+switcher ends <account> --json              # show it (end_date, ending)
+```
+
+"My Outlook Claude gets canceled on Nov 29, max it out first" is
+`switcher ends <that account> 2026-11-29`. Claude shows the day under
+Settings → Billing. For Codex, `paid_through` is the day ChatGPT says it is
+paid through; it renews unless canceled, so set it as the end date only when
+the user says the subscription ends then.
+
 ## Everyday commands
 
 | Task | Command |
@@ -107,6 +126,7 @@ Set limits on several accounts by running the command once per account.
 | Accounts with usage (optionally one provider) | `switcher accounts [--provider claude] --json` |
 | Use an account now (Claude also switches Claude Code) | `switcher use <account> --json` |
 | Usage limit | `switcher limit <account> [percent\|off] --json` |
+| Day a canceled subscription ends (used first until then) | `switcher ends <account> [YYYY-MM-DD\|off] --json` |
 | Refresh usage now | `switcher refresh [account] --json` |
 | How busy this computer, or the host, is | `switcher load --json` |
 | What is using it, by app (processor, memory, graphics) | `switcher load --apps --json` |

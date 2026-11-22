@@ -259,3 +259,24 @@ func TestAHostsDuplicateAppNamesMerge(t *testing.T) {
 		t.Fatalf("%+v", v.Apps)
 	}
 }
+
+// A host's end dates reach this Mac only as days, ending only as a plain true
+// beside one, and paid_through only as a whole unix time.
+func TestAHostsEndDatesAreOnlyDays(t *testing.T) {
+	state := map[string]any{"accounts": []any{
+		map[string]any{"id": "a", "provider": "claude", "end_date": `"><img src=x onerror=alert(1)>`, "ending": true},
+		map[string]any{"id": "b", "provider": "claude", "end_date": "2026-11-29", "ending": "yes", "paid_through": 1.5e9 + 0.5},
+		map[string]any{"id": "c", "provider": "claude", "ending": true, "paid_through": "soon"},
+		map[string]any{"id": "d", "provider": "codex", "end_date": "2026-11-29", "ending": true, "paid_through": 1.8e9},
+	}}
+	sanitizeHostState(state)
+	accounts := state["accounts"].([]any)
+	for i, want := range []map[string]any{{}, {"end_date": "2026-11-29"}, {}, {"end_date": "2026-11-29", "ending": true, "paid_through": 1.8e9}} {
+		account := accounts[i].(map[string]any)
+		for _, key := range []string{"end_date", "ending", "paid_through"} {
+			if account[key] != want[key] {
+				t.Errorf("account %v: %s = %v, want %v", account["id"], key, account[key], want[key])
+			}
+		}
+	}
+}

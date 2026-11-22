@@ -33,6 +33,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher remove <account> --yes` | Remove an account from Switcher |
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
 | `switcher limit <account> [percent\|off]` | Keep a share of an account's weekly usage: Switcher switches away at that much left (1–95, or `off`); without a share, show the limit |
+| `switcher ends <account> [YYYY-MM-DD\|off]` | Tell Switcher the day an account's subscription ends: until then it uses that account first, moving its provider onto it whenever it has room unless you picked another account yourself; `off` forgets the day; without a day, show it |
 | `switcher load [--apps]` | CPU, memory and GPU load of this computer, or of the host whose accounts it uses; `--apps` adds what is using it, by app |
 | `switcher reset <account\|provider> [--kind K] --yes` | Spend a banked reset (Codex, Claude) on an account, or on a provider's active account. Claude banks kinds of reset (a Fable reset, a weekly reset): `--kind` picks one by the start of its name; without it the one Claude suggests is used |
 | `switcher share [on\|off\|code\|devices\|revoke <id> --yes]` | Share this Mac's accounts with your other Macs |
@@ -79,7 +80,9 @@ email. `switcher help <command>` explains one command.
 - Accounts in JSON have `id`, `provider`, `email`, `plan`, `active`,
   `claude_code` (Claude Code's own login uses it), `health`, `usage`
   (`label`, `used_percent`, `resets_at`) and, with a usage limit,
-  `usage_limit` (the share kept) and `at_limit`.
+  `usage_limit` (the share kept) and `at_limit`; with an end date,
+  `end_date` (YYYY-MM-DD) and `ending` (not over yet, so it is used first);
+  for Codex, `paid_through` (Unix seconds) while that is ahead.
 - `switcher skill install` gives agents the [skill](../internal/agentskill/SKILL.md)
   that explains all of this, including how to read requests such as "keep 10%
   on this account and switch automatically".

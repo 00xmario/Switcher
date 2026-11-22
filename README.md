@@ -103,6 +103,14 @@ say 10%: when it has that much of its weekly usage left, Switcher moves your
 tools to the account with the most left. Two clicks in the dashboard or the
 menu bar, or `switcher limit work 10`; a limit never blocks a request.
 
+Canceled a subscription? No provider tells Switcher the day it ends, so tell
+it: the account's ⋯ menu → **Subscription ends…**, or
+`switcher ends work 2026-11-29`. The card counts down the days, and until
+then Switcher uses that account first: it moves your tools onto it whenever
+it has room, unless you picked another account yourself, so the usage you
+paid for is not lost. Codex accounts show the day ChatGPT says they are paid
+through.
+
 <p align="center">
   <img src="docs/screenshots/limits.png" alt="Setting a 10% usage limit from an account's menu in the dashboard, and from the menu bar, with the limit marked on the weekly bar">
 </p>
@@ -284,6 +292,7 @@ switcher share on && switcher share code   # let your other Macs use this one
 switcher connect studio.local --code K7QF-M2XP-9DRA
 switcher desktop connect                   # route Claude Desktop through Switcher
 switcher limit work@example.com 10         # keep 10%: switch away at 10% left
+switcher ends work@example.com 2026-11-29  # canceled: use it first until then
 switcher load                              # CPU, memory and GPU of this Mac or the host
 switcher load --apps                       # and what is using it, by app
 switcher reset codex --yes                 # spend a banked reset

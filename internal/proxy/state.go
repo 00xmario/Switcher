@@ -17,6 +17,7 @@ type routingSnapshot struct {
 	nativeCommit          string
 	keptLoginAligned      bool
 	limits                map[string]int
+	endDates              map[string]string
 }
 
 func (m *Manager) routingSnapshotLocked() routingSnapshot {
@@ -24,7 +25,7 @@ func (m *Manager) routingSnapshotLocked() routingSnapshot {
 		selection: maps.Clone(m.selectionRevision), exhaustion: maps.Clone(m.exhaustionRevision), quota: maps.Clone(m.quotaRevision),
 		order: append([]string(nil), m.order...), hidden: append([]string(nil), m.hidden...),
 		managementKey: m.managementKey, nativeCommit: m.nativeClaudeCommit, keptLoginAligned: m.keptLoginAligned,
-		limits: maps.Clone(m.limits)}
+		limits: maps.Clone(m.limits), endDates: maps.Clone(m.endDates)}
 }
 
 func (s routingSnapshot) restore(m *Manager) {
@@ -33,6 +34,7 @@ func (s routingSnapshot) restore(m *Manager) {
 	m.order, m.hidden, m.managementKey, m.nativeClaudeCommit = s.order, s.hidden, s.managementKey, s.nativeCommit
 	m.keptLoginAligned = s.keptLoginAligned
 	m.limits = s.limits
+	m.endDates = s.endDates
 }
 
 func (m *Manager) mutateStateLocked(change func()) error {
@@ -48,6 +50,7 @@ func (m *Manager) mutateStateLocked(change func()) error {
 func (m *Manager) removeRoutingLocked(id string) {
 	delete(m.exhausted, id)
 	delete(m.limits, id)
+	delete(m.endDates, id)
 	m.exhaustionRevision[id]++
 	for providerID, activeID := range m.active {
 		if activeID == id {

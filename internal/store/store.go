@@ -88,6 +88,10 @@ type State struct {
 	// usage to keep: at that much left, Switcher moves to another account.
 	// It lives here, not in the account file, so no token rewrite can lose it.
 	UsageLimits map[string]int `json:"usage_limits,omitempty"`
+	// EndDates holds, per account, the day its subscription ends
+	// (YYYY-MM-DD), as the user entered it: until then Switcher uses that
+	// account first, so its usage is not lost.
+	EndDates map[string]string `json:"end_dates,omitempty"`
 }
 
 // ErrNotFound is returned when an account ID does not exist.
