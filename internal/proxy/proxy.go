@@ -207,7 +207,7 @@ func New(st *store.Store, providers map[string]provider.Provider, registration [
 		claudeReroute:      map[string]string{},
 		limits:             validLimits(state.UsageLimits),
 		endDates:           validEndDates(state.EndDates),
-		handPicked:         map[string]string{},
+		handPicked:         validHandPicks(state.HandPicked, providers),
 		planChecked:        map[string]time.Time{},
 		resetEvents:        map[string]ResetEvent{},
 		quotaRevision:      map[string]uint64{},
@@ -1121,6 +1121,7 @@ func (m *Manager) persistLocked() error {
 		KeptLoginAligned:   m.keptLoginAligned,
 		UsageLimits:        maps.Clone(m.limits),
 		EndDates:           maps.Clone(m.endDates),
+		HandPicked:         maps.Clone(m.handPicked),
 	})
 }
 

@@ -199,22 +199,14 @@ func (m *Manager) ActivateForClient(ctx context.Context, id string) (*claudecode
 		m.manualHold[id] = time.Now().Add(manualHold)
 	}
 	m.mu.Unlock()
-	result, err := m.activateNative(ctx, id, nil)
-	if err == nil {
-		// Picked by hand: Switcher does not move off it to use up an
-		// ending account (endings.go).
-		if account, gone := m.store.Get(id); gone == nil {
-			m.mu.Lock()
-			m.pickedByHandLocked(account.Provider, id)
-			m.mu.Unlock()
-		}
-	}
-	return result, err
+	return m.activateNative(ctx, id, nil, true)
 }
 
 // activateNative switches under the native activation lock. still, when
-// given, runs under that lock first; false abandons the switch.
-func (m *Manager) activateNative(ctx context.Context, id string, still func() bool) (*claudecode.SwitchResult, error) {
+// given, runs under that lock first; false abandons the switch. byHand marks
+// the user's own pick, recorded under the same lock once the switch went
+// through, so no automatic switch slips in between (endings.go).
+func (m *Manager) activateNative(ctx context.Context, id string, still func() bool, byHand bool) (result *claudecode.SwitchResult, err error) {
 	m.nativeActivation.Lock()
 	defer m.nativeActivation.Unlock()
 	if still != nil && !still() {
@@ -223,6 +215,15 @@ func (m *Manager) activateNative(ctx context.Context, id string, still func() bo
 	account, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
+	}
+	if byHand {
+		defer func() {
+			if err == nil {
+				m.mu.Lock()
+				m.pickedByHandLocked(account.Provider, id)
+				m.mu.Unlock()
+			}
+		}()
 	}
 	native, ok := m.providers[account.Provider].(provider.NativeLoginProvider)
 	if !ok || !native.NativeEnabled() {
@@ -253,7 +254,7 @@ func (m *Manager) activateNative(ctx context.Context, id string, still func() bo
 		return nil, m.Activate(id)
 	}
 	defer unlock()
-	result, err := native.SwitchNative(ctx, id, func(receipt string) error { return m.activateWithReceipt(id, receipt) })
+	switched, err := native.SwitchNative(ctx, id, func(receipt string) error { return m.activateWithReceipt(id, receipt) })
 	// Native switching may have adopted outgoing credentials even if a later
 	// validation/write failed. Invalidate workers carrying older snapshots.
 	m.mu.Lock()
@@ -264,7 +265,7 @@ func (m *Manager) activateNative(ctx context.Context, id string, still func() bo
 		delete(m.planChecked, key)
 	}
 	m.mu.Unlock()
-	return &result, err
+	return &switched, err
 }
 
 func (m *Manager) syncNative(ctx context.Context, prov provider.Provider, a *store.Account) error {

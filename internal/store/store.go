@@ -92,6 +92,10 @@ type State struct {
 	// (YYYY-MM-DD), as the user entered it: until then Switcher uses that
 	// account first, so its usage is not lost.
 	EndDates map[string]string `json:"end_dates,omitempty"`
+	// HandPicked holds, per provider, the account the user picked last while
+	// it is still in use: Switcher does not move off it to use up an ending
+	// account.
+	HandPicked map[string]string `json:"hand_picked,omitempty"`
 }
 
 // ErrNotFound is returned when an account ID does not exist.

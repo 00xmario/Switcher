@@ -406,6 +406,7 @@ subscription canceled for November 29: no provider tells Switcher that. Until
 that day is over, Switcher uses the account first, so the usage you paid for
 is not lost. It picks it over the others, and moves its provider onto it
 whenever it has room again, unless you picked another account yourself.
+Claude Code's own login moves only with Switch Claude automatically on.
 
   switcher ends me@example.com 2026-11-29   it ends with November 29
   switcher ends me@example.com off          forget the date

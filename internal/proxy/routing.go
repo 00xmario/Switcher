@@ -97,7 +97,7 @@ func (m *Manager) failoverLocked(exclude, providerID string) (next string, downg
 		switch {
 		case !freePlan(a.Plan) && !limited:
 			// The one whose subscription ends soonest (endings.go).
-			if end, ends := m.endingLocked(a.ID); paid == "" || endsSooner(end, ends, paidEnd, paidEnds) {
+			if end, ends := m.endingFirstLocked(a); paid == "" || endsSooner(end, ends, paidEnd, paidEnds) {
 				paid, paidEnd, paidEnds = a.ID, end, ends
 			}
 		case !freePlan(a.Plan):

@@ -3,6 +3,9 @@ package proxy
 import (
 	"errors"
 	"time"
+
+	"switcher/internal/provider"
+	"switcher/internal/store"
 )
 
 // Ending subscriptions: an account can carry the day its subscription ends,
@@ -15,7 +18,13 @@ import (
 //     ends soonest over one with more usage left;
 //   - after a usage poll the provider moves onto that account whenever it
 //     has room (pullHeadroom), unless the account in use ends no later or is
-//     the one the user picked last.
+//     the one the user picked last. Claude Code's own login moves only with
+//     Claude's automatic switching on (or the login kept, when the proxy
+//     moves off an account that runs out): otherwise nothing would move it
+//     off the ending account once that runs out.
+//
+// An ending account with less than pullHeadroom left goes first nowhere:
+// a move onto it would be followed by another within minutes.
 //
 // An end date never blocks a request: an account past it, out of usage or
 // signed out is passed over like any other.
@@ -73,6 +82,17 @@ func validEndDates(stored map[string]string) map[string]string {
 	return dates
 }
 
+// validHandPicks keeps the stored picks of known providers.
+func validHandPicks(stored map[string]string, providers map[string]provider.Provider) map[string]string {
+	picks := map[string]string{}
+	for providerID, id := range stored {
+		if _, known := providers[providerID]; known && id != "" {
+			picks[providerID] = id
+		}
+	}
+	return picks
+}
+
 // EndDate is the day an account's subscription ends, or "" for none.
 func (m *Manager) EndDate(id string) string {
 	m.mu.Lock()
@@ -92,7 +112,9 @@ func (m *Manager) Ending(id string) bool {
 // SetEndDate stores the day an account's subscription ends; "" removes it.
 // It is saved before it applies; a new date then moves the provider onto the
 // account right away if it should be used first (in the background), even
-// away from an account the user picked: setting the date is that choice.
+// away from an account the user picked: setting the date that makes this
+// account go first is that choice. A date that does not put this account
+// first leaves the user's pick alone.
 func (m *Manager) SetEndDate(id, day string) error {
 	if err := CheckEndDate(day); err != nil {
 		return err
@@ -114,9 +136,16 @@ func (m *Manager) SetEndDate(id, day string) error {
 			} else {
 				m.endDates[id] = day
 			}
+			// The pick gives way only when this account is now the one
+			// to move onto from it.
+			if picked := m.handPicked[account.Provider]; day != "" && picked != "" && picked != id {
+				delete(m.handPicked, account.Provider)
+				if to, err := m.pullLocked(account.Provider, picked, false); err != nil || to != id {
+					m.handPicked[account.Provider] = picked
+				}
+			}
 		})
 		if err == nil && day != "" {
-			delete(m.handPicked, account.Provider)
 			delete(m.autoSwitchAt, id)
 		}
 	}
@@ -137,6 +166,17 @@ func (m *Manager) endingLocked(id string) (time.Time, bool) {
 	return end, true
 }
 
+// endingFirstLocked is when an account's subscription ends, if it is not
+// over and the account has pullHeadroom left, so it goes first in a pick.
+// Requires m.mu.
+func (m *Manager) endingFirstLocked(a store.Account) (time.Time, bool) {
+	end, ok := m.endingLocked(a.ID)
+	if !ok || m.headroomLocked(a) < pullHeadroom {
+		return time.Time{}, false
+	}
+	return end, true
+}
+
 // endsSooner reports whether an account ending at a (aEnds false: no end) is
 // used before one ending at b.
 func endsSooner(a time.Time, aEnds bool, b time.Time, bEnds bool) bool {
@@ -146,11 +186,17 @@ func endsSooner(a time.Time, aEnds bool, b time.Time, bEnds bool) bool {
 // pullLocked is the account to move providerID onto, away from from, to use
 // up an ending subscription, or "": the paid account that ends soonest, has
 // pullHeadroom left and was not moved away from within the cooldown, when it
-// ends before from does and the user did not pick from last. native asks for
-// an account whose identity Claude Code's login can carry. Requires m.mu.
+// ends before from does and the user did not pick from last. A pick is over
+// once the provider uses another account, however it got there. native asks
+// for an account whose identity Claude Code's login can carry. Requires m.mu.
 func (m *Manager) pullLocked(providerID, from string, native bool) (string, error) {
-	if from == "" || m.handPicked[providerID] == from {
+	if from == "" {
 		return "", nil
+	}
+	if picked := m.handPicked[providerID]; picked == from {
+		return "", nil
+	} else if picked != "" {
+		m.dropPickLocked(providerID)
 	}
 	accounts, err := m.store.List()
 	if err != nil {
@@ -175,20 +221,38 @@ func (m *Manager) pullLocked(providerID, from string, native bool) (string, erro
 	return best, nil
 }
 
-// pickedByHand records the account the user picked for its provider: the
-// provider stays on it until it should be left, instead of moving onto an
-// ending account. Requires m.mu.
+// pickedByHandLocked records the account the user picked for its provider:
+// the provider stays on it until it should be left, instead of moving onto
+// an ending account. It is saved, so it holds across a restart; a pick that
+// cannot be saved still holds until then. Requires m.mu.
 func (m *Manager) pickedByHandLocked(providerID, id string) {
-	if m.handPicked == nil {
-		m.handPicked = map[string]string{}
+	if m.handPicked[providerID] == id {
+		return
 	}
-	m.handPicked[providerID] = id
+	if m.mutateStateLocked(func() {
+		if m.handPicked == nil {
+			m.handPicked = map[string]string{}
+		}
+		m.handPicked[providerID] = id
+	}) != nil {
+		m.handPicked[providerID] = id
+	}
+}
+
+// dropPickLocked forgets the user's pick for a provider. Requires m.mu.
+func (m *Manager) dropPickLocked(providerID string) {
+	if _, ok := m.handPicked[providerID]; !ok {
+		return
+	}
+	if m.mutateStateLocked(func() { delete(m.handPicked, providerID) }) != nil {
+		delete(m.handPicked, providerID)
+	}
 }
 
 // leftAutomaticallyLocked forgets the user's pick once Switcher moved the
 // provider off it (it ran out or reached its limit). Requires m.mu.
 func (m *Manager) leftAutomaticallyLocked(providerID, from string) {
 	if m.handPicked[providerID] == from {
-		delete(m.handPicked, providerID)
+		m.dropPickLocked(providerID)
 	}
 }

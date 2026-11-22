@@ -89,10 +89,15 @@ required; OpenCode Go uses its own API key.
   automatic pick (after an account runs out or reaches its limit, and the
   proxy's failover) takes the paid account that ends soonest over one with
   more usage left, and after a usage poll the provider moves onto it
-  whenever it has 10% or more left in each window, unless the account in use
-  ends no later or is the one you picked last. Setting a day is a pick too:
-  it moves the provider right away. A pick of your own holds until Switcher
-  moves off it because it ran out or reached its limit. An end date never
+  whenever it has 10% or more left in each window (above its usage limit,
+  by a poll within the last 15 minutes), unless the account in use ends no
+  later or is the one you picked last. An ending account with less left
+  than that goes first nowhere. Claude Code's own login moves onto it only
+  with **Switch Claude automatically** on (or the login kept), since
+  otherwise nothing would move it off again once it runs out. Setting a day
+  that puts its account first is a pick too: the provider moves at the next
+  chance, right away when it can. A pick of your own holds, across
+  restarts, until the provider uses another account. An end date never
   blocks a request: past the day, out of usage, at its limit, signed out or
   on a Free plan, the account is passed over like any other. Days are kept
   in `state.json` (`end_dates`) and go with their account when it is

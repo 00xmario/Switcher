@@ -157,7 +157,7 @@ func (m *Manager) takeoverLocked(providerID, exclude string, native bool) (strin
 			continue
 		}
 		paid := !freePlan(a.Plan)
-		end, ends := m.endingLocked(a.ID)
+		end, ends := m.endingFirstLocked(a)
 		sameEnd := ends == bestEnds && end.Equal(bestEnd)
 		if best == "" || paid && !bestPaid || paid == bestPaid && (endsSooner(end, ends, bestEnd, bestEnds) || sameEnd && left > bestLeft) {
 			best, bestLeft, bestPaid, bestEnd, bestEnds = a.ID, left, paid, end, ends
@@ -279,8 +279,14 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 	}
 	m.mu.Lock()
 	if !m.leaveDueLocked(from, auto) {
-		// Nothing to leave: perhaps an ending account to use up first.
-		to, err := m.pullLocked(providerID, from, true)
+		// Nothing to leave: perhaps an ending account to use up first, when
+		// something would move off it once it runs out too: Claude's
+		// automatic switching, or with the login kept the proxy's failover.
+		var to string
+		var err error
+		if auto || kept {
+			to, err = m.pullLocked(providerID, from, true)
+		}
 		m.mu.Unlock()
 		if err == nil && to != "" {
 			m.pullLogin(providerID, native, kept, from, to)
@@ -322,7 +328,7 @@ func (m *Manager) autoSwitchLogin(providerID string, native provider.NativeLogin
 		why = "reached its usage limit"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	_, err = m.activateNative(ctx, to, still)
+	_, err = m.activateNative(ctx, to, still, false)
 	cancel()
 	if errors.Is(err, errSwitchOvertaken) {
 		return
@@ -441,7 +447,7 @@ func (m *Manager) pullLogin(providerID string, native provider.NativeLoginProvid
 		return err == nil && next == to
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	_, err := m.activateNative(ctx, to, still)
+	_, err := m.activateNative(ctx, to, still, false)
 	cancel()
 	if errors.Is(err, errSwitchOvertaken) {
 		return

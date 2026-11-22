@@ -23,7 +23,7 @@ func (m *Manager) end(id, date string) {
 // The provider moves onto an account whose subscription ends, once it has
 // room, says why, and then stays there.
 func TestTheProviderMovesOntoAnEndingAccount(t *testing.T) {
-	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"))
 	m.setUsage("a", windows(0, 10))
 	m.setUsage("b", windows(0, 60))
 	m.end("b", day(7))
@@ -50,7 +50,7 @@ func TestAnEndingAccountNeedsRoom(t *testing.T) {
 		"over":          func(m *Manager) { m.end("b", day(-1)); m.setUsage("b", windows(0, 0)) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+			m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"))
 			m.setUsage("a", windows(0, 10))
 			m.end("b", day(7))
 			setup(m)
@@ -62,7 +62,7 @@ func TestAnEndingAccountNeedsRoom(t *testing.T) {
 	}
 	free := claudeAccount("b")
 	free.Plan = "free"
-	m, native := autoManager(t, false, claudeAccount("a"), free)
+	m, native := autoManager(t, true, claudeAccount("a"), free)
 	m.setUsage("a", windows(0, 10))
 	m.setUsage("b", windows(0, 0))
 	m.end("b", day(7))
@@ -75,7 +75,7 @@ func TestAnEndingAccountNeedsRoom(t *testing.T) {
 // The account that ends soonest goes first; one that ends no sooner than the
 // account in use is not moved onto.
 func TestTheSoonestEndGoesFirst(t *testing.T) {
-	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
 	for _, id := range []string{"a", "b", "c"} {
 		m.setUsage(id, windows(0, 10))
 	}
@@ -126,7 +126,7 @@ func TestAHandPickIsNotMovedOff(t *testing.T) {
 
 // Setting a date is a choice too: it moves the provider even off a hand pick.
 func TestSettingADateMovesOffAHandPick(t *testing.T) {
-	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"))
 	if _, err := m.ActivateForClient(context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
@@ -199,5 +199,113 @@ func TestEndDateRoundTrip(t *testing.T) {
 	state, _ := again.store.LoadState()
 	if len(state.EndDates) != 0 {
 		t.Fatalf("end dates left behind: %v", state.EndDates)
+	}
+}
+
+// With Claude's automatic switching off nothing would move Claude Code off
+// the ending account once it runs out, so it is not moved onto it either.
+func TestClaudeCodeStaysPutWithoutAutomaticSwitching(t *testing.T) {
+	m, native := autoManager(t, false, claudeAccount("a"), claudeAccount("b"))
+	m.setUsage("a", windows(0, 10))
+	m.setUsage("b", windows(0, 85))
+	m.end("b", day(7))
+	m.AutoSwitchNative()
+	if len(native.switched) != 0 {
+		t.Fatalf("moved Claude Code with automatic switching off: %v", native.switched)
+	}
+}
+
+// A pick holds across a restart.
+func TestAHandPickSurvivesARestart(t *testing.T) {
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"))
+	m.end("b", day(7))
+	if _, err := m.ActivateForClient(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := New(m.store, m.providers, []string{"claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.SetClaudeAutoSwitch(func() bool { return true })
+	native.switched = nil
+	again.setUsage("a", windows(0, 10))
+	again.setUsage("b", windows(0, 60))
+	again.AutoSwitchNative()
+	if len(native.switched) != 0 {
+		t.Fatalf("a restart dropped the pick: %v", native.switched)
+	}
+}
+
+// A date that does not put its account first leaves the pick alone: here b
+// still ends sooner than c, so setting c's day must not move off a.
+func TestADateThatDoesNotGoFirstKeepsThePick(t *testing.T) {
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
+	m.end("b", day(3))
+	if _, err := m.ActivateForClient(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	native.switched = nil
+	m.setUsage("a", windows(0, 10))
+	m.setUsage("b", windows(0, 60))
+	m.setUsage("c", windows(0, 60))
+	if err := m.SetEndDate("c", day(40)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetEndDate("a", day(60)); err != nil {
+		t.Fatal(err)
+	}
+	m.AutoSwitchNative()
+	time.Sleep(50 * time.Millisecond)
+	if len(native.switched) != 0 || m.ActiveID("claude") != "a" {
+		t.Fatalf("switched %v, route %q", native.switched, m.ActiveID("claude"))
+	}
+}
+
+// An ending account with almost nothing left does not go first in a pick:
+// a move onto it would be followed by another within minutes.
+func TestAnAlmostEmptyEndingAccountDoesNotGoFirst(t *testing.T) {
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
+	m.setUsage("a", windows(100, 10))
+	m.setUsage("b", windows(0, 95))
+	m.setUsage("c", windows(0, 10))
+	m.end("b", day(3))
+	m.AutoSwitchNative()
+	if len(native.switched) != 1 || native.switched[0] != "c" {
+		t.Fatalf("switched %v, want c", native.switched)
+	}
+	cm := codexManager(t, codexAccount("x", "plus"), codexAccount("y", "plus"), codexAccount("z", "plus"))
+	cm.setUsage("y", monthlyUsage(10))
+	cm.setUsage("z", monthlyUsage(95))
+	cm.end("z", day(3))
+	cm.mu.Lock()
+	next, _, err := cm.failoverLocked("x", "codex")
+	cm.mu.Unlock()
+	if err != nil || next != "y" {
+		t.Fatalf("failover: %q %v", next, err)
+	}
+}
+
+// A pick is over once the provider uses another account, however it got
+// there: the proxy's failover moving off it counts.
+func TestAPickEndsWhenTheProviderMovesOn(t *testing.T) {
+	m := codexManager(t, codexAccount("x", "plus"), codexAccount("y", "plus"), codexAccount("z", "plus"))
+	if _, err := m.ActivateForClient(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	m.end("z", day(3))
+	m.setUsage("x", monthlyUsage(10))
+	m.setUsage("y", monthlyUsage(10))
+	m.setUsage("z", monthlyUsage(40))
+	m.AutoSwitchNative()
+	if got := m.ActiveID("codex"); got != "x" {
+		t.Fatalf("moved off the pick: %q", got)
+	}
+	// The selection moves to y without the user, as failover does.
+	if err := m.setActive("codex", "y"); err != nil {
+		t.Fatal(err)
+	}
+	m.AutoSwitchNative()
+	if got := m.ActiveID("codex"); got != "z" {
+		t.Fatalf("codex uses %q, want z once the pick was over", got)
 	}
 }
