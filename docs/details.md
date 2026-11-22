@@ -80,6 +80,23 @@ required; OpenCode Go uses its own API key.
   and go with their account when it is removed. A Mac that uses another
   Mac's accounts saves the limit on that host, where it applies to every Mac
   (`PATCH /api/accounts/{id}` with `{"usage_limit": 10}`; `0` removes it).
+- **Antigravity**: Switcher shows each account's plan (AI Pro, AI Ultra,
+  Free) and its quota per model group and window ("Gemini 5-hour",
+  "Gemini weekly"), read from `daily-cloudcode-pa.googleapis.com` as the
+  Antigravity app reads it. **Use in Antigravity** (the card's button,
+  `switcher use`) is the only switch: with a fresh token it writes the
+  account's sign-in where `agy` and the Antigravity app keep theirs, the
+  login keychain item with service `gemini` and account `antigravity` (the
+  macOS Keychain, or the Linux keyring over D-Bus), and `agy`'s token file
+  `~/.gemini/antigravity-cli/antigravity-oauth-token` when one is there or
+  no keychain answers. `agy` notices the change by itself; the Antigravity
+  app picks it up when it restarts. Switcher never routes Antigravity
+  requests (its `/antigravity/` proxy route answers 403) and never switches
+  Antigravity by itself, at a usage limit or for an ending subscription:
+  Google's terms forbid reaching Antigravity through other tools and it
+  suspends accounts it sees rotated automatically. A Mac that uses another
+  Mac's accounts gets the selection only; its own Antigravity keeps its
+  sign-in.
 - **Ending subscriptions**: no provider tells Switcher the day a canceled
   subscription ends (Claude's sign-in reports only that it is active), so
   you tell it: the account's ⋯ menu → **Subscription ends…** in the
@@ -396,7 +413,7 @@ upstream, and configuring that provider's own CLI are three different things.
 | Claude | Browser OAuth or native Claude Code login import | Messages, token counting, and SSE fixture | Native credential/config switching with ownership and rollback fixtures; setup checks do not run a real native request |
 | OpenCode Go | Provider API key | Responses, chat, messages, and SSE fixture | Not enabled; v2 account, model, and transport unverified |
 | Grok Build | Device-code flow | HTTP session-service and SSE fixture only | Not enabled; entitlement and separate WebSocket relay unverified |
-| Antigravity (IDE) | Google OAuth with project onboarding | Full forwarding fixture not yet added | `agy` is a separate CLI; no verified setup |
+| Antigravity | Google OAuth with project onboarding | Never routed: the proxy answers 403 | Signs `agy` and the Antigravity app in on request (keychain item `gemini`/`antigravity`, or agy's token file) |
 | Gemini | Google OAuth | Full forwarding fixture not yet added | No verified native CLI route |
 | GitHub Copilot | GitHub device flow or Copilot CLI import | Full forwarding fixture not yet added | No native subscription setup; Copilot CLI BYOK is a separate billing path |
 

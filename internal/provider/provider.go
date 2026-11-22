@@ -211,6 +211,15 @@ type ResetCreditProvider interface {
 	ConsumeResetCredit(ctx context.Context, a store.Account, creditID string) (outcome string, err error)
 }
 
+// AppLoginProvider is an optional interface for providers whose own apps
+// share one sign-in that Switcher sets only when the user picks an account
+// (Antigravity: agy and the Antigravity app). Switcher never calls UseInApps
+// by itself. AppLogin is the email signed in there now, "" for none.
+type AppLoginProvider interface {
+	AppLogin(ctx context.Context) (string, error)
+	UseInApps(ctx context.Context, a store.Account) error
+}
+
 // PaidThroughProvider is an optional interface for providers whose sign-in
 // says until when an account's subscription is paid (Codex). It reads what
 // Switcher already holds, with no request, and gives 0 when it does not say.

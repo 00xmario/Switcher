@@ -574,6 +574,14 @@ html[data-theme="dark"] .menu-logo.monochrome img { filter: invert(1); }
   .merged-slot:empty { display: none; }
 }
 
+.provider-note {
+  margin: -4px 0 12px;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.45;
+  max-width: 72ch;
+}
+
 .unknown {
   color: var(--dim);
   font-size: 14px;

@@ -8,7 +8,7 @@ export const PROVIDERS = { codex: 'Codex', claude: 'Claude', grok: 'Grok', openc
 export const PLANS = {
   claude_max_5x: 'Max', claude_max_20x: 'Ultra', claude_max: 'Max', claude_pro: 'Pro', max: 'Max', pro: 'Pro 20x',
   prolite: 'Pro 5x', plus: 'Plus', go: 'Go', free: 'Free', team: 'Team', business: 'Business', enterprise: 'Enterprise',
-  edu: 'Edu', copilot_pro: 'Pro', copilot_pro_plus: 'Pro+', copilot_business: 'Business',
+  edu: 'Edu', google_ai_pro: 'AI Pro', google_ai_ultra: 'AI Ultra', copilot_pro: 'Pro', copilot_pro_plus: 'Pro+', copilot_business: 'Business',
   copilot_enterprise: 'Enterprise', copilot_free: 'Free',
 };
 export const OUTCOMES = {
@@ -88,7 +88,7 @@ export function windowHTML(w, now = Date.now() / 1000, rawLimit = 0) {
 // A view says where Switcher runs, for the hints ("your Mac", "this
 // computer"), which account a card marks as in use, and whether usage lines
 // have bars. By default it is the phone's: the proxy's account, with bars.
-const phoneView = { place: 'your Mac', selected: a => a.active, bars: true, limits: false };
+const phoneView = { place: 'your Mac', selected: a => (a.app_login_available ? a.app_login_active : a.active) === true, bars: true, limits: false };
 
 // lowerFirst writes a kind of reset mid-sentence: "a weekly reset", but
 // "a Fable reset", since Fable is a name.
@@ -167,6 +167,7 @@ export function accountHTML(a, now = Date.now() / 1000, view = phoneView) {
     limitOf(a) && a.at_limit !== true ? `<span class="note">Keeps ${limitOf(a)}% · switches away at ${limitOf(a)}% left</span>` : '',
     endingNote(a, now),
     a.native_switch_available && !active ? `<span class="note">Use also switches Claude Code on ${esc(place)}.</span>` : '',
+    a.app_login_available && !active ? `<span class="note">Use signs agy and the Antigravity app in on ${esc(place)}.</span>` : '',
   ].join('');
   const usage = windows.length
     ? `<span class="lines${bars ? '' : ' no-bars'}">${windows.map(w => windowHTML(w, now, a.usage_limit)).join('')}</span>`

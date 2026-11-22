@@ -244,6 +244,9 @@ func (m *Manager) autoSwitchRound() {
 		if m.HandedBack() {
 			return
 		}
+		if manualOnly(prov) {
+			continue
+		}
 		native, ok := prov.(provider.NativeLoginProvider)
 		if ok && native.NativeEnabled() {
 			m.autoSwitchLogin(providerID, native, auto)

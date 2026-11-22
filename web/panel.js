@@ -9,7 +9,7 @@ import * as loadCard from './load-card.js';
 
 // The panel marks the account the Mac menu marks: Claude Code's login for
 // Claude, the proxy's account otherwise.
-export const selected = a => (a.native_switch_available ? a.native_active : a.active) === true;
+export const selected = a => (a.app_login_available ? a.app_login_active : a.native_switch_available ? a.native_active : a.active) === true;
 
 // viewOf is how the cards draw here: on this computer, with the menu's
 // usage bars unless they are turned off in Settings.

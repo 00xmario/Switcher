@@ -117,6 +117,8 @@ const PLAN_NAMES = {
   team: 'Team',
   business: 'Business',
   enterprise: 'Enterprise',
+  google_ai_pro: 'AI Pro',
+  google_ai_ultra: 'AI Ultra',
   edu: 'Edu',
   copilot_pro: 'Pro',
   copilot_pro_plus: 'Pro+',
@@ -699,7 +701,7 @@ function accountHTML(account) {
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
         </div>
         <div class="actions">
-          ${isActive ? '' : `<button class="use" data-act="activate" ${activationPending ? 'disabled aria-busy="true"' : ''} ${account.native_switch_available ? 'title="Switch Claude Code’s native login and Switcher’s Claude proxy"' : ''}>${activationPending ? 'Switching…' : account.native_switch_available ? 'Use in Claude Code' : 'Use this account'}</button>`}
+          ${isActive ? '' : `<button class="use" data-act="activate" ${activationPending ? 'disabled aria-busy="true"' : ''} ${account.native_switch_available ? 'title="Switch Claude Code’s native login and Switcher’s Claude proxy"' : ''}>${activationPending ? 'Switching…' : useLabel(account)}</button>`}
           <button class="recheck-btn ${recheckPending ? 'busy' : ''}" data-act="recheck" type="button" aria-label="Recheck account usage" title="Recheck usage" aria-disabled="${recheckPending}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3v4h-4"/></svg>
           </button>
@@ -787,7 +789,7 @@ function compactAccountHTML(account) {
         <button class="recheck-btn ${recheckPending ? 'busy' : ''}" data-act="recheck" type="button" aria-disabled="${recheckPending}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3v4h-4"/></svg>Refresh quota
         </button>
-        ${isActive ? '' : `<button class="use" data-act="activate" ${activationPending ? 'disabled aria-busy="true"' : ''}>${activationPending ? 'Switching…' : account.native_switch_available ? 'Use in Claude Code' : 'Use this account'}</button>`}
+        ${isActive ? '' : `<button class="use" data-act="activate" ${activationPending ? 'disabled aria-busy="true"' : ''}>${activationPending ? 'Switching…' : useLabel(account)}</button>`}
       </div>
     </div>`;
 }
@@ -821,7 +823,7 @@ function mergedAccountHTML(account) {
           <div class="account-health ${escapeHTML(health.condition)}"><span class="health-mark" aria-hidden="true"></span>${escapeHTML(healthText(health))}</div>
         </div>
         <div class="actions">
-          ${isActive ? '' : `<button class="use" data-act="activate" ${activationPending ? 'disabled aria-busy="true"' : ''}>${activationPending ? 'Switching…' : account.native_switch_available ? 'Use in Claude Code' : 'Use this account'}</button>`}
+          ${isActive ? '' : `<button class="use" data-act="activate" ${activationPending ? 'disabled aria-busy="true"' : ''}>${activationPending ? 'Switching…' : useLabel(account)}</button>`}
           <button class="recheck-btn ${recheckPending ? 'busy' : ''}" data-act="recheck" type="button" aria-label="Recheck account usage" title="Recheck usage" aria-disabled="${recheckPending}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3v4h-4"/></svg>
           </button>
@@ -877,7 +879,9 @@ function accountIdentityHTML(account, active) {
   const proxyActive = account.id === data.active?.[account.provider];
   const native = account.native_switch_available === true;
   const badge = (text, cls = '') => `<span class="account-badge ${cls}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>${text}</span>`;
-  const indicators = native
+  const indicators = account.app_login_available
+    ? (active ? badge('Antigravity signed in', 'active-status') : '')
+    : native
     ? `${active ? badge('Claude Code active', 'active-status') : ''}${proxyActive ? badge('Proxy active', 'proxy-status') : ''}`
     : active ? badge('Active', 'active-status') : '';
   return `<div class="identity-line">
@@ -886,7 +890,16 @@ function accountIdentityHTML(account, active) {
   </div>`;
 }
 
+// useLabel names the button that switches to an account: Claude switches
+// Claude Code's login, Antigravity signs agy and its app in, the others
+// switch Switcher's proxy.
+function useLabel(account) {
+  if (account.app_login_available) return 'Use in Antigravity';
+  return account.native_switch_available ? 'Use in Claude Code' : 'Use this account';
+}
+
 function accountIsSelected(account) {
+  if (account.app_login_available) return account.app_login_active === true;
   return account.native_switch_available ? account.native_active === true : account.id === data.active?.[account.provider];
 }
 
@@ -1076,6 +1089,7 @@ function render() {
             <button data-menu="${escapeHTML(providerID)}" title="Provider options">⋯</button>
           </span>
         </div>
+        ${providerID === 'antigravity' ? `<p class="provider-note">Switcher shows Antigravity's quota and, only when you click <b>Use in Antigravity</b>, signs agy and the Antigravity app in to that account. It never sends Antigravity requests through itself or switches it on its own: Google suspends accounts it sees used through other tools or rotated automatically.</p>` : ''}
         ${merge && accounts.length > 1 ? `<div class="account-list merged-list">${accounts.map(mergedAccountHTML).join('')}</div>${mergedWindowsHTML(accounts, providerID)}` : `
         <div class="account-list ${compact && accounts.length ? 'compact-grid' : ''}">
           ${accounts.length ? accounts.map(compact ? compactAccountHTML : accountHTML).join('') : `<div class="unknown">No accounts yet.</div>`}
@@ -2637,7 +2651,7 @@ function cliSetupRowHTML(client) {
     entitlement_and_relay_unverified: 'Grok entitlement and WebSocket relay unverified',
     byok_is_different_billing: 'Copilot CLI BYOK is a separate billing path',
     subscription_route_unverified: 'Gemini CLI subscription route unverified',
-    agy_protocol_unverified: 'Antigravity CLI protocol unverified',
+    proxy_use_suspends_accounts: 'Not routed: Google suspends Antigravity accounts used through other tools',
   };
   const readiness = !codex && Object.hasOwn(readinessLabels, client.reason_code)
     ? `${readinessLabels[client.reason_code]}. ${client.next_step || ''}`

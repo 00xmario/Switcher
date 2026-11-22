@@ -17,6 +17,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,14 +34,20 @@ const (
 	ClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	ClientSecret = "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"
 	CallbackPort = config.AntigravityCallbackPort
-	Scopes       = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile cclog experimentsandconfigs"
+	// aicode is what the Antigravity CLI (agy) needs from a login, so an
+	// account signed in here can also be handed to it (applogin.go).
+	Scopes       = "openid https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs https://www.googleapis.com/auth/aicode"
 	authorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	version      = "v1internal"
-	// clientVersion is reported in the User-Agent. Pinned: fetching it
-	// live would require network at startup.
-	clientVersion = "2.9.1"
-	userAgent     = "antigravity/hub/" + clientVersion + " darwin/arm64"
-	apiClient     = "gl-node/22.21.1"
+	// clientVersion and its changelist are reported in the User-Agent, as
+	// the Antigravity app's own server does. Pinned (fetching them live
+	// would need network at startup); Google refuses newer models to
+	// versions below 2.23.0, so keep it current.
+	clientVersion    = "2.34.0"
+	clientChangelist = "1026637980"
+	userAgent        = "antigravity/hub/" + clientVersion + " (aidev_client; os_type=darwin; arch=arm64; cl=" + clientChangelist + ")"
+	onboardUserAgent = userAgent + " google-api-nodejs-client/10.3.0"
+	apiClient        = "gl-node/22.21.1"
 )
 
 // redirectURI is derived from CallbackPort so the port registered with
@@ -48,8 +55,10 @@ const (
 var redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", config.AntigravityCallbackPort)
 
 // The Cloud Code endpoints are vars so tests can point them at a stub.
+// Consumer accounts (Google AI Pro, Ultra, Free) are served by the daily
+// host, which the Antigravity app uses too; cloudcode-pa answers them 429.
 var (
-	apiBase     = "https://cloudcode-pa.googleapis.com"
+	apiBase     = "https://daily-cloudcode-pa.googleapis.com"
 	onboardBase = "https://daily-cloudcode-pa.googleapis.com"
 )
 
@@ -157,7 +166,7 @@ func (p *Provider) discoverProject(ctx context.Context, accessToken string) (str
 
 	// No project yet: onboard a free-tier Antigravity project and poll
 	// until the long-running operation reports the companion project.
-	id, err := googleauth.OnboardUser(ctx, accessToken, onboardBase, userAgent, apiClient,
+	id, err := googleauth.OnboardUser(ctx, accessToken, onboardBase, onboardUserAgent, apiClient,
 		[]byte(`{"tier_id":"antigravity-free","metadata":{"ide_type":"ANTIGRAVITY","ide_name":"antigravity","ide_version":"`+clientVersion+`"}}`))
 	if err != nil {
 		return "", err
@@ -314,15 +323,17 @@ func (p *Provider) IsExpired(a store.Account) bool {
 	return a.Token.ExpiresAt > 0 && time.Now().Unix() >= a.Token.ExpiresAt-30*60
 }
 
-// quotaSummary mirrors retrieveUserQuotaSummary. Fraction and reset fields
-// appear in both camelCase and snake_case across deployments. Note: this
-// parsing is intentionally duplicated with gemini's Usage; extracting it
-// would need googleauth to depend on the provider.UsageWindow type, which
-// inverts the layering.
+// quotaSummary mirrors retrieveUserQuotaSummary: groups of models (Gemini,
+// the third-party models) with a bucket per window, a five-hour one ("5h")
+// that refreshes until the weekly one ("weekly") runs out. Fraction and reset
+// fields are read in both spellings Google has used.
 type quotaSummary struct {
 	Groups []struct {
 		DisplayName string `json:"displayName"`
 		Buckets     []struct {
+			BucketID           string   `json:"bucketId"`
+			Window             string   `json:"window"`
+			DisplayName        string   `json:"displayName"`
 			RemainingFraction  *float64 `json:"remainingFraction"`
 			RemainingFraction2 *float64 `json:"remaining_fraction"`
 			ResetTime          string   `json:"resetTime"`
@@ -331,6 +342,26 @@ type quotaSummary struct {
 	} `json:"groups"`
 }
 
+// windowName names a quota bucket's window for the account card.
+func windowName(window string) string {
+	switch w := strings.ToLower(strings.TrimSpace(window)); {
+	case w == "":
+		return ""
+	case w == "5h" || strings.Contains(w, "hour"):
+		return "5-hour"
+	case strings.Contains(w, "week") || w == "7d":
+		return "weekly"
+	case strings.Contains(w, "day") || w == "24h" || w == "1d":
+		return "daily"
+	default:
+		return window
+	}
+}
+
+// windows turns the summary into usage windows, one per group and window:
+// "Gemini 5-hour", "Gemini weekly". They are not Switcher's account-wide
+// Session and Weekly windows on purpose: Antigravity is never switched
+// automatically, so no usage limit or takeover reads them.
 func (q *quotaSummary) windows() []provider.UsageWindow {
 	var windows []provider.UsageWindow
 	for _, g := range q.Groups {
@@ -350,10 +381,13 @@ func (q *quotaSummary) windows() []provider.UsageWindow {
 			if reset == "" {
 				reset = b.ResetTime2
 			}
-			window := provider.UsageWindow{
-				Label:       g.DisplayName,
-				UsedPercent: used,
+			label := strings.TrimSpace(g.DisplayName)
+			if name := windowName(b.Window); name != "" {
+				label = strings.TrimSpace(label + " " + name)
+			} else if b.DisplayName != "" && b.DisplayName != g.DisplayName {
+				label = strings.TrimSpace(label + " " + b.DisplayName)
 			}
+			window := provider.UsageWindow{Label: label, UsedPercent: used}
 			if t, err := time.Parse(time.RFC3339, reset); err == nil {
 				window.ResetsAt = t.Unix()
 			}
@@ -363,32 +397,87 @@ func (q *quotaSummary) windows() []provider.UsageWindow {
 	return windows
 }
 
-// Usage queries the Cloud Code quota summary, falling back to the
-// available-models listing (which carries per-model quota info).
+// codeAssist is the part of loadCodeAssist Switcher reads: the account's
+// Cloud Code project and its tier (paid first).
+type codeAssist struct {
+	CloudaicompanionProject string `json:"cloudaicompanionProject"`
+	ProjectID               string `json:"projectId"`
+	Project                 string `json:"project"`
+	CurrentTier             *tier  `json:"currentTier"`
+	PaidTier                *tier  `json:"paidTier"`
+}
+
+type tier struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// planOf names an account's plan from its tier: "google_ai_ultra",
+// "google_ai_pro", "free" or "enterprise"; "" when Google does not say.
+func planOf(c codeAssist) string {
+	raw := ""
+	for _, t := range []*tier{c.PaidTier, c.CurrentTier} {
+		if t != nil && (t.ID != "" || t.Name != "") {
+			raw = strings.ToLower(t.ID + " " + t.Name)
+			break
+		}
+	}
+	switch {
+	case raw == "":
+		return ""
+	case strings.Contains(raw, "ultra") || strings.Contains(raw, "helium"):
+		return "google_ai_ultra"
+	case strings.Contains(raw, "free") || strings.Contains(raw, "starter"):
+		return "free"
+	case strings.Contains(raw, "pro") || strings.Contains(raw, "premium") || strings.Contains(raw, "advanced"):
+		return "google_ai_pro"
+	case strings.Contains(raw, "standard") || strings.Contains(raw, "enterprise") || strings.Contains(raw, "business"):
+		return "enterprise"
+	}
+	return ""
+}
+
+// Usage reads the account's plan and project (loadCodeAssist), then its
+// quota summary, falling back to the per-model quota of fetchAvailableModels.
 func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	project, plan := ProjectID(a), ""
+	var load codeAssist
+	if err := p.cloudcodePost(ctx, a.Token.AccessToken, apiBase, version+":loadCodeAssist",
+		[]byte(`{"metadata":{"ideType":"ANTIGRAVITY"}}`), &load); err == nil {
+		plan = planOf(load)
+		if id := projectIDOf(load.CloudaicompanionProject, load.ProjectID, load.Project); id != "" {
+			project = id
+		}
+	} else if errors.Is(err, cloudcodeHTTPError{http.StatusUnauthorized}) {
+		return provider.Usage{}, usageQueryError(err)
+	}
+	body := []byte(`{}`)
+	if project != "" {
+		body = []byte(fmt.Sprintf(`{"project":%q}`, project))
+	}
+
 	var summary quotaSummary
-	err := p.cloudcodePost(ctx, a.Token.AccessToken, apiBase, version+":retrieveUserQuotaSummary",
-		[]byte(fmt.Sprintf(`{"project_id":%q}`, ProjectID(a))), &summary)
+	err := p.cloudcodePost(ctx, a.Token.AccessToken, apiBase, version+":retrieveUserQuotaSummary", body, &summary)
 	if err == nil {
 		if windows := summary.windows(); len(windows) > 0 {
-			return provider.Usage{Available: true, Windows: windows}, nil
+			return provider.Usage{Available: true, Windows: windows, Plan: plan}, nil
 		}
 	}
 
 	var models struct {
 		Models map[string]struct {
-			QuotaInfo struct {
+			DisplayName string `json:"displayName"`
+			QuotaInfo   struct {
 				RemainingFraction  *float64 `json:"remainingFraction"`
 				RemainingFraction2 *float64 `json:"remaining_fraction"`
 				ResetTime          string   `json:"resetTime"`
 			} `json:"quotaInfo"`
 		} `json:"models"`
 	}
-	if ferr := p.cloudcodePost(ctx, a.Token.AccessToken, apiBase, version+":fetchAvailableModels",
-		[]byte(`{}`), &models); ferr != nil {
+	if ferr := p.cloudcodePost(ctx, a.Token.AccessToken, apiBase, version+":fetchAvailableModels", body, &models); ferr != nil {
 		if err != nil {
 			return provider.Usage{}, errors.Join(usageQueryError(err), usageQueryError(ferr))
 		}
@@ -407,10 +496,11 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 		if *fraction > 0 {
 			used = min(used, 99)
 		}
-		window := provider.UsageWindow{
-			Label:       name,
-			UsedPercent: used,
+		label := name
+		if m.DisplayName != "" {
+			label = m.DisplayName
 		}
+		window := provider.UsageWindow{Label: label, UsedPercent: used}
 		if t, err := time.Parse(time.RFC3339, m.QuotaInfo.ResetTime); err == nil {
 			window.ResetsAt = t.Unix()
 		}
@@ -419,7 +509,8 @@ func (p *Provider) Usage(ctx context.Context, a store.Account) (provider.Usage, 
 	if len(windows) == 0 {
 		return provider.Usage{}, fmt.Errorf("%w: no quota data", provider.ErrUsageUnavailable)
 	}
-	return provider.Usage{Available: true, Windows: windows}, nil
+	slices.SortFunc(windows, func(x, y provider.UsageWindow) int { return strings.Compare(x.Label, y.Label) })
+	return provider.Usage{Available: true, Windows: windows, Plan: plan}, nil
 }
 
 // ParseRateLimit requires confirmed depleted quota. A 429 or Google's

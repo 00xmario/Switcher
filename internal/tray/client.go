@@ -89,11 +89,18 @@ type Account struct {
 	EndDate     string `json:"end_date"`
 	Ending      bool   `json:"ending"`
 	PaidThrough int64  `json:"paid_through"`
+	// AppLoginAvailable: picking the account signs the provider's apps in
+	// (Antigravity); AppLoginActive: they use this account.
+	AppLoginAvailable bool `json:"app_login_available"`
+	AppLoginActive    bool `json:"app_login_active"`
 }
 
 // Selected is the account the account card marks: Claude Code's login for
 // Claude, the proxy's account otherwise.
 func (a Account) Selected() bool {
+	if a.AppLoginAvailable {
+		return a.AppLoginActive
+	}
 	if a.NativeSwitchAvailable {
 		return a.NativeActive
 	}

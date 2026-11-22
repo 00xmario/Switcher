@@ -296,19 +296,27 @@ func TestRefreshReloginClassification(t *testing.T) {
 func TestUsageQuotaSummary(t *testing.T) {
 	reset := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	stubCloudCode(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1internal:retrieveUserQuotaSummary" {
+		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "antigravity/hub/2.") || !strings.Contains(ua, "cl=") {
+			t.Errorf("User-Agent %q", ua)
+		}
+		switch r.URL.Path {
+		case "/v1internal:loadCodeAssist":
+			io.WriteString(w, `{"cloudaicompanionProject":"projects/proj-2","currentTier":{"id":"free-tier"},"paidTier":{"id":"g1-ultra-tier"}}`)
+			return
+		case "/v1internal:retrieveUserQuotaSummary":
+		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		raw, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(raw), "proj-1") {
-			t.Errorf("body = %s, want the project_id", raw)
+		if string(raw) != `{"project":"proj-2"}` {
+			t.Errorf("body = %s, want the project loadCodeAssist named", raw)
 		}
 		fmt.Fprintf(w, `{"groups":[
-			{"displayName":"Gemini 3 Pro","buckets":[
-				{"remainingFraction":0.25,"resetTime":%q},
-				{"remaining_fraction":0,"reset_at":%q}]},
+			{"displayName":"Gemini","buckets":[
+				{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.25,"resetTime":%q},
+				{"bucketId":"gemini-weekly","window":"weekly","remaining_fraction":0,"reset_at":%q}]},
 			{"displayName":"NoFraction","buckets":[{"resetTime":%q}]}]}`, reset, reset, reset)
 	})
 
@@ -322,10 +330,13 @@ func TestUsageQuotaSummary(t *testing.T) {
 	if !usage.Available || len(usage.Windows) != 2 {
 		t.Fatalf("unexpected usage: %+v", usage)
 	}
-	if usage.Windows[0].Label != "Gemini 3 Pro" || usage.Windows[0].UsedPercent != 75 {
+	if usage.Windows[0].Label != "Gemini 5-hour" || usage.Windows[0].UsedPercent != 75 {
 		t.Fatalf("window 0 = %+v", usage.Windows[0])
 	}
-	if usage.Windows[1].UsedPercent != 100 {
+	if usage.Plan != "google_ai_ultra" {
+		t.Fatalf("plan %q, want the paid tier", usage.Plan)
+	}
+	if usage.Windows[1].Label != "Gemini weekly" || usage.Windows[1].UsedPercent != 100 {
 		t.Fatalf("window 1 = %+v", usage.Windows[1])
 	}
 	if usage.Windows[0].ResetsAt == 0 {
@@ -374,7 +385,7 @@ func TestUsageUnavailable(t *testing.T) {
 
 func TestUsageAuthStatusAcrossFallback(t *testing.T) {
 	statusSummary, statusModels := http.StatusUnauthorized, http.StatusForbidden
-	stubs := map[string]int{"/v1internal:retrieveUserQuotaSummary": statusSummary, "/v1internal:fetchAvailableModels": statusModels}
+	stubs := map[string]int{"/v1internal:retrieveUserQuotaSummary": statusSummary, "/v1internal:fetchAvailableModels": statusModels, "/v1internal:loadCodeAssist": http.StatusForbidden}
 	stubCloudCode(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret-access" {
 			t.Errorf("missing usage authorization")
@@ -393,6 +404,9 @@ func TestUsageAuthStatusAcrossFallback(t *testing.T) {
 	} {
 		stubs["/v1internal:retrieveUserQuotaSummary"], stubs["/v1internal:fetchAvailableModels"] = tc.summary, tc.models
 		_, err := New().Usage(context.Background(), acc)
+		if err == nil {
+			t.Fatalf("statuses %d/%d: no error", tc.summary, tc.models)
+		}
 		if !errors.Is(err, provider.ErrUsageUnavailable) || errors.Is(err, provider.ErrUsageAuthRequired) != tc.auth || errors.Is(err, provider.ErrReloginRequired) || strings.Contains(err.Error(), "do-not-log") || strings.Contains(err.Error(), "secret-access") {
 			t.Fatalf("statuses %d/%d: unexpected usage error: %v", tc.summary, tc.models, err)
 		}
@@ -454,5 +468,37 @@ func TestUnsupportedFlows(t *testing.T) {
 	}
 	if _, err := p.AddByKey(context.Background(), "k"); !errors.Is(err, provider.ErrUnsupported) {
 		t.Fatalf("AddByKey err = %v", err)
+	}
+}
+
+// A rejected token is said at once, from loadCodeAssist.
+func TestUsageAuthFromLoadCodeAssist(t *testing.T) {
+	stubCloudCode(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1internal:loadCodeAssist" {
+			t.Errorf("went on to %s after a 401", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	_, err := New().Usage(context.Background(), store.Account{Token: store.Token{AccessToken: "at"}})
+	if !errors.Is(err, provider.ErrUsageAuthRequired) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPlanOf(t *testing.T) {
+	for _, tc := range []struct {
+		c    codeAssist
+		want string
+	}{
+		{codeAssist{PaidTier: &tier{ID: "g1-pro-tier"}, CurrentTier: &tier{ID: "free-tier"}}, "google_ai_pro"},
+		{codeAssist{PaidTier: &tier{ID: "g1-ultra-tier"}}, "google_ai_ultra"},
+		{codeAssist{CurrentTier: &tier{ID: "free-tier"}}, "free"},
+		{codeAssist{CurrentTier: &tier{Name: "Antigravity Starter Quota"}}, "free"},
+		{codeAssist{CurrentTier: &tier{ID: "standard-tier"}}, "enterprise"},
+		{codeAssist{}, ""},
+	} {
+		if got := planOf(tc.c); got != tc.want {
+			t.Errorf("%+v: %q, want %q", tc.c, got, tc.want)
+		}
 	}
 }

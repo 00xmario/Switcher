@@ -317,7 +317,8 @@ in the [command line guide](docs/cli.md).
 | **Codex** | ChatGPT in the browser | Proxy for the Codex CLI, one-command setup, banked resets |
 | **Grok Build** | Device code | Proxy for the session service |
 | **OpenCode Go** | API key | Proxy |
-| **Gemini, Antigravity** | Google in the browser | Accounts and usage |
+| **Antigravity** | Google in the browser | Quota per model group (5-hour and weekly) and plan; **Use in Antigravity** signs agy and the Antigravity app in to the account you pick. Never routed or switched by itself: Google suspends Antigravity accounts used through other tools |
+| **Gemini** | Google in the browser | Accounts and usage |
 | **GitHub Copilot** | Device code, or import Copilot CLI | Accounts and usage |
 
 The full matrix, including what is verified per native CLI, is in

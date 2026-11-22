@@ -256,3 +256,12 @@ func (m *Manager) leftAutomaticallyLocked(providerID, from string) {
 		m.dropPickLocked(providerID)
 	}
 }
+
+// manualOnly reports a provider Switcher only switches when the user picks
+// an account (provider.AppLoginProvider, Antigravity): it neither routes its
+// requests nor moves it by itself, since Google suspends Antigravity
+// accounts it sees used through other tools or rotated automatically.
+func manualOnly(prov provider.Provider) bool {
+	_, ok := prov.(provider.AppLoginProvider)
+	return ok
+}

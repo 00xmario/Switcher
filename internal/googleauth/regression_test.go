@@ -78,7 +78,7 @@ func TestGoogleRateLimitRequiresConfirmedDepletedQuota(t *testing.T) {
 					switch r.URL.Path {
 					case "/v1internal:retrieveUserQuotaSummary":
 						return response(tc.usageStatus, tc.quota), nil
-					case "/v1internal:fetchAvailableModels":
+					case "/v1internal:fetchAvailableModels", "/v1internal:loadCodeAssist":
 						return response(http.StatusServiceUnavailable, `{"private":"do-not-log"}`), nil
 					default:
 						t.Fatalf("unexpected Google request: %s", r.URL.Path)
@@ -106,7 +106,7 @@ func TestAntigravityModelsFallbackRequiresActualZeroQuota(t *testing.T) {
 		t.Run(fraction, func(t *testing.T) {
 			mockGoogleHTTP(t, func(r *http.Request) (*http.Response, error) {
 				switch r.URL.Path {
-				case "/v1internal:retrieveUserQuotaSummary":
+				case "/v1internal:retrieveUserQuotaSummary", "/v1internal:loadCodeAssist":
 					return response(503, `{}`), nil
 				case "/v1internal:fetchAvailableModels":
 					return response(200, fmt.Sprintf(`{"models":{"fixture-model":{"quotaInfo":{"remaining_fraction":%s}}}}`, fraction)), nil

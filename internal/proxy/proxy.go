@@ -1143,6 +1143,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown provider: "+providerID)
 		return
 	}
+	if manualOnly(prov) {
+		writeError(w, http.StatusForbidden, "Switcher does not route "+providerID+" requests: Google suspends Antigravity accounts used through other tools. Use agy or the Antigravity app; Switcher signs them in to the account you pick.")
+		return
+	}
 	// The provider's base path bounds what its token may reach, such as
 	// chatgpt.com/backend-api/codex. The mux leaves percent-encoded dot
 	// segments alone, and they would climb out of it upstream.

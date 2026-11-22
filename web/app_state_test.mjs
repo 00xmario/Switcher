@@ -329,7 +329,7 @@ for (const [reason, expected] of Object.entries({
   entitlement_and_relay_unverified: 'Grok entitlement and WebSocket relay unverified',
   byok_is_different_billing: 'Copilot CLI BYOK is a separate billing path',
   subscription_route_unverified: 'Gemini CLI subscription route unverified',
-  agy_protocol_unverified: 'Antigravity CLI protocol unverified',
+  proxy_use_suspends_accounts: 'Not routed: Google suspends Antigravity accounts used through other tools',
 })) {
   const html = cliContext.cliSetupRowHTML({ ...informationalClient, reason_code: reason,
     next_step: 'Keep native settings unchanged.' });

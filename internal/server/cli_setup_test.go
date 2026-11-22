@@ -76,7 +76,7 @@ func TestCLISetupReportsInspectedConfigAndStoredAccountsSeparately(t *testing.T)
 		"grok-build":      "entitlement_and_relay_unverified",
 		"copilot-cli":     "byok_is_different_billing",
 		"gemini-cli":      "subscription_route_unverified",
-		"antigravity-cli": "agy_protocol_unverified",
+		"antigravity-cli": "proxy_use_suspends_accounts",
 	} {
 		client := byID[id]
 		if client.ReasonCode != reason || client.NextStep == "" || client.Capability != "information_only" ||

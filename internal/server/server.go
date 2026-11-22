@@ -65,6 +65,7 @@ type API struct {
 	// OpenAI, which fill the days the logs no longer hold in Insights.
 	CodexHistory *usage.CodexHistory
 	codexDays    hostCodexDays
+	appLogins    appLogins
 	// codexProfileForTest stands in for the Codex provider's profile.
 	codexProfileForTest provider.ProfileProvider
 	usageShare          usageShare
@@ -251,8 +252,8 @@ var cliSetupTargets = []struct {
 		"Keep native Copilot CLI authentication. Its custom-provider BYOK mode is not proven to use the same Copilot subscription."},
 	{"gemini-cli", "Gemini CLI", "gemini", "research", "subscription_route_unverified",
 		"Keep Gemini CLI settings unchanged. Account eligibility and a subscription-preserving endpoint need native verification."},
-	{"antigravity-cli", "Antigravity CLI (agy)", "antigravity", "research", "agy_protocol_unverified",
-		"Keep Antigravity CLI settings unchanged. Its CLI protocol and account-plan mapping need native verification."},
+	{"antigravity-cli", "Antigravity CLI (agy)", "antigravity", "research", "proxy_use_suspends_accounts",
+		"Not routed through Switcher: Google suspends Antigravity accounts used through other tools. Use in Antigravity signs agy in to the account you pick."},
 }
 
 func (a *API) handleCLISetup(w http.ResponseWriter, r *http.Request) {
@@ -491,6 +492,11 @@ type accountView struct {
 	EndDate     string `json:"end_date,omitempty"`
 	Ending      bool   `json:"ending,omitempty"`
 	PaidThrough int64  `json:"paid_through,omitempty"`
+	// AppLoginAvailable says the provider's own apps share a sign-in
+	// Switcher can set when asked (Antigravity's agy and app);
+	// AppLoginActive that they are signed in with this account.
+	AppLoginAvailable bool `json:"app_login_available,omitempty"`
+	AppLoginActive    bool `json:"app_login_active,omitempty"`
 }
 
 // autoUseResetMode renders a per-account override for the API.
@@ -611,6 +617,10 @@ func viewBaseWithSettings(a *API, acc store.Account, preferences settings.Settin
 	}
 	if v.EndDate = a.Proxy.EndDate(acc.ID); v.EndDate != "" {
 		v.Ending = a.Proxy.Ending(acc.ID)
+	}
+	if apps, ok := a.Providers[acc.Provider].(provider.AppLoginProvider); ok {
+		v.AppLoginAvailable = true
+		v.AppLoginActive = a.appLogins.email(acc.Provider, apps) == acc.Email && acc.Email != ""
 	}
 	if paid, ok := a.Providers[acc.Provider].(provider.PaidThroughProvider); ok {
 		if until := paid.PaidThrough(acc); until > time.Now().Unix() {
@@ -1345,6 +1355,10 @@ func (a *API) handleActivate(w http.ResponseWriter, r *http.Request) {
 	// on it, or a Mac paired with it: a paired Mac uses this one's accounts,
 	// so its switch is this Mac's switch, Claude Code's login included.
 	_, paired := remote.PairedDevice(r)
+	if apps, ok := a.Providers[account.Provider].(provider.AppLoginProvider); ok {
+		a.activateInApps(w, r, account, apps, paired)
+		return
+	}
 	native, nativeOK := a.Providers[account.Provider].(provider.NativeLoginProvider)
 	nativeOK = nativeOK && native.NativeEnabled()
 	if nativeOK {

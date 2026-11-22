@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"switcher/internal/provider"
 	"switcher/internal/store"
 )
 
@@ -307,5 +308,40 @@ func TestAPickEndsWhenTheProviderMovesOn(t *testing.T) {
 	m.AutoSwitchNative()
 	if got := m.ActiveID("codex"); got != "z" {
 		t.Fatalf("codex uses %q, want z once the pick was over", got)
+	}
+}
+
+// appOnlyProvider stands for Antigravity: its apps' sign-in is set only on
+// the user's pick.
+type appOnlyProvider struct{ *fakeProvider }
+
+func (appOnlyProvider) AppLogin(context.Context) (string, error)       { return "", nil }
+func (appOnlyProvider) UseInApps(context.Context, store.Account) error { return nil }
+
+// Switcher never moves a manual-only provider by itself: not at a usage
+// limit, not onto an ending account.
+func TestAManualOnlyProviderIsNeverSwitchedAutomatically(t *testing.T) {
+	st := store.New(t.TempDir())
+	for _, id := range []string{"x", "y"} {
+		a := codexAccount(id, "plus")
+		a.Provider = "antigravity"
+		if err := st.Save(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(st, map[string]provider.Provider{"antigravity": appOnlyProvider{&fakeProvider{id: "antigravity"}}}, []string{"antigravity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Activate("x"); err != nil {
+		t.Fatal(err)
+	}
+	m.limit("x", 30)
+	m.setUsage("x", monthlyUsage(90))
+	m.setUsage("y", monthlyUsage(0))
+	m.end("y", day(3))
+	m.AutoSwitchNative()
+	if got := m.ActiveID("antigravity"); got != "x" {
+		t.Fatalf("switched by itself to %q", got)
 	}
 }
