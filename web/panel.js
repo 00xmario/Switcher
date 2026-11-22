@@ -53,6 +53,7 @@ export function messageHTML(title, text) {
 // switchedText is what a switch did: Claude's also moves Claude Code's login.
 export function switchedText(account, answer) {
   const email = account?.email || 'that account';
+  if (answer?.apps?.changed === true) return `agy and the Antigravity app now use ${email}; reopen them if they are running`;
   return answer?.native?.changed === true ? `Claude and Claude Code now use ${email}`
     : `${PROVIDERS[account?.provider] || 'Switcher'} now uses ${email}`;
 }

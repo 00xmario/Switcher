@@ -1376,6 +1376,10 @@ func sanitizeHostState(state map[string]any) {
 		if account, ok := a.(map[string]any); ok && validID(account["id"]) && validID(account["provider"]) {
 			delete(account, "native_switch_available")
 			delete(account, "native_active")
+			// The host's Antigravity sign-in is the host's: this Mac's own
+			// agy and app are not signed in from there.
+			delete(account, "app_login_available")
+			delete(account, "app_login_active")
 			sanitizeLimit(account)
 			sanitizeEnding(account)
 			kept = append(kept, account)

@@ -89,8 +89,14 @@ required; OpenCode Go uses its own API key.
   login keychain item with service `gemini` and account `antigravity` (the
   macOS Keychain, or the Linux keyring over D-Bus), and `agy`'s token file
   `~/.gemini/antigravity-cli/antigravity-oauth-token` when one is there or
-  no keychain answers. `agy` notices the change by itself; the Antigravity
-  app picks it up when it restarts. Switcher never routes Antigravity
+  no keychain answers. Quit and reopen `agy` and the Antigravity app if
+  they run: until then they may keep, and save back, the previous sign-in.
+  An account signed in to Switcher before it asked for `agy`'s access
+  (the `aicode` scope) is refused until you sign in to it again. A sign-in
+  of another account that a switch replaces is kept in
+  `~/.switcher/antigravity-previous-signin.json` (0600). `agy` and Switcher
+  then share the account's refresh token, so signing out in `agy` may sign
+  that Switcher account out too. Switcher never routes Antigravity
   requests (its `/antigravity/` proxy route answers 403) and never switches
   Antigravity by itself, at a usage limit or for an ending subscription:
   Google's terms forbid reaching Antigravity through other tools and it

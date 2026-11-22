@@ -17,12 +17,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"switcher/internal/config"
+	"switcher/internal/provider"
 	"switcher/internal/store"
 )
 
@@ -130,36 +135,115 @@ func (p *Provider) AppLogin(ctx context.Context) (string, error) {
 // UseInApps implements provider.AppLoginProvider: it signs agy and the
 // Antigravity app in with the account, in the keychain, and in agy's file
 // when one is already there or no keychain answers. a must carry a fresh
-// access token. agy notices a changed sign-in by itself; the Antigravity app
-// picks it up when it restarts.
+// access token, granted what agy needs (aicode): an account added before
+// Switcher asked for it is refused, not handed over to fail in agy. The
+// sign-in it replaces, when it is another account's, is kept in
+// backupPath, and a write that fails halfway puts the keychain back.
 func (p *Provider) UseInApps(ctx context.Context, a store.Account) error {
 	raw, err := appTokenOf(a)
 	if err != nil {
 		return err
 	}
+	if err := checkAgyScope(ctx, a.Token.AccessToken); err != nil {
+		return err
+	}
 	keychain, files := appStores()
-	keychainDone := false
+	var previous []byte
+	hadKeychain := false
 	if keychain != nil {
-		if err := keychain.write(ctx, raw); err == nil {
-			got, ok, rerr := keychain.read(ctx)
-			if rerr != nil || !ok || emailOf(got) != a.Email || !bytes.Contains(got, []byte(a.Token.RefreshToken)) {
-				return fmt.Errorf("the %s did not keep the new sign-in", keychain.name())
-			}
-			keychainDone = true
-		} else if !errors.Is(err, errNoKeychain) {
+		old, ok, err := keychain.read(ctx)
+		switch {
+		case err == nil:
+			previous, hadKeychain = old, ok
+		case !errors.Is(err, errNoKeychain):
 			return err
+		default:
+			keychain = nil
+		}
+	}
+	if previous == nil {
+		previous, _, _ = files[0].read(ctx)
+	}
+	if who := emailOf(previous); who != "" && who != a.Email {
+		if err := (tokenFile{path: backupPath()}).write(ctx, previous); err != nil {
+			return fmt.Errorf("could not keep the sign-in being replaced: %w", err)
+		}
+	}
+	if keychain != nil {
+		if err := keychain.write(ctx, raw); err != nil {
+			return err
+		}
+		got, ok, rerr := keychain.read(ctx)
+		if rerr != nil || !ok || emailOf(got) != a.Email || !bytes.Contains(got, []byte(a.Token.RefreshToken)) {
+			restore(ctx, keychain, previous, hadKeychain)
+			return fmt.Errorf("the %s did not keep the new sign-in", keychain.name())
 		}
 	}
 	for i, f := range files {
-		_, exists, _ := f.read(ctx)
-		if !exists && (keychainDone || i > 0) {
+		// Something unreadable there counts as there: it is written over,
+		// or the switch fails and is undone.
+		_, exists, rerr := f.read(ctx)
+		if !exists && rerr == nil && (keychain != nil || i > 0) {
 			continue
 		}
 		if err := f.write(ctx, raw); err != nil {
+			if keychain != nil {
+				restore(ctx, keychain, previous, hadKeychain)
+			}
 			return err
 		}
 	}
 	return nil
+}
+
+// restore puts the keychain's earlier sign-in back after a failed switch.
+func restore(ctx context.Context, keychain credentialStore, previous []byte, had bool) {
+	if had && len(previous) > 0 {
+		_ = keychain.write(ctx, previous)
+	}
+}
+
+// backupPath is where the sign-in a switch replaced is kept, when it was
+// another account's. A test replaces it.
+var backupPath = func() string { return filepath.Join(config.Dir(), "antigravity-previous-signin.json") }
+
+// agyScope is the access agy needs from a sign-in.
+const agyScope = "https://www.googleapis.com/auth/aicode"
+
+// tokenInfoURL answers which scopes an access token carries.
+var tokenInfoURL = "https://oauth2.googleapis.com/tokeninfo"
+
+// errNeedsAgyScope refuses an account signed in before Switcher asked for
+// agy's access.
+var errNeedsAgyScope = errors.New("this account was signed in to Switcher before Switcher asked for what agy needs; sign in to it again in Switcher (Relogin in its menu), then use it in Antigravity")
+
+// checkAgyScope makes sure the access token carries agy's scope. The token
+// goes in the request body, never the URL.
+func checkAgyScope(ctx context.Context, accessToken string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenInfoURL, strings.NewReader(url.Values{"access_token": {accessToken}}.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := provider.OAuthHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not check the account's access: %w", err)
+	}
+	defer resp.Body.Close()
+	var info struct {
+		Scope string `json:"scope"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&info) != nil {
+		return fmt.Errorf("could not check the account's access: http %d", resp.StatusCode)
+	}
+	for _, scope := range strings.Fields(info.Scope) {
+		if scope == agyScope {
+			return nil
+		}
+	}
+	return errNeedsAgyScope
 }
 
 // errNoKeychain says this computer has no keychain Switcher can reach, such

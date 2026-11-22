@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,8 +39,27 @@ func (k *memoryKeychain) write(_ context.Context, raw []byte) error {
 	return nil
 }
 
+// grantScopes answers tokeninfo with these scopes, and keeps backups in a
+// temporary folder.
+func grantScopes(t *testing.T, scopes string) (backup string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.FormValue("access_token") == "" {
+			t.Errorf("tokeninfo asked as %s %s", r.Method, r.URL)
+		}
+		fmt.Fprintf(w, `{"scope":%q}`, scopes)
+	}))
+	t.Cleanup(srv.Close)
+	savedURL, savedBackup := tokenInfoURL, backupPath
+	backup = filepath.Join(t.TempDir(), "previous.json")
+	tokenInfoURL, backupPath = srv.URL, func() string { return backup }
+	t.Cleanup(func() { tokenInfoURL, backupPath = savedURL, savedBackup })
+	return backup
+}
+
 func useStores(t *testing.T, keychain credentialStore) (agyFile, appFile string) {
 	t.Helper()
+	grantScopes(t, "openid "+agyScope)
 	dir := t.TempDir()
 	agyFile, appFile = filepath.Join(dir, "antigravity-cli", "antigravity-oauth-token"), filepath.Join(dir, "jetski-standalone-oauth-token")
 	saved := appStores
@@ -191,3 +213,49 @@ type exitCode int
 
 func (e exitCode) Error() string { return "exit" }
 func (e exitCode) ExitCode() int { return int(e) }
+
+// An account without agy's access is refused before anything is written.
+func TestUseInAppsRefusesAnAccountWithoutAgysAccess(t *testing.T) {
+	keychain := &memoryKeychain{}
+	useStores(t, keychain)
+	grantScopes(t, "openid https://www.googleapis.com/auth/cloud-platform")
+	if err := New().UseInApps(context.Background(), appAccount("me@example.com")); !errors.Is(err, errNeedsAgyScope) {
+		t.Fatalf("err = %v", err)
+	}
+	if keychain.value != nil {
+		t.Fatal("wrote a sign-in agy cannot use")
+	}
+}
+
+// The sign-in replaced, another account's, is kept; a write that fails
+// halfway puts the keychain back.
+func TestUseInAppsKeepsAndRestoresThePreviousSignIn(t *testing.T) {
+	keychain := &memoryKeychain{}
+	agyFile, _ := useStores(t, keychain)
+	backup := grantScopes(t, agyScope)
+	p := New()
+	if err := p.UseInApps(context.Background(), appAccount("mine@example.com")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(backup); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("kept a backup with nothing replaced")
+	}
+	if err := p.UseInApps(context.Background(), appAccount("work@example.com")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(backup)
+	info, _ := os.Stat(backup)
+	if err != nil || emailOf(raw) != "mine@example.com" || info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup %s %v", raw, err)
+	}
+	// agy's file is there but cannot be written: the keychain goes back.
+	if err := os.MkdirAll(agyFile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.UseInApps(context.Background(), appAccount("third@example.com")); err == nil {
+		t.Fatal("a failed file write reported success")
+	}
+	if who := emailOf(keychain.value); who != "work@example.com" {
+		t.Fatalf("keychain left on %q", who)
+	}
+}

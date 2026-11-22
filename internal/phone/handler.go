@@ -438,6 +438,9 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, method, path s
 	if native, ok := parsed["native"].(map[string]any); ok {
 		out["claude_code_switched"] = native["changed"] == true
 	}
+	if apps, ok := parsed["apps"].(map[string]any); ok {
+		out["antigravity_switched"] = apps["changed"] == true
+	}
 	if status >= 400 && out["error"] == nil {
 		out["error"] = "Switcher refused that"
 	}

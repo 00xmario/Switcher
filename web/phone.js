@@ -413,7 +413,8 @@ if (typeof document !== 'undefined') {
       act(target, async () => {
         const answer = await api(`/api/accounts/${encodeURIComponent(target.dataset.use)}/use`, { method: 'POST' });
         playMark($('top-mark'));
-        toast(answer.claude_code_switched ? `Claude and Claude Code now use ${a?.email || 'that account'}`
+        toast(answer.antigravity_switched ? `agy and the Antigravity app on your Mac now use ${a?.email || 'that account'}`
+          : answer.claude_code_switched ? `Claude and Claude Code now use ${a?.email || 'that account'}`
           : `${PROVIDERS[a?.provider] || 'Switcher'} now uses ${a?.email || 'that account'}`);
       });
     } else if (target.dataset.reset) {

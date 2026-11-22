@@ -14,14 +14,22 @@ import (
 )
 
 // appLoginTTL is how long the sign-in of a provider's own apps (Antigravity's
-// agy and app) is taken as known: /api/state is polled every few seconds and
-// reading the keychain each time would be slow.
-const appLoginTTL = 15 * time.Second
+// agy and app) is taken as known: /api/state is polled every few seconds,
+// and reading the keychain each time would be slow and could ask the user.
+// A switch made here updates it at once; one made in agy shows within this.
+const appLoginTTL = 2 * time.Minute
 
-// appLogins caches, per provider, whom its apps are signed in with.
+// appLogins caches, per provider, whom its apps are signed in with. A read
+// that fails is cached too, so a locked keychain is not asked again and
+// again. The keychain is read outside the lock: a slow one never holds up
+// /api/state for other providers.
 type appLogins struct {
-	mu   sync.Mutex
-	seen map[string]appLoginSeen
+	mu      sync.Mutex
+	seen    map[string]appLoginSeen
+	reading map[string]bool
+	// switching serializes Use in Antigravity: two quick picks cannot leave
+	// the keychain on one account and agy's file on another.
+	switching sync.Mutex
 }
 
 type appLoginSeen struct {
@@ -31,21 +39,35 @@ type appLoginSeen struct {
 
 func (c *appLogins) email(providerID string, apps provider.AppLoginProvider) string {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if s, ok := c.seen[providerID]; ok && time.Since(s.at) < appLoginTTL {
+	s, known := c.seen[providerID]
+	if known && time.Since(s.at) < appLoginTTL || c.reading[providerID] {
+		c.mu.Unlock()
 		return s.email
 	}
+	if c.reading == nil {
+		c.reading = map[string]bool{}
+	}
+	c.reading[providerID] = true
+	c.mu.Unlock()
+
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	email, err := apps.AppLogin(ctx)
+	cancel()
 	if err != nil {
 		email = ""
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.reading, providerID)
 	if c.seen == nil {
 		c.seen = map[string]appLoginSeen{}
 	}
-	c.seen[providerID] = appLoginSeen{email: email, at: time.Now()}
-	return email
+	// A switch made while this read ran is newer than what it read.
+	if cur, ok := c.seen[providerID]; !ok || cur.at.Before(started) {
+		c.seen[providerID] = appLoginSeen{email: email, at: time.Now()}
+	}
+	return c.seen[providerID].email
 }
 
 func (c *appLogins) set(providerID, email string) {
@@ -72,12 +94,14 @@ func (a *API) activateInApps(w http.ResponseWriter, r *http.Request, account sto
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": account.ID,
-			"native": map[string]any{"changed": false, "message": "Antigravity on this computer keeps its own sign-in: Switcher signs Antigravity in only on the computer that holds the account."}})
+			"apps": map[string]any{"changed": false, "message": "Antigravity on this computer keeps its own sign-in: Switcher signs Antigravity in only on the computer that holds the account."}})
 		return
 	}
 	if _, approved := phone.ApprovedPhone(r.Context()); !approved && !loopbackOnly(w, r) {
 		return
 	}
+	a.appLogins.switching.Lock()
+	defer a.appLogins.switching.Unlock()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Minute)
 	defer cancel()
 	fresh, err := a.Proxy.PrepareAccount(ctx, account.ID)
@@ -99,5 +123,5 @@ func (a *API) activateInApps(w http.ResponseWriter, r *http.Request, account sto
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active": account.ID,
-		"native": map[string]any{"changed": true, "message": "agy and the Antigravity app now use " + fresh.Email + ". Restart the Antigravity app to pick it up; agy notices by itself."}})
+		"apps": map[string]any{"changed": true, "message": "agy and the Antigravity app now use " + fresh.Email + ". Quit and reopen them if they are running: until then they may keep, and save back, the previous sign-in."}})
 }

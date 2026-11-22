@@ -1351,6 +1351,7 @@ async function runAccountAction(button) {
         }
         stateEpoch++;
         if (result.native?.message) toast(result.native.message);
+        if (result.apps?.message) toast(result.apps.message);
         await refreshState();
       } finally {
         pendingActivations.delete(id);

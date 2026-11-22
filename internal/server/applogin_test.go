@@ -66,12 +66,13 @@ func TestUseInAppsSignsTheAppsIn(t *testing.T) {
 		t.Fatalf("activate: %d %s", rec.Code, rec.Body.String())
 	}
 	var answer struct {
-		Native struct {
+		Native any `json:"native"`
+		Apps   struct {
 			Changed bool   `json:"changed"`
 			Message string `json:"message"`
-		} `json:"native"`
+		} `json:"apps"`
 	}
-	if json.Unmarshal(rec.Body.Bytes(), &answer) != nil || !answer.Native.Changed || answer.Native.Message == "" {
+	if json.Unmarshal(rec.Body.Bytes(), &answer) != nil || !answer.Apps.Changed || answer.Apps.Message == "" || answer.Native != nil {
 		t.Fatalf("answer %s", rec.Body.String())
 	}
 	if len(prov.given) != 1 || prov.given[0].ID != "fake-bbbb" || prov.given[0].Token.RefreshToken != "rt-fake-bbbb" {

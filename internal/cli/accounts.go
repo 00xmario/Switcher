@@ -317,6 +317,11 @@ func runUse(c *ctx, args []string) error {
 			Changed bool   `json:"changed"`
 			Message string `json:"message"`
 		} `json:"native"`
+		// Apps is what an Antigravity switch did to agy and its app.
+		Apps *struct {
+			Changed bool   `json:"changed"`
+			Message string `json:"message"`
+		} `json:"apps"`
 	}
 	if err := c.cl.call(http.MethodPost, "/api/accounts/"+url.PathEscape(account.ID)+"/activate", nil, &answer); err != nil {
 		return err
@@ -325,6 +330,8 @@ func runUse(c *ctx, args []string) error {
 	switched := answer.Native != nil && answer.Native.Changed
 	human := fmt.Sprintf("%s now uses %s.", providerName(account.Provider), account.Email)
 	switch {
+	case answer.Apps != nil:
+		human += " " + answer.Apps.Message
 	case answer.Host != "" && answer.Native != nil:
 		human += " " + answer.Native.Message // about the host's Claude Code
 	case switched:
@@ -333,6 +340,9 @@ func runUse(c *ctx, args []string) error {
 		human += " Claude Code already used it."
 	}
 	out := map[string]any{"account": account, "claude_code_switched": switched}
+	if answer.Apps != nil {
+		out["antigravity_switched"] = answer.Apps.Changed
+	}
 	if answer.Host != "" {
 		out["claude_code_host"] = answer.Host // whose Claude Code claude_code_switched is about
 	}
