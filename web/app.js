@@ -920,7 +920,7 @@ function accountMenuHTML(account) {
     ${endDateMenuHTML(account)}
     ${ADD_METHOD[account.provider] === 'key' || data.remote?.role === 'client' ? '' : `<button type="button" role="menuitem" data-act="relogin" data-provider="${escapeHTML(account.provider)}" data-account-id="${escapeHTML(account.id)}">Relogin</button>`}
     ${data.remote?.role === 'client'
-      ? `<p class="menu-note">Removed on ${escapeHTML(data.remote.host || 'the host')}, which keeps it</p>`
+      ? `<p class="menu-note">To remove this account, use Switcher on ${escapeHTML(data.remote.host || 'the computer it is on')}</p>`
       : `<button type="button" role="menuitem" data-act="delete" data-account-id="${escapeHTML(account.id)}">Remove</button>`}`;
 }
 

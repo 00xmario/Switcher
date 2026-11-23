@@ -156,7 +156,7 @@ assert.doesNotMatch(accountContext.accountMenuHTML({ id: 'key-id', provider: 'op
 accountContext.data.remote = { role: 'client', host: 'Studio & Mac' };
 const clientMenu = accountContext.accountMenuHTML({ id: 'banked-id', provider: 'codex' });
 assert.doesNotMatch(clientMenu, /data-act="delete"/);
-assert.match(clientMenu, /<p class="menu-note">Removed on Studio &amp; Mac, which keeps it<\/p>/);
+assert.match(clientMenu, /<p class="menu-note">To remove this account, use Switcher on Studio &amp; Mac<\/p>/);
 delete accountContext.data.remote;
 
 const compactCard = accountContext.compactAccountHTML({
