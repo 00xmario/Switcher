@@ -1963,13 +1963,6 @@ func (a *API) handleUseReset(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose a banked reset from refreshed account state"})
 		return
 	}
-	// A banked reset cannot be taken back. A paired computer spends one only
-	// for an account that is out of usage, where it is what a reset is for:
-	// one lost or turned against its owner cannot waste them all.
-	if _, paired := remote.PairedDevice(r); paired && !a.Proxy.OutOfUsage(id) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a banked reset is spent from another computer only for an account that is out of usage"})
-		return
-	}
 	outcome, err := a.Proxy.UseBankedReset(r.Context(), id, body.CreditID)
 	if err != nil {
 		status := http.StatusBadGateway

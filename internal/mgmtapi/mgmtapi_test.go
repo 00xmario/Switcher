@@ -325,9 +325,9 @@ func TestAPICallRedirectStaysOnT3CodesEndpoints(t *testing.T) {
 	}
 }
 
-// Spending a banked reset cannot be taken back: through a paired device, the
-// consume call goes out only for an account that is out of usage.
-func TestPairedDevicesConsumeResetsOnlyWhenOutOfUsage(t *testing.T) {
+// A paired computer consumes a banked reset as this one does, also for an
+// account with usage left.
+func TestPairedDevicesConsumeResets(t *testing.T) {
 	api := managementFixture(t, &managementProvider{}, "fresh")
 	mux := http.NewServeMux()
 	api.Register(mux)
@@ -373,11 +373,10 @@ func TestPairedDevicesConsumeResetsOnlyWhenOutOfUsage(t *testing.T) {
 		return w
 	}
 	consume := "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
-	if w := call(consume); w.Code != http.StatusConflict || len(reached) != 0 {
-		t.Fatalf("a paired device consumed a reset for an account with usage left: %d %s %v", w.Code, w.Body.String(), reached)
+	if w := call(consume); w.Code != http.StatusOK || len(reached) != 1 {
+		t.Fatalf("a paired device could not consume a reset: %d %s %v", w.Code, w.Body.String(), reached)
 	}
-	// Here, on the host itself, the call goes out as before.
-	if w := managementCallWith(api, "POST", consume, json.RawMessage(`{"credit_id":"c"}`)); w.Code != http.StatusOK || len(reached) != 1 {
+	if w := managementCallWith(api, "POST", consume, json.RawMessage(`{"credit_id":"c"}`)); w.Code != http.StatusOK || len(reached) != 2 {
 		t.Fatalf("consuming a reset here: %d %s %v", w.Code, w.Body.String(), reached)
 	}
 }
