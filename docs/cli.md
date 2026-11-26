@@ -33,6 +33,7 @@ does this for you, and a source build (`make install`) is the same binary.
 | `switcher remove <account> --yes` | Remove an account from Switcher |
 | `switcher refresh [account]` | Refresh usage for one or all accounts |
 | `switcher limit <account> [percent\|off]` | Keep a share of an account's weekly usage: Switcher switches away at that much left (1–95, or `off`); without a share, show the limit |
+| `switcher fable-reset <account> [fable\|weekly\|both\|off]` | Let a Claude account spend a banked Fable reset by itself once Fable's limit (`fable`), the weekly limit (`weekly`) or either (`both`) is used up; `off`, the default, never; without a setting, show it |
 | `switcher ends <account> [YYYY-MM-DD\|off]` | Tell Switcher the day an account's subscription ends: until then it uses that account first, moving its provider onto it whenever it has room unless you picked another account yourself; `off` forgets the day; without a day, show it |
 | `switcher load [--apps]` | CPU, memory and GPU load of this computer, or of the host whose accounts it uses; `--apps` adds what is using it, by app |
 | `switcher reset <account\|provider> [--kind K] --yes` | Spend a banked reset (Codex, Claude) on an account, or on a provider's active account. Claude banks kinds of reset (a Fable reset, a weekly reset): `--kind` picks one by the start of its name; without it the one Claude suggests is used |

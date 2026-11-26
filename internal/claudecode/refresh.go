@@ -138,6 +138,7 @@ func (m *Manager) recoverNativeRefresh(ctx context.Context, a *store.Account) (b
 			return true, err
 		}
 		saved.Account.AutoUseReset = a.AutoUseReset
+		saved.Account.AutoFableReset = a.AutoFableReset
 		if repaired, err := m.repairInactiveNative(ctx, a, saved); err != nil || repaired {
 			return true, err
 		}
@@ -333,6 +334,7 @@ func (m *Manager) finishNativeRefreshLocked(ctx context.Context, a *store.Accoun
 		return errors.New("Claude native refresh writes did not verify; successor retained for recovery")
 	}
 	saved.Account.AutoUseReset = a.AutoUseReset
+	saved.Account.AutoFableReset = a.AutoFableReset
 	saved.Account.ClaudeCodeRefreshPending = true
 	saved.Account.ClaudeCodeRefreshRecovery, _ = json.Marshal(saved.Native)
 	if err := m.saveAccount(saved.Account); err != nil {
@@ -412,6 +414,7 @@ func (m *Manager) recoverDisplacedNative(ctx context.Context, a *store.Account, 
 	m.volatileSuccessors[a.ID] = saved
 	next := saved.Account
 	next.AutoUseReset = a.AutoUseReset
+	next.AutoFableReset = a.AutoFableReset
 	if sameIdentity(identity, accountIdentity(saved.Account)) {
 		retainIdentityMetadata(&next, current.Config.Data, identity)
 		if err := applyNative(&next, current.credential(), identity); err != nil {

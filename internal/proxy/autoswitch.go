@@ -89,6 +89,11 @@ func (m *Manager) outOfUsageLocked(id string) bool {
 	if m.exhaustedNow(id) {
 		return true
 	}
+	// A reset just spent shows in usage within seconds (refreshAfterReset):
+	// until then the usage seen is from before it.
+	if event, ok := m.resetEvents[id]; ok && event.Pending {
+		return false
+	}
 	u, ok := m.cachedUsageLocked(id)
 	if !ok {
 		return false

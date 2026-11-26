@@ -10,6 +10,7 @@ import (
 
 func preserveAccountMetadata(a *store.Account, existing store.Account) {
 	a.AutoUseReset = existing.AutoUseReset
+	a.AutoFableReset = existing.AutoFableReset
 	if existing.CreatedAt != 0 {
 		a.CreatedAt = existing.CreatedAt
 	}

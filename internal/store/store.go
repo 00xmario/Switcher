@@ -41,8 +41,13 @@ type Account struct {
 	// AutoUseReset is the per-account override for spending a banked reset
 	// when this account runs out of usage. Nil means "follow the global
 	// preference"; true and false force the behavior for this account.
-	AutoUseReset *bool            `json:"auto_use_reset,omitempty"`
-	ClaudeCode   *ClaudeCodeLogin `json:"claude_code,omitempty"`
+	AutoUseReset *bool `json:"auto_use_reset,omitempty"`
+	// AutoFableReset spends one of this Claude account's banked Fable resets
+	// by itself once a usage poll shows a limit it names reached: "fable"
+	// (Fable's own window), "weekly" (the weekly window) or "both" (either).
+	// Empty, the default, never spends one.
+	AutoFableReset string           `json:"auto_fable_reset,omitempty"`
+	ClaudeCode     *ClaudeCodeLogin `json:"claude_code,omitempty"`
 	// ClaudeCodeRefreshPending marks an issued successor durably saved here
 	// when its recovery sidecar was unavailable. Native identity verification
 	// and recovery cleanup must finish before another grant can be consumed.

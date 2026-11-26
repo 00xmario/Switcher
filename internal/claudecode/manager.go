@@ -586,6 +586,7 @@ func (m *Manager) refreshGeneration(ctx context.Context, a *store.Account, grant
 				return err
 			}
 			saved.Account.AutoUseReset = a.AutoUseReset
+			saved.Account.AutoFableReset = a.AutoFableReset
 			if err := m.saveAccount(saved.Account); err != nil {
 				return errors.New("Claude refresh successor is retained in memory; keep Switcher running until storage is repaired")
 			}
@@ -613,6 +614,7 @@ func (m *Manager) refreshGeneration(ctx context.Context, a *store.Account, grant
 				return err
 			}
 			saved.Account.AutoUseReset = a.AutoUseReset
+			saved.Account.AutoFableReset = a.AutoFableReset
 			if err := m.saveAccount(saved.Account); err != nil {
 				return errors.New("refreshed Claude token is preserved but could not be saved")
 			}
@@ -756,6 +758,7 @@ func (m *Manager) recoverAccountSuccessor(ctx context.Context, a *store.Account)
 		// Recover that exact generation without requiring the profile again.
 		saved = retained
 		saved.Account.AutoUseReset = a.AutoUseReset
+		saved.Account.AutoFableReset = a.AutoFableReset
 	}
 	if err := m.verifySuccessor(ctx, &saved); err != nil {
 		return err
@@ -768,6 +771,7 @@ func (m *Manager) recoverAccountSuccessor(ctx context.Context, a *store.Account)
 
 func (m *Manager) finishAccountSuccessor(a *store.Account, saved successor) error {
 	saved.Account.AutoUseReset = a.AutoUseReset
+	saved.Account.AutoFableReset = a.AutoFableReset
 	saved.Account.ClaudeCodeRefreshPending = true
 	saved.Account.ClaudeCodeRefreshRecovery = inactiveRecovery(saved.Predecessor)
 	if err := m.saveAccount(saved.Account); err != nil {

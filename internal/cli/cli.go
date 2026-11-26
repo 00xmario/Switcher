@@ -77,6 +77,7 @@ func init() {
 		{name: "add-key", args: "<provider> [--key K]", summary: "Add an API-key account (key from --key or stdin)", run: runAddKey},
 		{name: "limit", args: "<account> [percent|off]", summary: "Keep a share of an account's usage; Switcher switches away at that much left", help: limitHelp, run: runLimit},
 		{name: "ends", args: "<account> [YYYY-MM-DD|off]", summary: "Set the day a subscription ends; Switcher uses that account first until then", help: endsHelp, run: runEnds},
+		{name: "fable-reset", args: "<account> [fable|weekly|both|off]", summary: "Let a Claude account spend a banked Fable reset by itself when a limit is used up", help: fableResetHelp, run: runFableReset},
 		{name: "load", args: "[--apps]", summary: "Show how busy this computer, or the host it uses, is; --apps: what is using it", run: runLoad},
 		{name: "remove", args: "<account> --yes", summary: "Remove an account from Switcher", run: runRemove},
 		{name: "refresh", args: "[account]", summary: "Refresh usage for one or all accounts", run: runRefresh},

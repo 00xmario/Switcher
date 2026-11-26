@@ -134,7 +134,10 @@ type Manager struct {
 	// autoResetAt throttles automatic redemptions per account so a client
 	// retry loop cannot drain every banked reset on a limit that a reset
 	// does not actually clear.
-	autoResetAt   map[string]time.Time
+	autoResetAt map[string]time.Time
+	// fableSpent marks an account an automatic Fable reset was spent on;
+	// it gets another only after usage shows it below the limit again.
+	fableSpent    map[string]bool
 	planChecked   map[string]time.Time
 	resetEvents   map[string]ResetEvent
 	resetSerial   uint64
@@ -704,9 +707,13 @@ func (m *Manager) RefreshUsageAll(ctx context.Context) {
 		}(j)
 	}
 	wg.Wait()
-	// Fresh usage may show Claude Code's account at its limit. The switch
-	// runs outside the poll's locks.
-	go m.AutoSwitchNative()
+	// Fresh usage may show Claude Code's account at its limit. An account
+	// set to spend a Fable reset then does so first (fablereset.go); the
+	// switch runs after, outside the poll's locks.
+	go func() {
+		m.autoFableResets()
+		m.AutoSwitchNative()
+	}()
 }
 
 // refreshAccount refreshes the token if needed and polls usage for one

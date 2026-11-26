@@ -903,6 +903,24 @@ function accountIsSelected(account) {
   return account.native_switch_available ? account.native_active === true : account.id === data.active?.[account.provider];
 }
 
+// FABLE_RESET_CHOICES are when a Claude account spends a banked Fable reset
+// by itself: never, once Fable's limit is used up, once the weekly one is,
+// or once either is.
+const FABLE_RESET_CHOICES = [['off', 'Off'], ['fable', 'Fable'], ['weekly', 'Weekly'], ['both', 'Either']];
+const FABLE_RESET_STATE = { off: 'off', fable: 'at Fable limit', weekly: 'at weekly limit', both: 'at either limit' };
+
+function fableResetMenuHTML(account) {
+  if (!account.fable_reset_available) return '';
+  const setting = account.auto_fable_reset || 'off';
+  return `
+      <div class="menu-auto-reset" role="group" aria-label="Auto-use Fable reset, currently ${FABLE_RESET_STATE[setting] || 'off'}">
+        <span class="menu-group-label">Auto-use Fable reset · ${FABLE_RESET_STATE[setting] || 'off'}</span>
+        <div class="menu-chips">
+          ${FABLE_RESET_CHOICES.map(([v, label]) => `<button type="button" role="menuitemradio" aria-checked="${setting === v}" data-act="fable-reset" data-mode="${v}" data-account-id="${escapeHTML(account.id)}">${label}</button>`).join('')}
+        </div>
+      </div>`;
+}
+
 function accountMenuHTML(account) {
   const mode = account.auto_use_reset || 'global';
   const labels = { global: 'Global', on: 'On', off: 'Off' };
@@ -916,6 +934,7 @@ function accountMenuHTML(account) {
           ${(account.provider === 'claude' ? ['on', 'off'] : ['global', 'on', 'off']).map(v => `<button type="button" role="menuitemradio" aria-checked="${mode === v || (account.provider === 'claude' && v === 'off' && mode === 'global')}" data-act="auto-reset" data-mode="${v}" data-account-id="${escapeHTML(account.id)}">${labels[v]}</button>`).join('')}
         </div>
       </div>` : ''}
+    ${fableResetMenuHTML(account)}
     ${usageLimitMenuHTML(account)}
     ${endDateMenuHTML(account)}
     ${ADD_METHOD[account.provider] === 'key' || data.remote?.role === 'client' ? '' : `<button type="button" role="menuitem" data-act="relogin" data-provider="${escapeHTML(account.provider)}" data-account-id="${escapeHTML(account.id)}">Relogin</button>`}
@@ -1446,6 +1465,31 @@ async function runAccountAction(button) {
           render();
         }
         toast(limit ? `Switcher moves away from this account at ${limit}% left` : 'No usage limit on this account');
+        await refreshState();
+      } finally {
+        button.disabled = false;
+      }
+    } else if (button.dataset.act === 'fable-reset') {
+      const mode = button.dataset.mode;
+      button.disabled = true;
+      try {
+        const res = await api(`/api/accounts/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_fable_reset: mode }),
+        });
+        stateEpoch++;
+        if (res.account) {
+          data = { ...data, accounts: data.accounts.map(a => a.id === id ? mergeAccountMutation(a, res.account) : a) };
+          render();
+        }
+        const messages = {
+          off: 'Will not use Fable resets automatically',
+          fable: 'Will use a Fable reset when Fable’s limit is used up',
+          weekly: 'Will use a Fable reset when the weekly limit is used up',
+          both: 'Will use a Fable reset when Fable’s or the weekly limit is used up',
+        };
+        toast(messages[mode] || 'Saved');
         await refreshState();
       } finally {
         button.disabled = false;

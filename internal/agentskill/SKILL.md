@@ -126,6 +126,7 @@ the user says the subscription ends then.
 | Accounts with usage (optionally one provider) | `switcher accounts [--provider claude] --json` |
 | Use an account now (Claude also switches Claude Code) | `switcher use <account> --json` |
 | Usage limit | `switcher limit <account> [percent\|off] --json` |
+| Spend a Fable reset by itself at Fable's / the weekly / either limit (Claude) | `switcher fable-reset <account> [fable\|weekly\|both\|off] --json` |
 | Day a canceled subscription ends (used first until then) | `switcher ends <account> [YYYY-MM-DD\|off] --json` |
 | Refresh usage now | `switcher refresh [account] --json` |
 | How busy this computer, or the host, is | `switcher load --json` |

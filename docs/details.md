@@ -335,6 +335,13 @@ required; OpenCode Go uses its own API key.
   account from the account's ⋯ menu (Global / On / Off). At most one credit
   is spent per request, and an account is not auto-reset again for five
   minutes, so a client retry loop cannot drain every banked reset.
+  **Auto-use Fable reset** (Claude accounts, ⋯ menu or `switcher
+  fable-reset`) spends one of the account's banked Fable resets by itself
+  once a usage poll shows Fable's own limit, the weekly limit, or either,
+  used up (Off / Fable / Weekly / Either; off by default). It runs after
+  every usage poll, before the automatic switch, whichever way the account
+  is used, spends one Fable reset at a time, never one Claude says cannot be
+  used now, and waits fifteen minutes before asking again when none is left.
   Redeeming a reset acknowledges success immediately, removes the spent
   credit, and refreshes quota in the background. The web card gets a brief
   success sweep and animates its bar to the balance reported by the provider.

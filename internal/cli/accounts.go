@@ -34,7 +34,10 @@ type Account struct {
 	EndDate     string `json:"end_date,omitempty"`
 	Ending      bool   `json:"ending,omitempty"`
 	PaidThrough int64  `json:"paid_through,omitempty"`
-	nextReset   string
+	// AutoFableReset is when Switcher spends a banked Fable reset by itself
+	// (Claude): "off", "fable", "weekly" or "both".
+	AutoFableReset string `json:"auto_fable_reset,omitempty"`
+	nextReset      string
 	// loginKept: Claude Code is signed in with this account, but its requests
 	// use the selected one.
 	loginKept bool
@@ -94,17 +97,18 @@ type apiAccount struct {
 			Unusable string `json:"unusable"`
 		} `json:"kinds"`
 	} `json:"reset_credits"`
-	UsageLimit  int    `json:"usage_limit"`
-	AtLimit     bool   `json:"at_limit"`
-	EndDate     string `json:"end_date"`
-	Ending      bool   `json:"ending"`
-	PaidThrough int64  `json:"paid_through"`
+	UsageLimit     int    `json:"usage_limit"`
+	AtLimit        bool   `json:"at_limit"`
+	EndDate        string `json:"end_date"`
+	Ending         bool   `json:"ending"`
+	PaidThrough    int64  `json:"paid_through"`
+	AutoFableReset string `json:"auto_fable_reset"`
 }
 
 func (a apiAccount) account() Account {
 	account := Account{ID: a.ID, Provider: a.Provider, Email: a.Email, Plan: a.Plan, Active: a.Active, ClaudeCode: a.NativeActive, loginKept: a.NativeActive && !a.NativeSwitch, Usage: []Window{},
 		UsageLimit: a.UsageLimit, AtLimit: a.AtLimit && a.UsageLimit > 0,
-		EndDate: a.EndDate, Ending: a.Ending && a.EndDate != "", PaidThrough: a.PaidThrough}
+		EndDate: a.EndDate, Ending: a.Ending && a.EndDate != "", PaidThrough: a.PaidThrough, AutoFableReset: a.AutoFableReset}
 	if a.Usage != nil && a.Usage.Windows != nil {
 		account.Usage = a.Usage.Windows
 	}
@@ -470,6 +474,73 @@ func runEnds(c *ctx, args []string) error {
 		human = fmt.Sprintf("%s ends with %s: Switcher uses it first until then.", account.Email, endDayText(day))
 	}
 	c.result(map[string]any{"account": account}, human)
+	return nil
+}
+
+const fableResetHelp = `Let a Claude account spend its banked Fable resets by itself. A Fable reset
+refills Fable's own limit and gives back part of the weekly usage. Off by
+default; Switcher checks after every usage poll, whichever way the account is
+used, and spends at most one at a time.
+
+  switcher fable-reset me@example.com fable    when Fable's limit is used up
+  switcher fable-reset me@example.com weekly   when the weekly limit is used up
+  switcher fable-reset me@example.com both     when either is used up
+  switcher fable-reset me@example.com off      never by itself
+  switcher fable-reset me@example.com          show the setting`
+
+// fableResetText says when an account spends a Fable reset by itself.
+func fableResetText(setting string) string {
+	switch setting {
+	case "fable":
+		return "spends a Fable reset by itself when Fable's limit is used up"
+	case "weekly":
+		return "spends a Fable reset by itself when the weekly limit is used up"
+	case "both":
+		return "spends a Fable reset by itself when Fable's or the weekly limit is used up"
+	}
+	return "never spends a Fable reset by itself"
+}
+
+func runFableReset(c *ctx, args []string) error {
+	pos, err := c.parse(c.flags("fable-reset"), args, 1, 2)
+	if err != nil {
+		return err
+	}
+	_, accounts, err := c.state()
+	if err != nil {
+		return err
+	}
+	account, err := resolve(pos[0], accounts)
+	if err != nil {
+		return err
+	}
+	if account.Provider != "claude" {
+		return usagef("only Claude accounts bank Fable resets")
+	}
+	if len(pos) == 1 {
+		c.result(map[string]any{"account": account}, fmt.Sprintf("%s %s.", account.Email, fableResetText(account.AutoFableReset)))
+		return nil
+	}
+	setting := strings.ToLower(strings.TrimSpace(pos[1]))
+	switch setting {
+	case "fable", "weekly", "both", "off":
+	case "either":
+		setting = "both"
+	default:
+		return usagef("say fable, weekly, both or off")
+	}
+	var answer struct {
+		Account *apiAccount `json:"account"`
+	}
+	if err := c.cl.call(http.MethodPatch, "/api/accounts/"+url.PathEscape(account.ID), map[string]string{"auto_fable_reset": setting}, &answer); err != nil {
+		return err
+	}
+	if updated := answer.Account.added(); updated != nil {
+		account = *updated
+	} else {
+		account.AutoFableReset = setting
+	}
+	c.result(map[string]any{"account": account}, fmt.Sprintf("%s %s.", account.Email, fableResetText(account.AutoFableReset)))
 	return nil
 }
 

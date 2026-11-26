@@ -48,6 +48,13 @@ func (m *Manager) LastReset(id string) *ResetEvent {
 // UseBankedReset shares the credential lock with automatic resets and token
 // rotation. It returns as soon as the provider acknowledges the redemption.
 func (m *Manager) UseBankedReset(ctx context.Context, id, creditID string) (string, error) {
+	return m.useBankedReset(ctx, id, creditID, nil)
+}
+
+// useBankedReset spends creditID, or, with choose (creditID ""), the reset
+// choose names among those available now, as an automatic reset; "" from
+// choose is ErrNoResetCredits.
+func (m *Manager) useBankedReset(ctx context.Context, id, creditID string, choose func([]provider.ResetCredit) string) (string, error) {
 	lock := m.refreshLock(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -62,7 +69,11 @@ func (m *Manager) UseBankedReset(ctx context.Context, id, creditID string) (stri
 	// Pin the request to the credit the user chose. Retrying a delayed/lost
 	// response must never advance to the next available credit.
 	if event := m.LastReset(id); event != nil {
-		if event.CreditID == creditID {
+		if choose != nil {
+			if event.Pending {
+				return "", ErrResetPending
+			}
+		} else if event.CreditID == creditID {
 			if event.routingPending {
 				m.mu.Lock()
 				err := m.clearExhaustedLocked(id)
@@ -111,9 +122,15 @@ func (m *Manager) UseBankedReset(ctx context.Context, id, creditID string) (stri
 	if err != nil {
 		return "", fmt.Errorf("could not list banked resets: %w", err)
 	}
+	available := m.AvailableResetCredits(id, credits)
+	if choose != nil {
+		if creditID = choose(available); creditID == "" {
+			return "", ErrNoResetCredits
+		}
+	}
 	remaining := make([]provider.ResetCredit, 0, len(credits))
 	found := false
-	for _, credit := range m.AvailableResetCredits(id, credits) {
+	for _, credit := range available {
 		if credit.ID == creditID {
 			found = true
 		} else {
@@ -138,7 +155,7 @@ func (m *Manager) UseBankedReset(ctx context.Context, id, creditID string) (stri
 		return "", fmt.Errorf("the reset did not go through: %w", err)
 	}
 	if outcome == "reset" || outcome == "already_redeemed" {
-		return outcome, m.recordBankedReset(id, creditID, outcome, remaining, false)
+		return outcome, m.recordBankedReset(id, creditID, outcome, remaining, choose != nil)
 	}
 	return outcome, nil
 }

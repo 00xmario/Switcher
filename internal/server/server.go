@@ -477,8 +477,13 @@ type accountView struct {
 	// AutoUseResetEffective is the resolved policy after applying the
 	// global preference to the override.
 	AutoUseResetEffective bool `json:"auto_use_reset_effective"`
-	NativeSwitchAvailable bool `json:"native_switch_available,omitempty"`
-	NativeActive          bool `json:"native_active,omitempty"`
+	// FableResetAvailable says the account banks Fable resets (Claude), so
+	// the UI offers AutoFableReset: "off", "fable", "weekly" or "both", the
+	// limit after which Switcher spends one by itself.
+	FableResetAvailable   bool   `json:"fable_reset_available,omitempty"`
+	AutoFableReset        string `json:"auto_fable_reset,omitempty"`
+	NativeSwitchAvailable bool   `json:"native_switch_available,omitempty"`
+	NativeActive          bool   `json:"native_active,omitempty"`
 	// UsageLimit is the share of the weekly or monthly usage this account
 	// keeps (0 for none); AtLimit says its latest usage reached it, so
 	// Switcher moves to another account.
@@ -609,6 +614,13 @@ func viewBaseWithSettings(a *API, acc store.Account, preferences settings.Settin
 	_, v.SupportsBankedResets = a.Providers[acc.Provider].(provider.ResetCreditProvider)
 	v.AutoUseReset = autoUseResetMode(acc)
 	v.AutoUseResetEffective = acc.AutoUseResetEnabled(preferences.AutoUseReset)
+	if v.SupportsBankedResets && acc.Provider == "claude" {
+		v.FableResetAvailable = true
+		v.AutoFableReset = acc.AutoFableReset
+		if v.AutoFableReset == "" {
+			v.AutoFableReset = "off"
+		}
+	}
 	if until, ok := a.Proxy.Exhausted(acc.ID); ok {
 		v.ExhaustedUntil = until.Unix()
 	}
@@ -1869,9 +1881,10 @@ func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		AutoUseReset *string `json:"auto_use_reset"`
-		UsageLimit   *int    `json:"usage_limit"`
-		EndDate      *string `json:"end_date"`
+		AutoUseReset   *string `json:"auto_use_reset"`
+		AutoFableReset *string `json:"auto_fable_reset"`
+		UsageLimit     *int    `json:"usage_limit"`
+		EndDate        *string `json:"end_date"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -1880,6 +1893,19 @@ func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	if body.AutoUseReset != nil {
 		if mode := *body.AutoUseReset; mode != "global" && mode != "on" && mode != "off" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "auto_use_reset must be global, on, or off"})
+			return
+		}
+	}
+	if body.AutoFableReset != nil {
+		if *body.AutoFableReset == "off" {
+			*body.AutoFableReset = proxy.FableResetOff
+		}
+		if !proxy.ValidFableReset(*body.AutoFableReset) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "auto_fable_reset must be off, fable, weekly or both"})
+			return
+		}
+		if account, _ := a.Store.Get(id); account.Provider != "claude" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only Claude accounts bank Fable resets"})
 			return
 		}
 	}
@@ -1934,6 +1960,22 @@ func (a *API) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
+		}
+	}
+	if body.AutoFableReset != nil {
+		setting := *body.AutoFableReset
+		err := a.Proxy.UpdateAccount(id, func(account *store.Account) error {
+			account.AutoFableReset = setting
+			return nil
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		// An account already at that limit gets its reset now, not after
+		// the next poll.
+		if setting != proxy.FableResetOff {
+			go a.Proxy.CheckFableResets()
 		}
 	}
 	account, err := a.Store.Get(id)
