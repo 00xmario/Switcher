@@ -61,7 +61,7 @@ func TestBurst429DoesNotExhaustSubscription(t *testing.T) {
 	}
 }
 
-func TestGeneric429IgnoresModelScopedQuota(t *testing.T) {
+func TestGeneric429IgnoresModelScopedQuotaButFables(t *testing.T) {
 	sessionReset := time.Now().Add(time.Hour).Truncate(time.Second)
 	weeklyReset := sessionReset.Add(time.Hour)
 	modelReset := weeklyReset.Add(2 * time.Hour)
@@ -79,6 +79,7 @@ func TestGeneric429IgnoresModelScopedQuota(t *testing.T) {
 		{"session-exhausted", generic, fmt.Sprintf(`{"five_hour":{"utilization":100,"resets_at":%q},"seven_day":{"utilization":30},%s}`, sessionReset.Format(time.RFC3339), scoped), true, sessionReset},
 		{"weekly-exhausted", generic, fmt.Sprintf(`{"five_hour":{"utilization":20},"seven_day":{"utilization":100,"resets_at":%q},%s}`, weeklyReset.Format(time.RFC3339), scoped), true, weeklyReset},
 		{"explicit-exhaustion", `{"error":{"type":"usage_limit_reached"}}`, `{` + scoped + `}`, true, time.Time{}},
+		{"fable-exhausted", generic, fmt.Sprintf(`{"five_hour":{"utilization":20},"seven_day":{"utilization":30},"limits":[{"kind":"weekly_scoped","percent":100,"resets_at":%q,"scope":{"model":{"display_name":"Fable"}}}]}`, modelReset.Format(time.RFC3339)), true, modelReset},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			old := http.DefaultClient

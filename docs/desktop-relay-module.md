@@ -89,8 +89,8 @@ left. `send` handles it before any byte reaches Desktop:
    `rejected`. For a Switcher account, `proxy.DesktopCredentialSource.OutOfUsage`
    also checks its usage the way the proxy does (`ParseRateLimit`) and parks
    it until its reset. Burst limits and other 429s pass through as before.
-3. `Takeover` names the Claude account with the most session and weekly usage
-   left, among accounts with a successful usage poll in the last fifteen
+3. `Takeover` names the Claude account with the most session, weekly and
+   Fable usage left, among accounts with a successful usage poll in the last fifteen
    minutes that need no new sign-in. Its credential must prepare. With none,
    or with the setting off, the refusal passes through.
 4. A picked conversation is bound to that account (`setConversation`), or

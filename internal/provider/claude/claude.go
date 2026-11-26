@@ -491,9 +491,10 @@ func (p *Provider) ParseRateLimit(ctx context.Context, a store.Account, status i
 	var latest time.Time
 	now := time.Now()
 	for _, w := range usage.Windows {
-		// No request model reaches this interface. Scoped model quota cannot
-		// establish account-wide exhaustion or its reset time.
-		if w.Label != "Session" && w.Label != "Weekly" {
+		// No request model reaches this interface. Of the models' own
+		// windows only Fable's, the model the account is used for, makes
+		// the account spent (provider.SpendsAccount).
+		if !provider.SpendsAccount(w.Label) {
 			continue
 		}
 		if w.UsedPercent < 100 {

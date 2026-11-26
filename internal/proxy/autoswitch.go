@@ -82,9 +82,9 @@ func (m *Manager) recordAutoSwitchLocked(providerID, where, from, to string) {
 }
 
 // outOfUsageLocked reports whether an account has run out: parked after a
-// refused request, or its latest usage shows the session or weekly window at
-// the limit. A model's own window does not make the whole account run out.
-// Requires m.mu.
+// refused request, or its latest usage shows the session, weekly or Fable
+// window at the limit (provider.SpendsAccount). Other models' windows do not
+// make the account run out. Requires m.mu.
 func (m *Manager) outOfUsageLocked(id string) bool {
 	if m.exhaustedNow(id) {
 		return true
@@ -94,7 +94,7 @@ func (m *Manager) outOfUsageLocked(id string) bool {
 		return false
 	}
 	for _, w := range u.Windows {
-		if (w.Label == "Session" || w.Label == "Weekly") && w.UsedPercent >= 100 {
+		if provider.SpendsAccount(w.Label) && w.UsedPercent >= 100 {
 			return true
 		}
 	}
@@ -102,7 +102,8 @@ func (m *Manager) outOfUsageLocked(id string) bool {
 }
 
 // headroomLocked is the share left in an account's tightest account-wide
-// window (session, weekly or monthly), less the share its usage limit keeps,
+// window (session, weekly or monthly, less the share its usage limit keeps,
+// or Claude's Fable window),
 // or -1 when it cannot take over: no credentials, parked, needing a new
 // sign-in, at its limit, or with usage Switcher has not seen. Requires m.mu.
 func (m *Manager) headroomLocked(a store.Account) int {
@@ -119,7 +120,7 @@ func (m *Manager) headroomLocked(a store.Account) int {
 	limit := m.limits[a.ID]
 	left, seen := 100, false
 	for _, w := range u.Windows {
-		if w.Label != "Session" && !limitWindow(w.Label) {
+		if w.Label != "Session" && !limitWindow(w.Label) && !provider.FableWindow(w.Label) {
 			continue
 		}
 		seen = true

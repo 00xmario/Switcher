@@ -48,7 +48,9 @@ required; OpenCode Go uses its own API key.
   `switcher settings set auto_switch_claude=false`), Claude Code's login (or,
   through the Desktop relay, the account its requests use) moves to the Claude
   account with the most usage left once a usage poll shows its
-  session or weekly window at the limit, and a Claude Desktop conversation
+  session, weekly or Fable window at the limit (Fable's runs out on its own,
+  often before the weekly one; other models' windows, such as Sonnet's, do
+  not count), and a Claude Desktop conversation
   moves when Anthropic refuses one of its requests for that reason. Usage is
   polled every few minutes, so Claude Code may meet the limit once before the
   switch; running sessions pick up the new login within about 30 seconds.
@@ -458,7 +460,7 @@ environment; a terminal-only override needs the CLI command. The first
 | You click *Use in Claude Code* locally | verifies and writes the native login, then commits the matching proxy selection; failure preserves or rolls back the original login |
 | No account was ever activated | the first usable account (by email order) serves traffic |
 | Active proxy account returns 429 `usage_limit_reached` | mark it exhausted until the upstream reset time; select another usable proxy account and retry the request transparently; native Claude Code selection stays as it was |
-| Claude Code's account reaches its session or weekly limit | with Switch Claude automatically on, switch Claude Code's login to the Claude account with the most usage left, through the same verified path as *Use in Claude Code*; at most once per account per ten minutes |
+| Claude Code's account reaches its session, weekly or Fable limit | with Switch Claude automatically on, switch Claude Code's login to the Claude account with the most usage left, through the same verified path as *Use in Claude Code*; at most once per account per ten minutes |
 | A Claude Desktop conversation's account runs out of usage | with Switch Claude automatically on, move that conversation to the Claude account with the most usage left and resend the request before Desktop sees the refusal |
 | Claude Code goes through the Desktop relay | a switch, by hand or by itself, changes only the selection, which is the account its requests use; its own login and Remote Control stay; the proxy failover above moves that selection too and shows it as an automatic switch |
 | Every account is out of usage | no rotation; the upstream error is passed through |

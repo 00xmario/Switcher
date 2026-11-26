@@ -328,3 +328,35 @@ func TestDesktopFollowsTheSelectedAccountAndItsStandIn(t *testing.T) {
 		t.Fatalf("selected %q with an unmanaged Claude Code login, want the proxy's c", got)
 	}
 }
+
+// withModel adds a model's own weekly window, as Claude reports Fable's.
+func withModel(u provider.Usage, model string, used int) provider.Usage {
+	u.Windows = append(append([]provider.UsageWindow(nil), u.Windows...),
+		provider.UsageWindow{Label: model, UsedPercent: used, ResetsAt: time.Now().Add(48 * time.Hour).Unix()})
+	return u
+}
+
+// Fable's window used up spends the account while the weekly one has room:
+// Claude Code, a paired Mac's requests and the takeover all move on, never
+// onto an account whose Fable is used up. Sonnet's window does not count.
+func TestTheFableLimitSwitchesLikeTheWeeklyOne(t *testing.T) {
+	m, native := autoManager(t, true, claudeAccount("a"), claudeAccount("b"), claudeAccount("c"))
+	m.setUsage("a", withModel(windows(20, 40), "Fable", 100))
+	m.setUsage("b", withModel(windows(0, 0), "Fable", 100))
+	m.setUsage("c", withModel(windows(30, 50), "Fable", 60))
+	if got := m.ClaudeRoute("a"); got != "c" {
+		t.Fatalf("paired Mac route %q, want c", got)
+	}
+	m.AutoSwitchNative()
+	if len(native.switched) != 1 || native.switched[0] != "c" {
+		t.Fatalf("switched %v, want c (b's Fable is used up)", native.switched)
+	}
+
+	m2, native2 := autoManager(t, true, claudeAccount("a"), claudeAccount("b"))
+	m2.setUsage("a", withModel(windows(20, 40), "Sonnet", 100))
+	m2.setUsage("b", windows(0, 0))
+	m2.AutoSwitchNative()
+	if len(native2.switched) != 0 {
+		t.Fatalf("Sonnet's window moved Claude Code: %v", native2.switched)
+	}
+}
