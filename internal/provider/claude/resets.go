@@ -348,11 +348,19 @@ func (p *Provider) ConsumeResetCredit(ctx context.Context, a store.Account, cred
 		return "not_next_grant", nil
 	}
 	switch out.Result {
-	case "reset", "cooldown":
+	case "reset", "already_used":
+		// The usage ParseRateLimit remembers is from before the reset: a
+		// refusal right after must not park the account on it.
+		p.mu.Lock()
+		delete(p.limits, a.ID)
+		p.mu.Unlock()
+		if out.Result == "already_used" {
+			// Claude Code counts it as spent: a retried claim that went through.
+			return "already_redeemed", nil
+		}
 		return out.Result, nil
-	case "already_used":
-		// Claude Code counts it as spent: a retried claim that went through.
-		return "already_redeemed", nil
+	case "cooldown":
+		return out.Result, nil
 	case "not_limited":
 		return "nothing_to_reset", nil
 	case "":

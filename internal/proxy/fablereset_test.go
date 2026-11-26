@@ -153,3 +153,32 @@ func TestAutoFableResetNeverDrainsOnALimitItDidNotClear(t *testing.T) {
 		t.Fatalf("spent %d resets, want 2 after the limit came back", n)
 	}
 }
+
+// Overlapping runs (a poll, a manual refresh, a setting change) spend one
+// reset between them.
+func TestOverlappingFableResetRunsSpendOne(t *testing.T) {
+	m, prov := fableManager(t, "both", append(fableCredits(), provider.ResetCredit{ID: "fable-2", Kind: "Fable reset", ExpiresAt: time.Now().Add(96 * time.Hour).Unix()})...)
+	m.setUsage("a", withModel(windows(20, 100), "Fable", 100))
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() { m.autoFableResets(); done <- struct{}{} }()
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+	m.autoFableResets()
+	if n := prov.spends(); n != 1 {
+		t.Fatalf("spent %d resets, want 1", n)
+	}
+}
+
+// Another model's full window does not keep a parked account out; Fable's
+// or the weekly one does.
+func TestUsageHasRoomIgnoresOtherModels(t *testing.T) {
+	if !usageHasRoom(withModel(windows(20, 40), "Sonnet", 100)) {
+		t.Fatal("Sonnet's window kept the account out")
+	}
+	if usageHasRoom(withModel(windows(20, 40), "Fable", 100)) || usageHasRoom(windows(20, 100)) {
+		t.Fatal("a used-up Fable or weekly window counted as room")
+	}
+}

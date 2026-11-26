@@ -31,6 +31,13 @@ func FableWindow(label string) bool {
 	return strings.Contains(strings.ToLower(label), "fable")
 }
 
+// OtherModelWindow reports a Claude model's own window other than Fable's
+// (Sonnet, Opus, Haiku): at its limit, the account still serves.
+func OtherModelWindow(label string) bool {
+	l := strings.ToLower(label)
+	return !FableWindow(label) && (strings.Contains(l, "sonnet") || strings.Contains(l, "opus") || strings.Contains(l, "haiku"))
+}
+
 // SpendsAccount reports whether a window at its limit leaves the account out
 // of usage: the session or weekly window, or Claude's Fable window.
 func SpendsAccount(label string) bool {

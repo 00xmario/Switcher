@@ -137,12 +137,14 @@ type Manager struct {
 	autoResetAt map[string]time.Time
 	// fableSpent marks an account an automatic Fable reset was spent on;
 	// it gets another only after usage shows it below the limit again.
-	fableSpent    map[string]bool
-	planChecked   map[string]time.Time
-	resetEvents   map[string]ResetEvent
-	resetSerial   uint64
-	quotaRevision map[string]uint64
-	spentCredits  map[string]map[string]int64
+	fableSpent map[string]bool
+	// fableResetting keeps automatic Fable resets to one run at a time.
+	fableResetting atomic.Bool
+	planChecked    map[string]time.Time
+	resetEvents    map[string]ResetEvent
+	resetSerial    uint64
+	quotaRevision  map[string]uint64
+	spentCredits   map[string]map[string]int64
 	// quotaLog records the accounts' quota over time for Insights: usage
 	// readings, limits refused and switches. Nil records nothing.
 	quotaLog *quota.Recorder
@@ -885,7 +887,7 @@ func usageHasRoom(u provider.Usage) bool {
 		return false
 	}
 	for _, w := range u.Windows {
-		if w.UsedPercent >= 100 {
+		if w.UsedPercent >= 100 && !provider.OtherModelWindow(w.Label) {
 			return false
 		}
 	}

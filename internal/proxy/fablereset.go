@@ -89,9 +89,12 @@ func (m *Manager) CheckFableResets() {
 // whose latest usage shows the limit it names used up, at most once per
 // cooldown per account.
 func (m *Manager) autoFableResets() {
-	if m.HandedBack() {
+	// One run at a time: a poll, a manual refresh and a setting change can
+	// overlap, and two runs could each spend a reset.
+	if m.HandedBack() || !m.fableResetting.CompareAndSwap(false, true) {
 		return
 	}
+	defer m.fableResetting.Store(false)
 	accounts, err := m.store.List()
 	if err != nil {
 		return
@@ -126,8 +129,12 @@ func (m *Manager) autoFableReset(a store.Account) {
 	defer cancel()
 	outcome, err := m.useBankedReset(ctx, a.ID, "", chooseFableReset)
 	switch {
-	case err == nil && (outcome == "reset" || outcome == "already_redeemed"):
+	case outcome == "reset" || outcome == "already_redeemed":
+		// Spent, even when saving the routing state after it failed.
 		log.Printf("proxy: auto-used a Fable reset for %s", a.Email)
+		if err != nil {
+			log.Printf("proxy: after the Fable reset for %s: %v", a.Email, err)
+		}
 		m.mu.Lock()
 		if m.fableSpent == nil {
 			m.fableSpent = map[string]bool{}
